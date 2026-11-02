@@ -1,0 +1,14 @@
+/**
+ * Central query-key factory. Presentation-layer concern: the cache shape is a
+ * UI decision, not a data-layer one.
+ */
+
+export const queryKeys = {
+  health: () => ['health'] as const,
+  capabilities: () => ['capabilities'] as const,
+  storageConfig: () => ['storage', 'config'] as const,
+  systemStorage: () => ['storage', 'system'] as const,
+  downloads: () => ['downloads'] as const,
+  downloadList: () => [...queryKeys.downloads(), 'list'] as const,
+  download: (id: string) => [...queryKeys.downloads(), 'detail', id] as const,
+};

@@ -1,0 +1,38 @@
+# --- build output ---
+# Explicit paths: a bare `build/` would also match nothing here, but a bare
+# `downloads/` DID match web/src/ui/downloads/ and silently dropped source.
+media-ingest-c/build/
+web/dist/
+*.o
+*.a
+
+# --- dependencies ---
+node_modules/
+.pnpm-store/
+
+# --- caches ---
+.pytest_cache/
+.turbo/
+.gradle/
+__pycache__/
+*.pyc
+
+# --- test / runtime artefacts (root-anchored, never bare: see above) ---
+/coverage/
+/downloads/
+/jobs/
+*.log
+
+# --- local config: never commit real credentials ---
+.env
+.env.*
+!.env.example
+*.local
+
+# --- local agent memory: kept local, not shipped (matches the other repos) ---
+.openhands/
+
+# --- editors / OS ---
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,112 @@
+/* ==========================================================================
+   Design tokens — the single source of truth for the UI's look.
+
+   Purely neutral greys (R = G = B, zero colour cast) plus one rose accent.
+   Status is white / gray / red only; green appears solely as a small muted
+   confirmation dot. Ported from web/mock/styles.css so the mock and the real
+   components cannot drift.
+   ========================================================================== */
+
+:root {
+  /* surfaces */
+  --bg: #ededed;
+  --surface: #ffffff;
+  --surface-2: #e6e6e6;
+  --surface-3: #dedede;
+  --border: #dcdcdc;
+  --border-strong: #c9c9c9;
+
+  /* ink */
+  --text: #141414;
+  --text-2: #565656;
+  --text-3: #6b6b6b;
+
+  /* accent — rose 600 (700 on hover) */
+  --accent: #e11d48;
+  --accent-hover: #be123c;
+  --accent-soft: #fff1f2;
+  --accent-border: #fecdd3;
+
+  /* status: white / gray / red */
+  --state-run: #dedede;
+  --state-run-fg: #141414;
+  --state-idle: #e6e6e6;
+  --state-idle-fg: #6b6b6b;
+  --state-done: #ffffff;
+  --state-done-fg: #141414;
+  --state-fail: #fef2f2;
+  --state-fail-fg: #b91c1c;
+
+  /* selection: a strong grey gradient, kept distinct from the rose accent */
+  --sel-from: #ececec;
+  --sel-to: #d2d2d2;
+  --sel-fg: #141414;
+  --sel-chip: #ffffff;
+  --sel-border: #b8b8b8;
+
+  /* calm green: confirmation only */
+  --ok: #15803d;
+  --ok-soft: #f0f7f2;
+
+  --warning: #a35c00;
+  --warning-soft: #fdf3e3;
+
+  /* elevation */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.12);
+
+  /* geometry */
+  --r-sm: 6px;
+  --r: 8px;
+  --r-lg: 12px;
+  --sidebar-w: 236px;
+  --topbar-h: 65px;
+
+  /* type */
+  --font: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+[data-theme='dark'] {
+  --bg: #0e0e0e;
+  --surface: #171717;
+  --surface-2: #1e1e1e;
+  --surface-3: #262626;
+  --border: #282828;
+  --border-strong: #383838;
+
+  --text: #f4f4f4;
+  --text-2: #adadad;
+  --text-3: #8a8a8a;
+
+  --accent: #fb7185;
+  --accent-hover: #fda4af;
+  --accent-soft: #2a1419;
+  --accent-border: #4c2029;
+
+  --state-run: #262626;
+  --state-run-fg: #f4f4f4;
+  --state-idle: #1e1e1e;
+  --state-idle-fg: #8a8a8a;
+  --state-done: #1e1e1e;
+  --state-done-fg: #f4f4f4;
+  --state-fail: #2c1a1a;
+  --state-fail-fg: #f87171;
+
+  --sel-from: #343434;
+  --sel-to: #222222;
+  --sel-fg: #f4f4f4;
+  --sel-chip: #4a4a4a;
+  --sel-border: #4a4a4a;
+
+  --ok: #4b9c6e;
+  --ok-soft: #16241d;
+
+  --warning: #fbbf24;
+  --warning-soft: #2a2113;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+}

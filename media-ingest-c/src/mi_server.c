@@ -1,0 +1,1454 @@
+#define _GNU_SOURCE
+#include "mi_server.h"
+
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <ctype.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "mi_detect.h"
+#include "mi_download.h"
+#include "mi_hls.h"
+#include "mi_json.h"
+#include "mi_util.h"
+
+/* ------------------------------------------------------------------ */
+/* download model                                                           */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    DOWNLOAD_QUEUED,
+    DOWNLOAD_RUNNING,
+    DOWNLOAD_DONE,
+    DOWNLOAD_FAILED,
+    DOWNLOAD_CANCELLED
+} download_state;
+
+typedef struct {
+    char id[40];
+    char *url;
+    char *out_dir;
+    char *hls_dir;
+    char *prefix;
+    int do_hls;
+    int do_upload;
+    int do_purge;
+    int connections;
+
+    download_state state;
+    double created_at;
+    double started_at;
+    double finished_at;
+
+    int64_t bytes;
+    int64_t total_bytes;
+    int64_t downloaded;
+    /* Live transfer rate, refreshed by the progress callback. */
+    double bytes_per_second;
+    double rate_sample_at;
+    int64_t rate_sample_bytes;
+
+    char *media_kind;
+    char *container;
+    int media_is_video;
+    int media_is_image;
+    int media_is_audio;
+    char *sha256;
+    char *master_playlist;
+    char *error;
+    char **artifact_urls;
+    size_t artifact_count;
+} mi_download_rec;
+
+/* The download's storage settings are snapshotted at creation so a later config
+ * change cannot alter an in-flight download. */
+typedef struct {
+    char *endpoint;
+    char *region;
+    char *bucket;
+    char *access_key;
+    char *secret_key;
+    char *session_token;
+    char *cdn_base;
+    char *cf_token;
+    char *cf_zone;
+    int path_style;
+} storage_snapshot;
+
+struct mi_server {
+    mi_server_config cfg;
+    int listen_fd;
+    volatile sig_atomic_t stop;
+    pthread_mutex_t lock;
+    mi_download_rec **downloads;
+    size_t download_count;
+    pthread_t *threads;
+    size_t thread_count;
+};
+
+/* ------------------------------------------------------------------ */
+/* helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+static void gen_id(char out[40]) {
+    static const char hex[] = "0123456789abcdef";
+    unsigned char raw[16];
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) {
+        if (fread(raw, 1, sizeof raw, f) != sizeof raw) {
+            for (size_t i = 0; i < sizeof raw; i++) raw[i] = (unsigned char)rand();
+        }
+        fclose(f);
+    } else {
+        for (size_t i = 0; i < sizeof raw; i++) raw[i] = (unsigned char)rand();
+    }
+    for (int i = 0; i < 16; i++) {
+        out[i * 2] = hex[raw[i] >> 4];
+        out[i * 2 + 1] = hex[raw[i] & 0xF];
+    }
+    out[32] = '\0';
+}
+
+static const char *download_state_name(download_state s) {
+    switch (s) {
+        case DOWNLOAD_QUEUED: return "queued";
+        case DOWNLOAD_RUNNING: return "running";
+        case DOWNLOAD_DONE: return "done";
+        case DOWNLOAD_FAILED: return "failed";
+        case DOWNLOAD_CANCELLED: return "cancelled";
+    }
+    return "unknown";
+}
+
+/* ------------------------------------------------------------------ */
+/* config                                                              */
+/* ------------------------------------------------------------------ */
+
+void mi_server_config_init(mi_server_config *cfg) {
+    memset(cfg, 0, sizeof *cfg);
+    cfg->host = "127.0.0.1";
+    cfg->port = 8787;
+    cfg->workers = 16;
+    cfg->max_body_bytes = 64 * 1024 * 1024;
+    cfg->work_dir = "./downloads";
+    cfg->cors_origin = 1;
+    cfg->auth_token = NULL;
+    cfg->max_downloads = 200;
+}
+
+/* ------------------------------------------------------------------ */
+/* HTTP plumbing                                                       */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    char *name;
+    char *value;
+} http_header;
+
+typedef struct {
+    char method[8];
+    char path[512];
+    char query[512];
+    char *body;
+    size_t body_len;
+    http_header *headers;
+    size_t header_count;
+} http_request;
+
+static void request_free(http_request *req) {
+    for (size_t i = 0; i < req->header_count; i++) {
+        free(req->headers[i].name);
+        free(req->headers[i].value);
+    }
+    free(req->headers);
+    free(req->body);
+    memset(req, 0, sizeof *req);
+}
+
+static const char *request_header(const http_request *req, const char *name) {
+    for (size_t i = 0; i < req->header_count; i++) {
+        if (!strcasecmp(req->headers[i].name, name)) return req->headers[i].value;
+    }
+    return NULL;
+}
+
+/* Read until we have the full head, then the declared body. Returns 0/-1. */
+static int read_request(int fd, mi_server_config *cfg, http_request *req) {
+    char buf[8192];
+    size_t used = 0;
+    char *head = NULL;
+    size_t head_cap = 0;
+    char *sep = NULL;
+
+    memset(req, 0, sizeof *req);
+    /* Accumulate until "\r\n\r\n". */
+    for (;;) {
+        ssize_t n = recv(fd, buf, sizeof buf, 0);
+        if (n <= 0) return -1;
+        if (used + (size_t)n + 1 > head_cap) {
+            head_cap = (used + (size_t)n + 1) * 2;
+            char *grown = mi_realloc(head, head_cap);
+            if (!grown) {
+                free(head);
+                return -1;
+            }
+            head = grown;
+        }
+        memcpy(head + used, buf, (size_t)n);
+        used += (size_t)n;
+        head[used] = '\0';
+        sep = strstr(head, "\r\n\r\n");
+        if (sep) break;
+        if (used > 64 * 1024) { /* absurd header block */
+            free(head);
+            return -1;
+        }
+    }
+
+    /* Request line. */
+    char *line_end = strstr(head, "\r\n");
+    if (!line_end) {
+        free(head);
+        return -1;
+    }
+    char line[1024];
+    size_t llen = (size_t)(line_end - head);
+    if (llen >= sizeof line) llen = sizeof line - 1;
+    memcpy(line, head, llen);
+    line[llen] = '\0';
+
+    char target[1024] = {0};
+    if (sscanf(line, "%7s %1023s", req->method, target) != 2) {
+        free(head);
+        return -1;
+    }
+    char *q = strchr(target, '?');
+    if (q) {
+        *q = '\0';
+        snprintf(req->query, sizeof req->query, "%s", q + 1);
+    }
+    snprintf(req->path, sizeof req->path, "%s", target);
+
+    /* Headers. */
+    char *p = line_end + 2;
+    while (p && *p && strncmp(p, "\r\n", 2) != 0) {
+        char *eol = strstr(p, "\r\n");
+        if (!eol) break;
+        char *colon = memchr(p, ':', (size_t)(eol - p));
+        if (colon) {
+            http_header h;
+            h.name = mi_strndup(p, (size_t)(colon - p));
+            const char *v = colon + 1;
+            while (v < eol && (*v == ' ' || *v == '\t')) v++;
+            h.value = mi_strndup(v, (size_t)(eol - v));
+            http_header *grown = mi_realloc(req->headers,
+                                            (req->header_count + 1) * sizeof(http_header));
+            if (grown) {
+                req->headers = grown;
+                req->headers[req->header_count++] = h;
+            } else {
+                free(h.name);
+                free(h.value);
+            }
+        }
+        p = eol + 2;
+    }
+
+    /* Body. */
+    const char *cl = request_header(req, "Content-Length");
+    size_t body_len = cl ? (size_t)strtoull(cl, NULL, 10) : 0;
+    if (body_len > (size_t)cfg->max_body_bytes) {
+        free(head);
+        return -2; /* too large */
+    }
+    if (body_len > 0) {
+        req->body = mi_malloc(body_len + 1);
+        if (!req->body) {
+            free(head);
+            return -1;
+        }
+        size_t already = used - (size_t)(sep + 4 - head);
+        size_t copied = already < body_len ? already : body_len;
+        memcpy(req->body, sep + 4, copied);
+        while (copied < body_len) {
+            ssize_t n = recv(fd, req->body + copied, body_len - copied, 0);
+            if (n <= 0) {
+                free(head);
+                return -1;
+            }
+            copied += (size_t)n;
+        }
+        req->body[body_len] = '\0';
+        req->body_len = body_len;
+    }
+    free(head);
+    return 0;
+}
+
+static void send_all(int fd, const char *data, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = send(fd, data + sent, len - sent, MSG_NOSIGNAL);
+        if (n <= 0) return;
+        sent += (size_t)n;
+    }
+}
+
+static void send_response(int fd, int status, const char *status_text,
+                          const char *content_type, const char *body,
+                          size_t body_len, int cors) {
+    char header[1024];
+    int n = snprintf(header, sizeof header,
+                     "HTTP/1.1 %d %s\r\n"
+                     "Content-Type: %s\r\n"
+                     "Content-Length: %zu\r\n"
+                     "Connection: close\r\n"
+                     "%s"
+                     "\r\n",
+                     status, status_text, content_type, body_len,
+                     cors ? "Access-Control-Allow-Origin: *\r\n"
+                            "Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS\r\n"
+                            "Access-Control-Allow-Headers: Content-Type,Authorization\r\n"
+                          : "");
+    send_all(fd, header, (size_t)n);
+    if (body && body_len) send_all(fd, body, body_len);
+}
+
+static void send_json(int fd, int status, const char *status_text,
+                      const mi_json_buf *b, int cors) {
+    send_response(fd, status, status_text, "application/json",
+                  mi_json_data(b), b->len, cors);
+}
+
+static void send_error(int fd, int status, const char *text, const char *message,
+                       int cors) {
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"error\":");
+    mi_json_string(&b, message);
+    mi_json_raw(&b, ",\"status\":");
+    mi_json_int(&b, status);
+    mi_json_raw(&b, "}");
+    send_json(fd, status, text, &b, cors);
+    mi_json_free(&b);
+}
+
+/* ------------------------------------------------------------------ */
+/* download execution                                                       */
+/* ------------------------------------------------------------------ */
+
+static mi_download_rec *download_new(const char *url) {
+    mi_download_rec *j = mi_calloc(1, sizeof *j);
+    if (!j) return NULL;
+    gen_id(j->id);
+    j->url = mi_strdup(url);
+    j->state = DOWNLOAD_QUEUED;
+    j->created_at = (double)time(NULL);
+    j->connections = 8;
+    return j;
+}
+
+static void download_free(mi_download_rec *j) {
+    if (!j) return;
+    free(j->url);
+    free(j->out_dir);
+    free(j->hls_dir);
+    free(j->prefix);
+    free(j->media_kind);
+    free(j->container);
+    free(j->sha256);
+    free(j->master_playlist);
+    free(j->error);
+    for (size_t i = 0; i < j->artifact_count; i++) free(j->artifact_urls[i]);
+    free(j->artifact_urls);
+    free(j);
+}
+
+/* Serialise one download to JSON. Caller holds the server lock. */
+static void download_to_json(const mi_download_rec *j, mi_json_buf *b) {
+    mi_json_raw(b, "{");
+    mi_json_key(b, "id");
+    mi_json_string(b, j->id);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "url");
+    mi_json_string(b, j->url);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "state");
+    mi_json_string(b, download_state_name(j->state));
+    mi_json_raw(b, ",");
+    mi_json_key(b, "progress");
+    mi_json_raw(b, "{");
+    mi_json_key(b, "downloaded_bytes");
+    mi_json_int(b, j->downloaded);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "total_bytes");
+    mi_json_int(b, j->total_bytes);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "bytes_per_second");
+    mi_json_double(b, j->bytes_per_second);
+    mi_json_raw(b, "}");
+    mi_json_raw(b, ",");
+    mi_json_key(b, "media");
+    if (j->media_kind) {
+        mi_json_raw(b, "{");
+        mi_json_key(b, "kind");
+        mi_json_string(b, j->media_kind);
+        mi_json_raw(b, ",");
+        mi_json_key(b, "container");
+        mi_json_string(b, j->container);
+        mi_json_raw(b, ",");
+        mi_json_key(b, "is_video");
+        mi_json_bool(b, j->media_is_video);
+        mi_json_raw(b, ",");
+        mi_json_key(b, "is_image");
+        mi_json_bool(b, j->media_is_image);
+        mi_json_raw(b, ",");
+        mi_json_key(b, "is_audio");
+        mi_json_bool(b, j->media_is_audio);
+        mi_json_raw(b, "}");
+    } else {
+        mi_json_null(b);
+    }
+    mi_json_raw(b, ",");
+    mi_json_key(b, "bytes");
+    mi_json_int(b, j->bytes);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "sha256");
+    mi_json_string(b, j->sha256);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "master_playlist");
+    mi_json_string(b, j->master_playlist);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "artifacts");
+    mi_json_raw(b, "[");
+    for (size_t i = 0; i < j->artifact_count; i++) {
+        if (i) mi_json_raw(b, ",");
+        mi_json_string(b, j->artifact_urls[i]);
+    }
+    mi_json_raw(b, "],");
+    mi_json_key(b, "error");
+    mi_json_string(b, j->error);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "created_at");
+    mi_json_double(b, j->created_at);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "finished_at");
+    mi_json_double(b, j->finished_at);
+    mi_json_raw(b, "}");
+}
+
+/* Emit a media object with its flags and any parsed qualities. */
+static void media_to_json(const mi_media_info *m, mi_json_buf *b) {
+    mi_json_raw(b, "{\"kind\":");
+    mi_json_string(b, mi_kind_name(m->kind));
+    mi_json_raw(b, ",\"container\":");
+    mi_json_string(b, m->container);
+    mi_json_raw(b, ",\"confidence\":");
+    mi_json_double(b, m->confidence);
+    mi_json_raw(b, ",\"is_video\":");
+    mi_json_bool(b, m->is_video);
+    mi_json_raw(b, ",\"is_image\":");
+    mi_json_bool(b, m->is_image);
+    mi_json_raw(b, ",\"is_audio\":");
+    mi_json_bool(b, m->is_audio);
+    mi_json_raw(b, ",\"qualities\":[");
+    for (size_t i = 0; i < m->quality_count; i++) {
+        const mi_quality *q = &m->qualities[i];
+        if (i) mi_json_raw(b, ",");
+        mi_json_raw(b, "{\"width\":");
+        mi_json_int(b, q->width);
+        mi_json_raw(b, ",\"height\":");
+        mi_json_int(b, q->height);
+        mi_json_raw(b, ",\"bandwidth\":");
+        mi_json_int(b, q->bandwidth);
+        mi_json_raw(b, ",\"bytes\":");
+        mi_json_int(b, q->est_bytes);
+        mi_json_raw(b, ",\"codecs\":");
+        mi_json_string(b, q->codecs);
+        mi_json_raw(b, ",\"url\":");
+        mi_json_string(b, q->url);
+        mi_json_raw(b, "}");
+    }
+    mi_json_raw(b, "]}");
+}
+
+static mi_download_rec *find_download(mi_server *srv, const char *id);
+
+/* Content-Type for serving a downloaded file back to a browser. */
+static const char *content_type_for_kind(const char *kind) {
+    if (!kind) return "application/octet-stream";
+    if (!strcmp(kind, "mp4")) return "video/mp4";
+    if (!strcmp(kind, "matroska")) return "video/webm";
+    if (!strcmp(kind, "mpeg-ts")) return "video/mp2t";
+    if (!strcmp(kind, "hls")) return "application/vnd.apple.mpegurl";
+    if (!strcmp(kind, "dash")) return "application/dash+xml";
+    if (!strcmp(kind, "jpeg")) return "image/jpeg";
+    if (!strcmp(kind, "png")) return "image/png";
+    if (!strcmp(kind, "gif")) return "image/gif";
+    if (!strcmp(kind, "webp")) return "image/webp";
+    if (!strcmp(kind, "bmp")) return "image/bmp";
+    if (!strcmp(kind, "tiff")) return "image/tiff";
+    if (!strcmp(kind, "avif")) return "image/avif";
+    if (!strcmp(kind, "heic")) return "image/heic";
+    if (!strcmp(kind, "mp3")) return "audio/mpeg";
+    if (!strcmp(kind, "aac")) return "audio/aac";
+    if (!strcmp(kind, "flac")) return "audio/flac";
+    if (!strcmp(kind, "wav")) return "audio/wav";
+    if (!strcmp(kind, "ogg-audio")) return "audio/ogg";
+    return "application/octet-stream";
+}
+
+/* Stream a downloaded file, honouring a single Range request so a browser can
+ * seek. Video needs ranges; without them playback of anything non-trivial
+ * fails, which is why this is not simply a whole-file send. */
+static void serve_download_content(int fd, const http_request *req,
+                                   mi_server *srv, const char *id, int cors) {
+    pthread_mutex_lock(&srv->lock);
+    mi_download_rec *j = find_download(srv, id);
+    char *path = NULL;
+    char *kind = NULL;
+    if (j && j->state == DOWNLOAD_DONE) {
+        char *dir = j->out_dir ? mi_strdup(j->out_dir)
+                               : mi_asprintf("%s/%s", srv->cfg.work_dir, j->id);
+        path = mi_path_join(dir, "source.bin");
+        kind = mi_strdup(j->media_kind);
+        free(dir);
+    }
+    pthread_mutex_unlock(&srv->lock);
+
+    if (!path) {
+        send_error(fd, 404, "Not Found", "no completed download with that id", cors);
+        return;
+    }
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        send_error(fd, 404, "Not Found", "file is no longer on disk", cors);
+        free(path);
+        free(kind);
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    long total = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (total < 0) total = 0;
+
+    long start = 0;
+    long end = total > 0 ? total - 1 : 0;
+    int is_range = 0;
+    const char *range = request_header(req, "Range");
+    if (range && !strncmp(range, "bytes=", 6)) {
+        const char *spec = range + 6;
+        char *dash = strchr(spec, '-');
+        if (dash) {
+            start = strtol(spec, NULL, 10);
+            if (dash + 1 < spec + strlen(spec)) end = strtol(dash + 1, NULL, 10);
+            if (start < 0 || start > end || start >= total) {
+                fclose(f);
+                free(path);
+                free(kind);
+                send_error(fd, 416, "Range Not Satisfiable", "bad range", cors);
+                return;
+            }
+            if (end >= total) end = total - 1;
+            is_range = 1;
+        }
+    }
+
+    long len = end - start + 1;
+    const char *ctype = content_type_for_kind(kind);
+    char header[512];
+    int hn = snprintf(header, sizeof header,
+                      "HTTP/1.1 %d %s\r\n"
+                      "Content-Type: %s\r\n"
+                      "Content-Length: %ld\r\n"
+                      "Accept-Ranges: bytes\r\n"
+                      "%s"
+                      "Cache-Control: no-store\r\n"
+                      "%s"
+                      "Connection: close\r\n\r\n",
+                      is_range ? 206 : 200, is_range ? "Partial Content" : "OK",
+                      ctype, len,
+                      is_range ? "" : "",
+                      cors ? "Access-Control-Allow-Origin: *\r\n"
+                             "Access-Control-Expose-Headers: Content-Length,Content-Range\r\n"
+                           : "");
+    if (is_range) {
+        hn = snprintf(header, sizeof header,
+                      "HTTP/1.1 206 Partial Content\r\n"
+                      "Content-Type: %s\r\n"
+                      "Content-Length: %ld\r\n"
+                      "Content-Range: bytes %ld-%ld/%ld\r\n"
+                      "Accept-Ranges: bytes\r\n"
+                      "Cache-Control: no-store\r\n"
+                      "%s"
+                      "Connection: close\r\n\r\n",
+                      ctype, len, start, end, total,
+                      cors ? "Access-Control-Allow-Origin: *\r\n"
+                             "Access-Control-Expose-Headers: Content-Length,Content-Range\r\n"
+                           : "");
+    }
+    send_all(fd, header, (size_t)hn);
+
+    if (strcmp(req->method, "HEAD") != 0) {
+        fseek(f, start, SEEK_SET);
+        char buf[64 * 1024];
+        long remaining = len;
+        while (remaining > 0) {
+            size_t want = (size_t)(remaining < (long)sizeof buf ? remaining : (long)sizeof buf);
+            size_t got = fread(buf, 1, want, f);
+            if (got == 0) break;
+            send_all(fd, buf, got);
+            remaining -= (long)got;
+        }
+    }
+    fclose(f);
+    free(path);
+    free(kind);
+}
+
+static storage_snapshot *snapshot_from_headers(const http_request *req) {
+    /* Storage settings travel in headers so secrets never hit the download store
+     * on disk; the snapshot lives only for the life of the process. */
+    storage_snapshot *s = mi_calloc(1, sizeof *s);
+    if (!s) return NULL;
+    const char *h;
+    if ((h = request_header(req, "X-S3-Endpoint"))) s->endpoint = mi_strdup(h);
+    if ((h = request_header(req, "X-S3-Region"))) s->region = mi_strdup(h);
+    if ((h = request_header(req, "X-S3-Bucket"))) s->bucket = mi_strdup(h);
+    if ((h = request_header(req, "X-S3-Access-Key"))) s->access_key = mi_strdup(h);
+    if ((h = request_header(req, "X-S3-Secret-Key"))) s->secret_key = mi_strdup(h);
+    if ((h = request_header(req, "X-S3-Session-Token"))) s->session_token = mi_strdup(h);
+    if ((h = request_header(req, "X-Cdn-Base"))) s->cdn_base = mi_strdup(h);
+    if ((h = request_header(req, "X-CF-Token"))) s->cf_token = mi_strdup(h);
+    if ((h = request_header(req, "X-CF-Zone"))) s->cf_zone = mi_strdup(h);
+    if ((h = request_header(req, "X-S3-Path-Style")))
+        s->path_style = !strcmp(h, "0") ? 0 : 1;
+    else
+        s->path_style = 1;
+    return s;
+}
+
+static void snapshot_free(storage_snapshot *s) {
+    if (!s) return;
+    free(s->endpoint);
+    free(s->region);
+    free(s->bucket);
+    free(s->access_key);
+    free(s->secret_key);
+    free(s->session_token);
+    free(s->cdn_base);
+    free(s->cf_token);
+    free(s->cf_zone);
+    free(s);
+}
+
+/* Upload a directory tree, collecting public URLs. */
+static int upload_dir(const storage_snapshot *snap, const char *dir,
+                      const char *prefix, char ***urls, size_t *n) {
+    mi_s3_config cfg;
+    mi_s3_config_init(&cfg);
+    cfg.endpoint = snap->endpoint ? snap->endpoint : "https://s3.amazonaws.com";
+    cfg.region = snap->region ? snap->region : "us-east-1";
+    cfg.bucket = snap->bucket;
+    cfg.access_key = snap->access_key;
+    cfg.secret_key = snap->secret_key;
+    cfg.session_token = snap->session_token;
+    cfg.path_style = snap->path_style;
+
+    if (!cfg.bucket || !cfg.access_key || !cfg.secret_key) return MI_ERR_ARG;
+
+    /* Walk the tree. */
+    char **files = NULL;
+    size_t count = 0;
+    size_t cap = 0;
+    /* Simple explicit stack of directories. */
+    char **stack = mi_malloc(sizeof(char *));
+    size_t stack_n = 0;
+    stack[stack_n++] = mi_strdup(dir);
+    while (stack_n > 0) {
+        char *cur = stack[--stack_n];
+        DIR *d = opendir(cur);
+        if (d) {
+            struct dirent *ent;
+            while ((ent = readdir(d)) != NULL) {
+                if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+                char *child = mi_path_join(cur, ent->d_name);
+                if (mi_path_is_dir(child)) {
+                    stack = mi_realloc(stack, (stack_n + 1) * sizeof(char *));
+                    stack[stack_n++] = child;
+                } else {
+                    if (count + 1 > cap) {
+                        cap = cap ? cap * 2 : 16;
+                        files = mi_realloc(files, cap * sizeof(char *));
+                    }
+                    files[count++] = child;
+                }
+            }
+            closedir(d);
+        }
+        free(cur);
+    }
+    free(stack);
+
+    int rc = MI_OK;
+    for (size_t i = 0; i < count; i++) {
+        const char *rel = files[i] + strlen(dir);
+        while (*rel == '/') rel++;
+        char *key;
+        if (prefix && *prefix) {
+            size_t pl = strlen(prefix);
+            key = mi_asprintf("%s%s%s", prefix, prefix[pl - 1] == '/' ? "" : "/", rel);
+        } else {
+            key = mi_strdup(rel);
+        }
+        mi_upload_result up;
+        if (mi_s3_upload_file(&cfg, files[i], key, &up) != MI_OK) {
+            rc = MI_ERR;
+            free(key);
+            continue;
+        }
+        char *public_url = mi_storage_public_url(&cfg, snap->cdn_base, key);
+        if (public_url) {
+            char **grown = mi_realloc(*urls, (*n + 1) * sizeof(char *));
+            if (grown) {
+                *urls = grown;
+                (*urls)[*n] = public_url;
+                (*n)++;
+            } else {
+                free(public_url);
+            }
+        }
+        free(key);
+        mi_upload_result_free(&up);
+    }
+    for (size_t i = 0; i < count; i++) free(files[i]);
+    free(files);
+    return rc;
+}
+
+static void *download_worker(void *arg);
+
+/* Progress callback: records bytes done and a smoothed transfer rate on the
+ * record so GET /downloads/{id} can report live speed. Called from the
+ * downloader's worker threads, so it takes the server lock. */
+typedef struct {
+    mi_server *srv;
+    mi_download_rec *rec;
+} progress_ctx;
+
+static void on_download_progress(const mi_progress *p, void *user) {
+    progress_ctx *ctx = user;
+    mi_server *srv = ctx->srv;
+    mi_download_rec *rec = ctx->rec;
+
+    pthread_mutex_lock(&srv->lock);
+    rec->downloaded = p->downloaded_bytes;
+    if (p->total_bytes > 0) rec->total_bytes = p->total_bytes;
+
+    double t = mi_now();
+    if (rec->rate_sample_at == 0) {
+        rec->rate_sample_at = t;
+        rec->rate_sample_bytes = p->downloaded_bytes;
+    } else if (t - rec->rate_sample_at >= 0.5) {
+        double dt = t - rec->rate_sample_at;
+        int64_t db = p->downloaded_bytes - rec->rate_sample_bytes;
+        if (dt > 0 && db >= 0) rec->bytes_per_second = (double)db / dt;
+        rec->rate_sample_at = t;
+        rec->rate_sample_bytes = p->downloaded_bytes;
+    }
+    pthread_mutex_unlock(&srv->lock);
+}
+
+typedef struct {
+    mi_server *srv;
+    mi_download_rec *download;
+    storage_snapshot *snap;
+} download_task;
+
+static void snapshot_free(storage_snapshot *s);
+
+static void *download_thread(void *arg) {
+    download_task *task = arg;
+    download_worker(task);
+    /* The task owns the storage snapshot for the whole run; release it here so
+     * every exit path is covered. */
+    snapshot_free(task->snap);
+    free(task);
+    return NULL;
+}
+
+static void *download_worker(void *arg) {
+    download_task *task = arg;
+    mi_server *srv = task->srv;
+    mi_download_rec *j = task->download;
+
+    pthread_mutex_lock(&srv->lock);
+    j->state = DOWNLOAD_RUNNING;
+    j->started_at = (double)time(NULL);
+    pthread_mutex_unlock(&srv->lock);
+
+    mi_download_config dcfg;
+    mi_download_config_init(&dcfg);
+    dcfg.connections = j->connections;
+    /* Video, image and audio are all valid downloads; only payloads the
+     * detector does not recognise are refused. */
+    dcfg.require_media = 1;
+
+    char *out_dir = j->out_dir ? mi_strdup(j->out_dir)
+                               : mi_asprintf("%s/%s", srv->cfg.work_dir, j->id);
+    mi_mkdir_p(out_dir);
+    char *dest = mi_path_join(out_dir, "source.bin");
+
+    progress_ctx pctx = {.srv = srv, .rec = j};
+    mi_download_result res;
+    int rc = mi_download(&dcfg, j->url, dest, on_download_progress, &pctx, &res);
+    if (rc != MI_OK) {
+        pthread_mutex_lock(&srv->lock);
+        j->state = DOWNLOAD_FAILED;
+        j->bytes_per_second = 0;
+        j->error = mi_strdup("download failed");
+        j->finished_at = (double)time(NULL);
+        pthread_mutex_unlock(&srv->lock);
+        free(dest);
+        free(out_dir);
+        return NULL;
+    }
+
+    char *sha = mi_malloc(65);
+    mi_sha256_file(dest, sha);
+
+    char *hls_dir = j->hls_dir ? mi_strdup(j->hls_dir)
+                               : mi_asprintf("%s/hls", out_dir);
+    char *master = NULL;
+    if (j->do_hls) {
+        mi_hls_config hcfg;
+        mi_hls_config_init(&hcfg);
+        mi_hls_result hres;
+        if (mi_hls_transcode(&hcfg, dest, hls_dir, &hres) == MI_OK) {
+            master = mi_strdup(hres.master_playlist);
+            mi_hls_result_free(&hres);
+        }
+    }
+
+    char **urls = NULL;
+    size_t n_urls = 0;
+    if (j->do_upload && task->snap && task->snap->bucket) {
+        const char *src = j->do_hls ? hls_dir : out_dir;
+        upload_dir(task->snap, src, j->prefix, &urls, &n_urls);
+        if (j->do_purge && n_urls > 0 && task->snap->cf_token && task->snap->cf_zone) {
+            mi_cdn_config cdn;
+            mi_cdn_config_init(&cdn);
+            cdn.api_token = task->snap->cf_token;
+            cdn.zone_id = task->snap->cf_zone;
+            mi_cdn_result cr;
+            mi_cdn_purge_urls(&cdn, (const char *const *)urls, n_urls, &cr);
+            mi_cdn_result_free(&cr);
+        }
+    }
+
+    pthread_mutex_lock(&srv->lock);
+    j->state = DOWNLOAD_DONE;
+    j->bytes_per_second = 0;
+    j->bytes = res.bytes_written;
+    j->downloaded = res.bytes_written;
+    j->total_bytes = res.bytes_written;
+    j->media_kind = mi_strdup(mi_kind_name(res.media.kind));
+    j->container = mi_strdup(res.media.container);
+    j->media_is_video = res.media.is_video;
+    j->media_is_image = res.media.is_image;
+    j->media_is_audio = res.media.is_audio;
+    j->sha256 = sha;
+    j->master_playlist = master;
+    j->artifact_urls = urls;
+    j->artifact_count = n_urls;
+    j->finished_at = (double)time(NULL);
+    pthread_mutex_unlock(&srv->lock);
+
+    mi_download_result_free(&res);
+    free(dest);
+    free(out_dir);
+    free(hls_dir);
+    return NULL;
+}
+
+/* Spawn a detached thread for a download. */
+static int start_download(mi_server *srv, mi_download_rec *j, storage_snapshot *snap) {
+    download_task *task = mi_calloc(1, sizeof *task);
+    if (!task) return MI_ERR_NOMEM;
+    task->srv = srv;
+    task->download = j;
+    task->snap = snap;
+    pthread_t th;
+    if (pthread_create(&th, NULL, download_thread, task) != 0) {
+        free(task);
+        return MI_ERR;
+    }
+    pthread_detach(th);
+    return MI_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* routing                                                             */
+/* ------------------------------------------------------------------ */
+
+static mi_download_rec *find_download(mi_server *srv, const char *id) {
+    for (size_t i = 0; i < srv->download_count; i++) {
+        if (!strcmp(srv->downloads[i]->id, id)) return srv->downloads[i];
+    }
+    return NULL;
+}
+
+static void add_download(mi_server *srv, mi_download_rec *j) {
+    /* Trim oldest finished downloads if over the cap. */
+    while (srv->download_count >= (size_t)srv->cfg.max_downloads) {
+        size_t idx = 0;
+        for (size_t i = 0; i < srv->download_count; i++) {
+            if (srv->downloads[i]->state == DOWNLOAD_DONE || srv->downloads[i]->state == DOWNLOAD_FAILED) {
+                idx = i;
+                break;
+            }
+        }
+        download_free(srv->downloads[idx]);
+        memmove(&srv->downloads[idx], &srv->downloads[idx + 1],
+                (srv->download_count - idx - 1) * sizeof(mi_download_rec *));
+        srv->download_count--;
+    }
+    mi_download_rec **grown = mi_realloc(srv->downloads, (srv->download_count + 1) * sizeof(mi_download_rec *));
+    if (!grown) return;
+    srv->downloads = grown;
+    srv->downloads[srv->download_count++] = j;
+}
+
+static int authorized(mi_server *srv, const http_request *req) {
+    if (!srv->cfg.auth_token) return 1;
+    const char *auth = request_header(req, "Authorization");
+    if (!auth) return 0;
+    if (strncmp(auth, "Bearer ", 7) != 0) return 0;
+    return strcmp(auth + 7, srv->cfg.auth_token) == 0;
+}
+
+static void handle_request(mi_server *srv, int fd, http_request *req) {
+    int cors = srv->cfg.cors_origin;
+
+    if (!strcmp(req->method, "OPTIONS")) {
+        send_response(fd, 204, "No Content", "text/plain", "", 0, cors);
+        return;
+    }
+
+    if (!strcmp(req->path, "/healthz")) {
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"status\":\"ok\"}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        return;
+    }
+
+    if (strncmp(req->path, "/api/", 5) != 0) {
+        send_error(fd, 404, "Not Found", "unknown path", cors);
+        return;
+    }
+
+    if (!authorized(srv, req)) {
+        send_error(fd, 401, "Unauthorized", "missing or invalid bearer token", cors);
+        return;
+    }
+
+    /* GET /api/v1/capabilities */
+    if (!strcmp(req->path, "/api/v1/capabilities") && !strcmp(req->method, "GET")) {
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"version\":\"1\",\"detectors\":[");
+        const char *kinds[] = {"mp4", "matroska", "avi", "flv", "ogg", "asf",
+                               "mpeg-ts", "mpeg-ps", "hls", "dash"};
+        for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+            if (i) mi_json_raw(&b, ",");
+            mi_json_string(&b, kinds[i]);
+        }
+        mi_json_raw(&b, "],\"hls\":true,\"upload\":true,\"purge\":true}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        return;
+    }
+
+    /* POST /api/v1/probe  {url} */
+    if (!strcmp(req->path, "/api/v1/probe") && !strcmp(req->method, "POST")) {
+        mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+        const char *url = mi_json_get_string(in, "url", NULL);
+        if (!url || !*url) {
+            send_error(fd, 400, "Bad Request", "missing or empty 'url'", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        mi_download_config cfg;
+        mi_download_config_init(&cfg);
+        cfg.require_media = 0;
+        mi_download_plan plan;
+        if (mi_probe(&cfg, url, &plan) != MI_OK) {
+            send_error(fd, 502, "Bad Gateway", "probe failed", cors);
+            mi_json_value_free(in);
+            return;
+        }
+
+        /* For HLS/DASH, fetch the manifest body and parse the selectable
+         * renditions so the UI can offer real quality options with real sizes.
+         * `duration_seconds` may be supplied by the caller (it usually knows
+         * the title length); without it sizes stay unknown rather than guessed. */
+        double duration = mi_json_get_number(in, "duration_seconds", 0);
+        if (plan.have_media &&
+            (plan.media.kind == MI_KIND_HLS || plan.media.kind == MI_KIND_DASH)) {
+            char *body = mi_download_fetch_text(&cfg, plan.final_url ? plan.final_url : url,
+                                                512 * 1024);
+            if (body) {
+                size_t blen = strlen(body);
+                if (plan.media.kind == MI_KIND_HLS) {
+                    mi_parse_hls_renditions(body, blen, duration, &plan.media);
+                } else {
+                    mi_parse_dash_renditions(body, blen, duration, &plan.media);
+                }
+                free(body);
+            }
+        }
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"url\":");
+        mi_json_string(&b, url);
+        mi_json_raw(&b, ",\"final_url\":");
+        mi_json_string(&b, plan.final_url);
+        mi_json_raw(&b, ",\"content_type\":");
+        mi_json_string(&b, plan.content_type);
+        mi_json_raw(&b, ",\"total_bytes\":");
+        mi_json_int(&b, plan.total_bytes);
+        mi_json_raw(&b, ",\"accept_ranges\":");
+        mi_json_bool(&b, plan.accept_ranges);
+        mi_json_raw(&b, ",\"media\":");
+        if (plan.have_media) {
+            media_to_json(&plan.media, &b);
+        } else {
+            mi_json_null(&b);
+        }
+        mi_json_raw(&b, "}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        mi_download_plan_free(&plan);
+        mi_json_value_free(in);
+        return;
+    }
+
+    /* POST /api/v1/detect  (raw octet-stream body) */
+    if (!strcmp(req->path, "/api/v1/detect") && !strcmp(req->method, "POST")) {
+        mi_media_info info;
+        mi_detect((const unsigned char *)req->body, req->body_len, &info);
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"kind\":");
+        mi_json_string(&b, mi_kind_name(info.kind));
+        mi_json_raw(&b, ",\"container\":");
+        mi_json_string(&b, info.container);
+        mi_json_raw(&b, ",\"confidence\":");
+        mi_json_double(&b, info.confidence);
+        mi_json_raw(&b, ",\"is_video\":");
+        mi_json_bool(&b, info.is_video);
+        mi_json_raw(&b, "}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        mi_media_info_free(&info);
+        return;
+    }
+
+    /* POST /api/v1/downloads */
+    if (!strcmp(req->path, "/api/v1/downloads") && !strcmp(req->method, "POST")) {
+        mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+        const char *url = mi_json_get_string(in, "url", NULL);
+        if (!url || !*url) {
+            send_error(fd, 400, "Bad Request", "missing or empty 'url'", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        mi_download_rec *j = download_new(url);
+        if (!j) {
+            send_error(fd, 500, "Internal Server Error", "out of memory", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        const char *hls = mi_json_get_string(in, "hls_dir", NULL);
+        const char *prefix = mi_json_get_string(in, "prefix", NULL);
+        if (hls) j->hls_dir = mi_strdup(hls);
+        if (prefix) j->prefix = mi_strdup(prefix);
+        j->do_hls = mi_json_get_bool(in, "hls", 1);
+        j->do_upload = mi_json_get_bool(in, "upload", 0);
+        j->do_purge = mi_json_get_bool(in, "purge", 0);
+        int conns = (int)mi_json_get_int(in, "connections", 8);
+        j->connections = conns > 0 ? conns : 8;
+
+        storage_snapshot *snap = snapshot_from_headers(req);
+
+        pthread_mutex_lock(&srv->lock);
+        add_download(srv, j);
+        pthread_mutex_unlock(&srv->lock);
+
+        if (start_download(srv, j, snap) != MI_OK) {
+            pthread_mutex_lock(&srv->lock);
+            j->state = DOWNLOAD_FAILED;
+            j->error = mi_strdup("could not start worker");
+            pthread_mutex_unlock(&srv->lock);
+            snapshot_free(snap);
+        }
+
+        mi_json_buf b;
+        mi_json_init(&b);
+        download_to_json(j, &b);
+        send_json(fd, 202, "Accepted", &b, cors);
+        mi_json_free(&b);
+        mi_json_value_free(in);
+        return;
+    }
+
+    /* GET /api/v1/downloads */
+    if (!strcmp(req->path, "/api/v1/downloads") && !strcmp(req->method, "GET")) {
+        pthread_mutex_lock(&srv->lock);
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"items\":[");
+        for (size_t i = 0; i < srv->download_count; i++) {
+            if (i) mi_json_raw(&b, ",");
+            download_to_json(srv->downloads[i], &b);
+        }
+        mi_json_raw(&b, "],\"count\":");
+        mi_json_int(&b, (int64_t)srv->download_count);
+        mi_json_raw(&b, "}");
+        pthread_mutex_unlock(&srv->lock);
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        return;
+    }
+
+    /* GET|HEAD /api/v1/downloads/{id}/content — the downloaded bytes. */
+    static const char kContentSuffix[] = "/content";
+    {
+        static const char kDownloadsPrefix2[] = "/api/v1/downloads/";
+        if (!strncmp(req->path, kDownloadsPrefix2, sizeof kDownloadsPrefix2 - 1)) {
+            const char *rest = req->path + (sizeof kDownloadsPrefix2 - 1);
+            size_t rest_len = strlen(rest);
+            size_t suffix_len = sizeof kContentSuffix - 1;
+            if (rest_len > suffix_len &&
+                !strcmp(rest + rest_len - suffix_len, kContentSuffix) &&
+                (!strcmp(req->method, "GET") || !strcmp(req->method, "HEAD"))) {
+                char idbuf[64];
+                size_t idlen = rest_len - suffix_len;
+                if (idlen < sizeof idbuf) {
+                    memcpy(idbuf, rest, idlen);
+                    idbuf[idlen] = '\0';
+                    serve_download_content(fd, req, srv, idbuf, cors);
+                    return;
+                }
+            }
+        }
+    }
+
+    /* GET|DELETE /api/v1/downloads/{id} */
+    /* Derive the offset from the literal so renaming the route cannot leave a
+     * stale length behind (this exact bug shipped once with a hardcoded 13). */
+    static const char kDownloadsPrefix[] = "/api/v1/downloads/";
+    if (!strncmp(req->path, kDownloadsPrefix, sizeof kDownloadsPrefix - 1)) {
+        const char *id = req->path + (sizeof kDownloadsPrefix - 1);
+        pthread_mutex_lock(&srv->lock);
+        mi_download_rec *j = find_download(srv, id);
+        if (!j) {
+            pthread_mutex_unlock(&srv->lock);
+            send_error(fd, 404, "Not Found", "no such download", cors);
+            return;
+        }
+        if (!strcmp(req->method, "GET")) {
+            mi_json_buf b;
+            mi_json_init(&b);
+            download_to_json(j, &b);
+            pthread_mutex_unlock(&srv->lock);
+            send_json(fd, 200, "OK", &b, cors);
+            mi_json_free(&b);
+            return;
+        }
+        if (!strcmp(req->method, "DELETE")) {
+            /* Two distinct intents share this verb:
+             *   ?files=0 (default) -> cancel: stop the transfer, keep the record
+             *   ?files=1           -> delete: stop it, remove it from the list
+             *                         AND delete its artifacts from disk.
+             * Removing files is irreversible, so it is opt-in and reported. */
+            int remove_files = 0;
+            const char *fq = strstr(req->query, "files=");
+            if (fq && fq[6] == '1') remove_files = 1;
+
+            if (remove_files) {
+                if (j->state == DOWNLOAD_RUNNING || j->state == DOWNLOAD_QUEUED) {
+                    j->state = DOWNLOAD_CANCELLED;
+                }
+                char *out_dir = j->out_dir
+                                    ? mi_strdup(j->out_dir)
+                                    : mi_asprintf("%s/%s", srv->cfg.work_dir, j->id);
+
+                /* Drop the record from the list before releasing the lock so a
+                 * concurrent GET cannot resurrect it. */
+                size_t idx = 0;
+                for (size_t i = 0; i < srv->download_count; i++) {
+                    if (srv->downloads[i] == j) {
+                        idx = i;
+                        break;
+                    }
+                }
+                memmove(&srv->downloads[idx], &srv->downloads[idx + 1],
+                        (srv->download_count - idx - 1) * sizeof(mi_download_rec *));
+                srv->download_count--;
+                pthread_mutex_unlock(&srv->lock);
+
+                int removed = mi_rm_rf(out_dir) == 0;
+                free(out_dir);
+                download_free(j);
+
+                mi_json_buf b;
+                mi_json_init(&b);
+                mi_json_raw(&b, "{\"deleted\":true,\"files_removed\":");
+                mi_json_bool(&b, removed);
+                mi_json_raw(&b, "}");
+                send_json(fd, 200, "OK", &b, cors);
+                mi_json_free(&b);
+                return;
+            }
+
+            j->state = DOWNLOAD_CANCELLED;
+            pthread_mutex_unlock(&srv->lock);
+            mi_json_buf b;
+            mi_json_init(&b);
+            mi_json_raw(&b, "{\"cancelled\":true}");
+            send_json(fd, 200, "OK", &b, cors);
+            mi_json_free(&b);
+            return;
+        }
+    }
+
+    /* GET /api/v1/system/storage — real disk + library figures.
+     * Everything here is measured, never estimated: statvfs for the volume and
+     * a walk of the work dir for what this engine has written. */
+    if (!strcmp(req->path, "/api/v1/system/storage") && !strcmp(req->method, "GET")) {
+        const char *work_dir = srv->cfg.work_dir;
+
+        mi_fs_info fs;
+        int have_fs = mi_fs_stats(work_dir, &fs) == 0;
+
+        int64_t library_bytes = 0;
+        int64_t library_files = 0;
+        mi_dir_usage(work_dir, &library_bytes, &library_files);
+
+        /* Finished downloads still resident on disk, for the "on disk" figure. */
+        pthread_mutex_lock(&srv->lock);
+        int64_t completed = 0;
+        int64_t active = 0;
+        int64_t failed = 0;
+        int64_t moved = 0;
+        for (size_t i = 0; i < srv->download_count; i++) {
+            mi_download_rec *d = srv->downloads[i];
+            moved += d->downloaded;
+            if (d->state == DOWNLOAD_DONE) completed++;
+            else if (d->state == DOWNLOAD_FAILED) failed++;
+            else if (d->state == DOWNLOAD_QUEUED || d->state == DOWNLOAD_RUNNING) active++;
+        }
+        pthread_mutex_unlock(&srv->lock);
+
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"work_dir\":");
+        mi_json_string(&b, work_dir);
+        mi_json_raw(&b, ",\"filesystem\":");
+        if (have_fs) {
+            mi_json_raw(&b, "{");
+            mi_json_key(&b, "total_bytes");
+            mi_json_int(&b, fs.total_bytes);
+            mi_json_raw(&b, ",");
+            mi_json_key(&b, "free_bytes");
+            mi_json_int(&b, fs.free_bytes);
+            mi_json_raw(&b, ",");
+            mi_json_key(&b, "avail_bytes");
+            mi_json_int(&b, fs.avail_bytes);
+            mi_json_raw(&b, ",");
+            mi_json_key(&b, "used_bytes");
+            mi_json_int(&b, fs.total_bytes - fs.free_bytes);
+            mi_json_raw(&b, "}");
+        } else {
+            mi_json_null(&b);
+        }
+        mi_json_raw(&b, ",\"library\":{");
+        mi_json_key(&b, "bytes");
+        mi_json_int(&b, library_bytes);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "files");
+        mi_json_int(&b, library_files);
+        mi_json_raw(&b, "},\"downloads\":{");
+        mi_json_key(&b, "completed");
+        mi_json_int(&b, completed);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "active");
+        mi_json_int(&b, active);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "failed");
+        mi_json_int(&b, failed);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "bytes_transferred");
+        mi_json_int(&b, moved);
+        mi_json_raw(&b, "}}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        return;
+    }
+
+    /* GET /api/v1/storage/config  (non-secret view) */
+    if (!strcmp(req->path, "/api/v1/storage/config") && !strcmp(req->method, "GET")) {
+        const char *endpoint = request_header(req, "X-S3-Endpoint");
+        const char *bucket = request_header(req, "X-S3-Bucket");
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"endpoint\":");
+        mi_json_string(&b, endpoint);
+        mi_json_raw(&b, ",\"bucket\":");
+        mi_json_string(&b, bucket);
+        mi_json_raw(&b, ",\"configured\":");
+        mi_json_bool(&b, bucket && request_header(req, "X-S3-Access-Key") != NULL);
+        mi_json_raw(&b, "}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        return;
+    }
+
+    send_error(fd, 404, "Not Found", "unknown endpoint", cors);
+}
+
+/* ------------------------------------------------------------------ */
+/* connection handling                                                 */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    mi_server *srv;
+    int fd;
+} conn_ctx;
+
+static void *conn_thread(void *arg) {
+    conn_ctx *ctx = arg;
+    http_request req;
+    int rc = read_request(ctx->fd, &ctx->srv->cfg, &req);
+    if (rc == 0) {
+        handle_request(ctx->srv, ctx->fd, &req);
+    } else if (rc == -2) {
+        send_error(ctx->fd, 413, "Payload Too Large", "body exceeds limit",
+                   ctx->srv->cfg.cors_origin);
+    }
+    if (rc == 0) request_free(&req);
+    close(ctx->fd);
+    free(ctx);
+    return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* lifecycle                                                           */
+/* ------------------------------------------------------------------ */
+
+mi_server *mi_server_new(const mi_server_config *cfg) {
+    mi_server *srv = mi_calloc(1, sizeof *srv);
+    if (!srv) return NULL;
+    srv->cfg = *cfg;
+    srv->listen_fd = -1;
+    srv->stop = 0;
+    pthread_mutex_init(&srv->lock, NULL);
+    return srv;
+}
+
+void mi_server_free(mi_server *srv) {
+    if (!srv) return;
+    for (size_t i = 0; i < srv->download_count; i++) download_free(srv->downloads[i]);
+    free(srv->downloads);
+    free(srv->threads);
+    if (srv->listen_fd >= 0) close(srv->listen_fd);
+    pthread_mutex_destroy(&srv->lock);
+    free(srv);
+}
+
+int mi_server_listen(mi_server *srv) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return MI_ERR;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)srv->cfg.port);
+    if (!strcmp(srv->cfg.host, "0.0.0.0")) {
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    } else if (inet_pton(AF_INET, srv->cfg.host, &addr.sin_addr) != 1) {
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    }
+    if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+        close(fd);
+        return MI_ERR;
+    }
+    if (listen(fd, 64) != 0) {
+        close(fd);
+        return MI_ERR;
+    }
+    srv->listen_fd = fd;
+    return MI_OK;
+}
+
+int mi_server_port(const mi_server *srv) {
+    struct sockaddr_in addr;
+    socklen_t len = sizeof addr;
+    if (srv->listen_fd < 0) return -1;
+    if (getsockname(srv->listen_fd, (struct sockaddr *)&addr, &len) != 0) return -1;
+    return ntohs(addr.sin_port);
+}
+
+void mi_server_stop(mi_server *srv) {
+    if (srv) srv->stop = 1;
+    if (srv && srv->listen_fd >= 0) shutdown(srv->listen_fd, SHUT_RDWR);
+}
+
+int mi_server_run(mi_server *srv) {
+    while (!srv->stop) {
+        struct sockaddr_in peer;
+        socklen_t plen = sizeof peer;
+        int fd = accept(srv->listen_fd, (struct sockaddr *)&peer, &plen);
+        if (fd < 0) {
+            if (srv->stop) break;
+            if (errno == EINTR) continue;
+            break;
+        }
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        conn_ctx *ctx = mi_calloc(1, sizeof *ctx);
+        if (!ctx) {
+            close(fd);
+            continue;
+        }
+        ctx->srv = srv;
+        ctx->fd = fd;
+        pthread_t th;
+        if (pthread_create(&th, NULL, conn_thread, ctx) != 0) {
+            close(fd);
+            free(ctx);
+            continue;
+        }
+        pthread_detach(th);
+    }
+    return MI_OK;
+}
+
+int mi_server_start(mi_server *srv) {
+    if (mi_server_listen(srv) != MI_OK) return MI_ERR;
+    return mi_server_run(srv);
+}

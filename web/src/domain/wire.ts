@@ -1,0 +1,117 @@
+/**
+ * Wire types: exactly what the C server sends and receives.
+ *
+ * Kept separate from the domain so a server change is absorbed by the
+ * normalizers in one place instead of rippling through the app. Every field is
+ * optional where the server may omit it, because C's JSON writer emits `null`
+ * for unset strings.
+ */
+
+export interface WireQuality {
+  width: number;
+  height: number;
+  bandwidth: number;
+  bytes: number;
+  codecs: string;
+  url: string;
+}
+
+export interface WireMedia {
+  kind: string;
+  container: string;
+  confidence: number;
+  is_video: boolean;
+  is_image?: boolean;
+  is_audio?: boolean;
+  qualities?: WireQuality[];
+}
+
+export interface WireDownloadProgress {
+  downloaded_bytes: number;
+  total_bytes: number;
+  /** Optional: absent on servers that do not report a live rate. */
+  bytes_per_second?: number;
+}
+
+export interface WireDownload {
+  id: string;
+  url: string;
+  state: string;
+  progress: WireDownloadProgress;
+  media: WireMedia | null;
+  bytes: number;
+  sha256: string | null;
+  master_playlist: string | null;
+  artifacts: string[];
+  error: string | null;
+  created_at: number;
+  finished_at: number;
+}
+
+export interface WireDownloadList {
+  items: WireDownload[];
+  count: number;
+}
+
+export interface WireProbeRequest {
+  url: string;
+  duration_seconds?: number;
+}
+
+export interface WireDeleteResult {
+  deleted?: boolean;
+  cancelled?: boolean;
+  files_removed?: boolean;
+}
+
+export interface WireProbeResult {
+  url: string;
+  final_url: string | null;
+  content_type: string | null;
+  total_bytes: number;
+  accept_ranges: boolean;
+  media: WireMedia | null;
+}
+
+export interface WireCapabilities {
+  version: string;
+  detectors: string[];
+  hls: boolean;
+  upload: boolean;
+  purge: boolean;
+}
+
+export interface WireStorageConfig {
+  endpoint: string | null;
+  bucket: string | null;
+  configured: boolean;
+}
+
+export interface WireCreateDownloadRequest {
+  url: string;
+  hls?: boolean;
+  upload?: boolean;
+  purge?: boolean;
+  connections?: number;
+  prefix?: string;
+  hls_dir?: string;
+}
+
+export interface WireError {
+  error: string;
+  status: number;
+}
+
+export interface WireFsStats {
+  total_bytes: number;
+  free_bytes: number;
+  avail_bytes: number;
+  used_bytes: number;
+}
+
+export interface WireSystemStorage {
+  work_dir: string;
+  filesystem: WireFsStats | null;
+  library: { bytes: number; files: number };
+  downloads: { completed: number; active: number; failed: number; bytes_transferred: number };
+}
