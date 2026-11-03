@@ -17,6 +17,8 @@ export interface DownloadsPageProps {
   /** Absolute URL of a finished item's bytes, for row thumbnails. */
   contentUrl?: (id: string) => string;
   onOpen: (id: string) => void;
+  onOpenWith?: (id: string) => void;
+  onShare?: (id: string) => void;
   onCancel?: (id: string) => void;
   onDelete?: (id: string) => void;
   /** Opens the live detail panel for a download. */
@@ -35,6 +37,8 @@ export function DownloadsPage({
   downloads,
   contentUrl,
   onOpen,
+  onOpenWith,
+  onShare,
   onCancel,
   onDelete,
   onInfo,
@@ -77,6 +81,8 @@ export function DownloadsPage({
         downloads={downloads}
         {...(contentUrl ? { contentUrl } : {})}
         onOpen={onOpen}
+        {...(onOpenWith ? { onOpenWith } : {})}
+        {...(onShare ? { onShare } : {})}
         {...(onCancel ? { onCancel } : {})}
         {...(onDelete ? { onDelete } : {})}
         {...(onInfo ? { onInfo } : {})}

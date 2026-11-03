@@ -19,21 +19,26 @@ import type { DownloadView } from '../../hooks/view-models';
 export interface FileViewerProps {
   file: DownloadView;
   src: string;
+  /** The file's own URL, used for the real "Download" action. */
+  downloadUrl: string;
   /** Path shown in the info block. */
   location: string;
   onClose: () => void;
+  /** Hands the file to another app on the device (app chooser where available). */
   onOpenWith: () => void;
-  onReveal: () => void;
+  /** Shares the file to another app or person. */
+  onShare: () => void;
   onDelete: () => void;
 }
 
 export function FileViewer({
   file,
   src,
+  downloadUrl,
   location,
   onClose,
   onOpenWith,
-  onReveal,
+  onShare,
   onDelete,
 }: FileViewerProps) {
   const capability = viewerFor(file);
@@ -94,9 +99,12 @@ export function FileViewer({
           <button type="button" className="btn btn--primary" onClick={onOpenWith}>
             Open with…
           </button>
-          <button type="button" className="btn" onClick={onReveal}>
-            Show in folder
+          <button type="button" className="btn" onClick={onShare}>
+            Share
           </button>
+          <a className="btn" href={downloadUrl} download={file.name}>
+            Download
+          </a>
         </div>
         {file.isVideo && (
           <Note className="viewerfallback__note">
@@ -120,8 +128,9 @@ export function FileViewer({
       kindLabel={file.kindLabel}
       sizeLabel={file.bytesLabel}
       onClose={onClose}
+      downloadUrl={downloadUrl}
       onOpenWith={onOpenWith}
-      onReveal={onReveal}
+      onShare={onShare}
       onDelete={onDelete}
       stage={stage}
     >

@@ -36,7 +36,8 @@ export interface DownloadInfoProps {
   onResume: () => void;
   onCancel: () => void;
   onOpen?: () => void;
-  onReveal?: () => void;
+  /** Hand the file to another app (share sheet / app chooser). */
+  onOpenWith?: () => void;
   onDelete: () => void;
   onClose: () => void;
   /** Save the bytes onto this device. Absent when no tier is usable. */
@@ -77,7 +78,7 @@ export function DownloadInfo({
   onResume,
   onCancel,
   onOpen,
-  onReveal,
+  onOpenWith,
   onDelete,
   onClose,
   onSaveLocally,
@@ -196,9 +197,9 @@ export function DownloadInfo({
                 <IconPlay /> Open
               </Button>
             )}
-            {onReveal && d.isOpenable && (
-              <Button size="sm" variant="ghost" onClick={onReveal}>
-                <IconFolder /> Show in folder
+            {onOpenWith && d.isOpenable && (
+              <Button size="sm" variant="ghost" onClick={onOpenWith}>
+                <IconExternal /> Open with
               </Button>
             )}
           </div>

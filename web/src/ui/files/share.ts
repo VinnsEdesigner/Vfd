@@ -21,7 +21,7 @@ export interface ShareTarget {
   mime: string;
 }
 
-export type ShareMethod = 'files' | 'url' | 'clipboard' | 'cancelled';
+export type ShareMethod = 'files' | 'url' | 'clipboard' | 'cancelled' | 'download';
 
 export interface ShareOutcome {
   method: ShareMethod;
@@ -155,4 +155,82 @@ export async function shareItems(
   }
 
   throw new Error('sharing is not available in this browser');
+}
+
+/* ------------------------------------------------------------------ */
+/* Opening in another app                                             */
+/* ------------------------------------------------------------------ */
+
+export interface OpenWithResult {
+  /**
+   * How the handoff happened:
+   *   files    the bytes went to the chosen app (the real "open with" sheet);
+   *   url      the platform was given the URL to route;
+   *   download the browser took the file instead — no app chooser exists here.
+   */
+  method: 'files' | 'url' | 'download';
+  /** The message the caller can put in front of the user. */
+  message: string;
+}
+
+/**
+ * Hand a file to another app on the device.
+ *
+ * There is no "open with" API on the web, so this is the share sheet with an
+ * explicit intent: sharing the *bytes* is what makes Android offer its app
+ * chooser (VLC, Photos, a messaging app…). When the platform cannot take files,
+ * the file is downloaded instead — which is the same gesture the OS "Open with"
+ * would end in — rather than the button pretending to have launched something.
+ */
+export async function openWithItem(
+  target: ShareTarget,
+  options: ShareOptions = {},
+): Promise<OpenWithResult> {
+  const share = shareApi();
+  const fetcher = options.fetchImpl ?? globalThis.fetch;
+
+  if (share) {
+    // The file tier is what produces an app chooser on Android.
+    const probe = new File([new Blob([])], target.name, { type: target.mime });
+    if (canShareFiles([probe])) {
+      try {
+        const res = await fetcher(target.url);
+        if (res.ok) {
+          const blob = await res.blob();
+          const file = new File([blob], target.name, { type: target.mime || blob.type });
+          if (canShareFiles([file])) {
+            await share({ files: [file], title: target.name });
+            return { method: 'files', message: `Sent ${target.name} to the app you chose.` };
+          }
+        }
+      } catch (e) {
+        if (isAbort(e)) return { method: 'files', message: '' };
+        // Fall through: try the URL tier, then the download.
+      }
+    }
+    try {
+      await share({ title: target.name, url: target.url });
+      return { method: 'url', message: `Shared ${target.name} as a link.` };
+    } catch (e) {
+      if (isAbort(e)) return { method: 'files', message: '' };
+    }
+  }
+
+  triggerDownload(target.url, target.name);
+  return {
+    method: 'download',
+    message: 'This browser has no app picker, so the file was downloaded instead.',
+  };
+}
+
+/** Save a URL under a chosen filename, without leaving the page. */
+export function triggerDownload(url: string, filename: string): void {
+  if (typeof document === 'undefined') return;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }

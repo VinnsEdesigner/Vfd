@@ -1,14 +1,18 @@
 /**
- * StorageLocationPanel — choose where downloads are saved.
+ * StorageLocationPanel — where the engine writes downloads, and how to change it.
  *
- * The choice is functional, not cosmetic: it changes which fields are shown and
- * the path displayed on every file row. `target` is controlled by the parent so
- * it can live in a store and persist.
+ * The directory belongs to the engine, not the browser: it is a real path on the
+ * engine's filesystem, chosen at startup and changeable at runtime. So this panel
+ * reads the engine's current directory and volume, and saving a new one is a real
+ * request the engine validates by writing to it.
+ *
+ * The device/cloud toggle is a display choice — it decides whether file rows show
+ * a local path or an object-storage URL — and is kept client-side.
  */
 
+import { useEffect, useState } from 'react';
 import { Card } from '../primitives/Card';
 import { Field } from '../primitives/Field';
-import { SwitchRow } from '../primitives/SwitchRow';
 import { Button } from '../primitives/Button';
 import { AppIcon } from '../primitives/AppIcon';
 import { AppIconDevice, AppIconCloud } from '../primitives/AppIcons';
@@ -16,20 +20,26 @@ import type { StorageTarget } from '../files';
 
 export interface StorageLocationValue {
   target: StorageTarget;
-  localPath: string;
-  localPartsPath: string;
-  openFolderOnFinish: boolean;
   bucket: string;
   keyPrefix: string;
-  serveViaCdn: boolean;
+}
+
+/** What the engine reports about the directory it writes to. */
+export interface EngineLocationFacts {
+  workDir: string;
+  writable: boolean;
+  writeError: string | null;
+  /** e.g. "/" or "/srv" — null when the engine could not resolve it. */
+  mountPoint: string | null;
+  fsType: string | null;
 }
 
 export interface StorageLocationPanelProps {
   value: StorageLocationValue;
   onChange: (next: StorageLocationValue) => void;
-  onSave?: () => void;
-  onTest?: () => void;
-  /** Which action is in flight, so its button can spin. */
+  /** The engine's current directory, or null while it is still loading. */
+  engineLocation: EngineLocationFacts | null;
+  onSave?: (dir: string) => void;
   busy?: string | null;
   /** Disk figures, already formatted. */
   usage?: { library: string; transferred: string; free: string; usedPercent: number; summary: string };
@@ -38,13 +48,29 @@ export interface StorageLocationPanelProps {
 export function StorageLocationPanel({
   value,
   onChange,
+  engineLocation,
   onSave,
-  onTest,
   busy = null,
   usage,
 }: StorageLocationPanelProps) {
   const isLocal = value.target === 'local';
   const set = (patch: Partial<StorageLocationValue>) => onChange({ ...value, ...patch });
+
+  // The input starts at the engine's current directory and re-syncs whenever the
+  // engine reports a different one (a save that succeeded, or another client).
+  const [dir, setDir] = useState(engineLocation?.workDir ?? '');
+  const engineDir = engineLocation?.workDir ?? '';
+  useEffect(() => {
+    if (engineLocation) setDir(engineLocation.workDir);
+  }, [engineLocation, engineDir]);
+
+  const dirty = engineLocation ? dir.trim() !== engineLocation.workDir : false;
+  const canSave = Boolean(dir.trim()) && dirty;
+
+  const volume =
+    engineLocation && engineLocation.mountPoint
+      ? `${engineLocation.mountPoint}${engineLocation.fsType ? ` (${engineLocation.fsType})` : ''}`
+      : null;
 
   return (
     <>
@@ -67,7 +93,7 @@ export function StorageLocationPanel({
             <span className="choice__body">
               <span className="choice__name">This device</span>
               <span className="choice__desc">
-                Save to the local filesystem. Finished files can be opened in your player.
+                Save to the engine&rsquo;s filesystem. Finished files can be opened in your player.
               </span>
             </span>
             <span className="choice__radio" />
@@ -99,59 +125,49 @@ export function StorageLocationPanel({
             <div className="form" style={{ marginTop: 22 }}>
               <Field
                 label="Download folder"
-                value={value.localPath}
-                onChange={(localPath) => set({ localPath })}
-                hint="Created automatically if it does not exist."
-              />
-              <Field
-                label="Temporary parts folder"
-                value={value.localPartsPath}
-                onChange={(localPartsPath) => set({ localPartsPath })}
-                hint="Ranged downloads are assembled here before moving."
-              />
-            </div>
-            <div style={{ marginTop: 18 }}>
-              <SwitchRow
-                name="Open folder when a download finishes"
-                description="Reveal the file in Finder or Explorer"
-                checked={value.openFolderOnFinish}
-                onChange={(openFolderOnFinish) => set({ openFolderOnFinish })}
+                value={dir}
+                onChange={setDir}
+                hint={
+                  engineLocation
+                    ? engineLocation.writable
+                      ? 'A directory on the machine running the engine. Created if it does not exist.'
+                      : `The engine cannot write here${
+                          engineLocation.writeError ? `: ${engineLocation.writeError}` : ''
+                        }.`
+                    : 'Loading the engine\u2019s directory\u2026'
+                }
               />
             </div>
+            {volume && (
+              <div className="field__hint" style={{ marginTop: 4 }}>
+                On the {volume} volume.
+              </div>
+            )}
           </>
         ) : (
-          <>
-            <div className="form" style={{ marginTop: 22 }}>
-              <Field
-                label="Bucket"
-                value={value.bucket}
-                onChange={(bucket) => set({ bucket })}
-              />
-              <Field
-                label="Key prefix"
-                value={value.keyPrefix}
-                onChange={(keyPrefix) => set({ keyPrefix })}
-              />
-            </div>
-            <div style={{ marginTop: 18 }}>
-              <SwitchRow
-                name="Serve files through the CDN"
-                description="Return a public URL instead of a local path"
-                checked={value.serveViaCdn}
-                onChange={(serveViaCdn) => set({ serveViaCdn })}
-              />
-            </div>
-          </>
+          <div className="form" style={{ marginTop: 22 }}>
+            <Field label="Bucket" value={value.bucket} onChange={(bucket) => set({ bucket })} />
+            <Field
+              label="Key prefix"
+              value={value.keyPrefix}
+              onChange={(keyPrefix) => set({ keyPrefix })}
+              hint="Prefixes the object key for every upload."
+            />
+          </div>
         )}
 
-        <div className="form-actions">
-          <Button variant="primary" loading={busy === 'save-location'} onClick={onSave}>
-            Save location
-          </Button>
-          <Button loading={busy === 'test-location'} onClick={onTest}>
-            Test write access
-          </Button>
-        </div>
+        {isLocal && (
+          <div className="form-actions">
+            <Button
+              variant="primary"
+              loading={busy === 'save-location'}
+              disabled={!canSave}
+              onClick={() => onSave?.(dir.trim())}
+            >
+              Save location
+            </Button>
+          </div>
+        )}
       </Card>
 
       {usage && (

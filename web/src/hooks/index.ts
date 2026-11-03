@@ -3,7 +3,7 @@
  */
 export { MediaApiProvider, useMediaApi } from './provider';
 export { queryKeys } from './query-keys';
-export { useHealth, useCapabilities, useStorageConfig, useSystemStorage } from './use-system';
+export { useHealth, useCapabilities, useStorageConfig, useSystemStorage, useSetStorageLocation } from './use-system';
 export {
   useDownloads,
   useDownload,

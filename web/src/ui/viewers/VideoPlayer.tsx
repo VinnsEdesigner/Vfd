@@ -3,15 +3,15 @@
  *
  * The native controls are hidden so the bar matches the rest of the app, but
  * every affordance the native bar offers is reimplemented: play/pause, seek
- * with a buffered range, skip, volume, speed, picture-in-picture and
- * fullscreen. Keyboard shortcuts follow the conventions people already know.
+ * with a buffered range, skip, volume, speed, picture-in-picture, fullscreen and
+ * rotation. Keyboard shortcuts follow the conventions people already know.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Button } from '../primitives/Button';
 import {
   IconPlay, IconPause, IconVolume, IconVolumeOff, IconSkipBack, IconSkipForward,
-  IconPip, IconFullscreen, IconExitFullscreen,
+  IconPip, IconFullscreen, IconExitFullscreen, IconRotate,
 } from '../primitives/Icons';
 import { useMediaElement, RATES } from './useMediaElement';
 import { formatClock } from './format';
@@ -27,10 +27,30 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [showRate, setShowRate] = useState(false);
+  /** 0 / 90 / 180 / 270 degrees, clockwise. */
+  const [rotation, setRotation] = useState(0);
+  /**
+   * The stage's own size, so a quarter turn can size the video to the box's
+   * transpose. Rotating in place would otherwise clip a landscape video to the
+   * height of a portrait box (or the reverse).
+   */
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null);
 
   useEffect(() => {
     if (state.error) onError?.(state.error);
   }, [state.error, onError]);
+
+  // Track the stage size; a quarter turn swaps the axes it is drawn in.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([entry]) => {
+      const r = entry?.contentRect;
+      if (r) setBox({ w: r.width, h: r.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const toggleFullscreen = useCallback(async () => {
     const el = wrapRef.current;
@@ -44,7 +64,9 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
     }
   }, []);
 
-  // Space toggles, arrows seek and adjust volume, F fullscreen, M mute.
+  const rotate = useCallback(() => setRotation((r) => (r + 90) % 360), []);
+
+  // Space toggles, arrows seek and adjust volume, F fullscreen, M mute, R rotates.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -73,13 +95,16 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
         case 'f':
           void toggleFullscreen();
           break;
+        case 'r':
+          rotate();
+          break;
         default:
           break;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [controls, state.volume, toggleFullscreen]);
+  }, [controls, state.volume, toggleFullscreen, rotate]);
 
   useEffect(() => {
     const onChange = () => setFullscreen(Boolean(document.fullscreenElement));
@@ -100,16 +125,25 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
 
   const pct = state.duration > 0 ? (state.currentTime / state.duration) * 100 : 0;
   const bufPct = state.duration > 0 ? (state.buffered / state.duration) * 100 : 0;
+  // A quarter turn draws the video in the box's transpose, so a landscape clip
+  // is not clipped to a portrait box's height (or the reverse).
+  const quarterTurn = rotation % 180 !== 0;
+  const rotatedStyle: CSSProperties = { transform: `rotate(${rotation}deg)` };
+  if (quarterTurn && box) {
+    rotatedStyle.width = `${box.h}px`;
+    rotatedStyle.height = `${box.w}px`;
+  }
 
   return (
     <>
-      <div className="vplayer" ref={wrapRef}>
+      <div className={rotation === 0 ? 'vplayer' : 'vplayer is-rotated'} ref={wrapRef}>
         <video
           ref={controls.bind}
           className="vplayer__el"
           src={src}
           poster={poster}
           playsInline
+          style={rotatedStyle}
           onClick={controls.toggle}
         />
 
@@ -189,6 +223,15 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
               )}
             </div>
 
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={rotate}
+              aria-label="Rotate 90 degrees"
+              title={rotation === 0 ? 'Rotate' : `Rotated ${rotation}°`}
+            >
+              <IconRotate />
+            </Button>
             <Button variant="ghost" size="sm" onClick={() => void togglePip()} aria-label="Picture in picture">
               <IconPip />
             </Button>

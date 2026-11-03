@@ -36,6 +36,36 @@ describe('system resource', () => {
     expect(caps.upload).toBe(true);
   });
 
+  it('reports the engine\u2019s own build and host facts', async () => {
+    const caps = await api.system.capabilities();
+    expect(caps.engineVersion).toBe('0.1.0');
+    expect(caps.maxBodyBytes).toBe(64 * 1024 * 1024);
+    expect(caps.workers).toBe(16);
+    // ffmpeg is installed in the harness image, so this must be a real true.
+    expect(caps.ffmpeg).toBe(true);
+  });
+
+  it('names the directory the engine actually writes to', async () => {
+    const store = await api.system.systemStorage();
+    expect(store.workDir).toBe(server.workDir);
+    expect(store.writable).toBe(true);
+    expect(store.writeError).toBeNull();
+  });
+
+  it('moves the engine\u2019s directory when asked, and reports the new one', async () => {
+    const target = `${server.workDir}-relocated`;
+    await api.system.setLocation(target);
+    const after = await api.system.systemStorage();
+    expect(after.workDir).toBe(target);
+    // Put it back so later cases see the original layout.
+    await api.system.setLocation(server.workDir);
+  });
+
+  it('refuses a directory it cannot write to', async () => {
+    // A path underneath a regular file can never be a directory.
+    await expect(api.system.setLocation('/etc/hostname/child')).rejects.toBeInstanceOf(ApiError);
+  });
+
   it('fetches the (empty) storage view', async () => {
     const cfg = await api.system.storageConfig();
     expect(cfg.configured).toBe(false);

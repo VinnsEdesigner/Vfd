@@ -105,6 +105,10 @@ typedef struct {
 
 struct mi_server {
     mi_server_config cfg;
+    /* The directory downloads are written to. Defaults to cfg.work_dir but can
+     * be changed at runtime (PUT /api/v1/storage/location), so every path that
+     * derives an item's directory reads this rather than cfg.work_dir. */
+    char *download_dir;
     int listen_fd;
     volatile sig_atomic_t stop;
     pthread_mutex_t lock;
@@ -336,7 +340,7 @@ static void send_response(int fd, int status, const char *status_text,
                      "\r\n",
                      status, status_text, content_type, body_len,
                      cors ? "Access-Control-Allow-Origin: *\r\n"
-                            "Access-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n"
+                            "Access-Control-Allow-Methods: GET,POST,PUT,PATCH,DELETE,OPTIONS\r\n"
                             "Access-Control-Allow-Headers: Content-Type,Authorization\r\n"
                           : "");
     send_all(fd, header, (size_t)n);
@@ -415,6 +419,13 @@ static char *download_display_name(const mi_download_rec *j) {
     return j->display_name ? mi_strdup(j->display_name) : basename_from_url(j->url);
 }
 
+/* The on-disk filename for a record: its name with the detected kind's
+ * extension. Defined below; declared here because the JSON serialiser needs it. */
+static char *source_filename(const mi_download_rec *j);
+
+/* File extension for a detected kind. */
+static const char *extension_for_kind(const char *kind);
+
 /* Serialise one download to JSON. Caller holds the server lock. */
 static void download_to_json(const mi_download_rec *j, mi_json_buf *b) {
     mi_json_raw(b, "{");
@@ -424,6 +435,23 @@ static void download_to_json(const mi_download_rec *j, mi_json_buf *b) {
     mi_json_key(b, "name");
     char *name = download_display_name(j);
     mi_json_string(b, name);
+    mi_json_raw(b, ",");
+    /* The name a client should save under. `name` is the label the user sees and
+     * may have no extension — saving that produces a file no OS can open. This
+     * one is always the display name with an extension: the kind's when the name
+     * lacks one, otherwise the name exactly as given. */
+    mi_json_key(b, "filename");
+    char *fname = NULL;
+    {
+        char *base = download_display_name(j);
+        if (base && !strrchr(base, '.')) {
+            fname = mi_asprintf("%s.%s", base, extension_for_kind(j->media_kind));
+        }
+        if (!fname) fname = base;
+        else free(base);
+    }
+    mi_json_string(b, fname ? fname : name);
+    free(fname);
     free(name);
     mi_json_raw(b, ",");
     mi_json_key(b, "url");
@@ -612,11 +640,18 @@ static char *sanitize_component(const char *in) {
     return out;
 }
 
-/* The on-disk filename for a download: the display name when one is set, else
- * "source", always carrying the detected extension so the OS can still
- * associate a player with it. */
+/* The on-disk filename for a download: its display name when one is set, else
+ * the name derived from the source URL, always carrying the detected extension
+ * so the OS can still associate a player with it. */
 static char *source_filename(const mi_download_rec *j) {
     char *base = j->display_name ? sanitize_component(j->display_name) : NULL;
+    if (!base) {
+        /* No explicit name: derive it from the URL, the same way the UI does, so
+         * the file on disk is called what the list calls it. */
+        char *urlname = basename_from_url(j->url);
+        base = urlname ? sanitize_component(urlname) : NULL;
+        free(urlname);
+    }
     if (!base) base = mi_strdup("source");
     if (!base) return NULL;
     if (strrchr(base, '.')) return base;
@@ -665,11 +700,11 @@ static int apply_rename(mi_download_rec *j, const char *new_name) {
 static int apply_move(mi_server *srv, mi_download_rec *j, const char *folder) {
     char *safe = sanitize_component(folder);
     if (!safe) return MI_ERR_ARG;
-    char *new_dir = mi_asprintf("%s/%s/%s", srv->cfg.work_dir, safe, j->id);
+    char *new_dir = mi_asprintf("%s/%s/%s", srv->download_dir, safe, j->id);
     free(safe);
     if (!new_dir) return MI_ERR_NOMEM;
     char *old_dir = j->out_dir ? mi_strdup(j->out_dir)
-                               : mi_asprintf("%s/%s", srv->cfg.work_dir, j->id);
+                               : mi_asprintf("%s/%s", srv->download_dir, j->id);
     if (!old_dir) {
         free(new_dir);
         return MI_ERR_NOMEM;
@@ -745,7 +780,7 @@ static void serve_download_content(int fd, const http_request *req,
         } else {
             /* Older records predate the extension rename. */
             char *dir = j->out_dir ? mi_strdup(j->out_dir)
-                                   : mi_asprintf("%s/%s", srv->cfg.work_dir, j->id);
+                                   : mi_asprintf("%s/%s", srv->download_dir, j->id);
             path = mi_path_join(dir, "source.bin");
             free(dir);
         }
@@ -1073,7 +1108,7 @@ static void *download_worker(void *arg) {
     dcfg.require_media = 1;
 
     char *out_dir = j->out_dir ? mi_strdup(j->out_dir)
-                               : mi_asprintf("%s/%s", srv->cfg.work_dir, j->id);
+                               : mi_asprintf("%s/%s", srv->download_dir, j->id);
     mi_mkdir_p(out_dir);
     char *dest = mi_path_join(out_dir, "source.bin");
 
@@ -1234,6 +1269,40 @@ static int authorized(mi_server *srv, const http_request *req) {
     return strcmp(auth + 7, srv->cfg.auth_token) == 0;
 }
 
+/* Prove a directory is writable by actually writing to it, rather than trusting
+ * a mode bit or an access(2) check that a read-only mount would still pass.
+ * Creates the directory if needed. Returns 0 when a real byte round-tripped. */
+static int probe_writable(const char *dir, char *err, size_t err_size) {
+    if (!dir || !*dir) {
+        snprintf(err, err_size, "no directory given");
+        return -1;
+    }
+    if (mi_mkdir_p(dir) != 0) {
+        snprintf(err, err_size, "cannot create the directory");
+        return -1;
+    }
+    char *probe = mi_asprintf("%s/.mi-write-probe", dir);
+    if (!probe) {
+        snprintf(err, err_size, "out of memory");
+        return -1;
+    }
+    FILE *f = fopen(probe, "wb");
+    if (!f) {
+        snprintf(err, err_size, "directory is not writable");
+        free(probe);
+        return -1;
+    }
+    int wrote = fputc('x', f);
+    int closed = fclose(f);
+    unlink(probe);
+    free(probe);
+    if (wrote == EOF || closed != 0) {
+        snprintf(err, err_size, "the write did not complete");
+        return -1;
+    }
+    return 0;
+}
+
 static void handle_request(mi_server *srv, int fd, http_request *req) {
     int cors = srv->cfg.cors_origin;
 
@@ -1272,7 +1341,18 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             if (i) mi_json_raw(&b, ",");
             mi_json_string(&b, kinds[i]);
         }
-        mi_json_raw(&b, "],\"hls\":true,\"upload\":true,\"purge\":true}");
+        mi_json_raw(&b, "],\"hls\":true,\"upload\":true,\"purge\":true");
+        mi_json_raw(&b, ",\"max_body_bytes\":");
+        mi_json_int(&b, srv->cfg.max_body_bytes);
+        mi_json_raw(&b, ",\"workers\":");
+        mi_json_int(&b, srv->cfg.workers);
+        mi_json_raw(&b, ",\"engine_version\":");
+        mi_json_string(&b, MI_ENGINE_VERSION);
+        /* Whether transcoding is actually possible is a property of this host,
+         * so it is probed rather than asserted. */
+        mi_json_raw(&b, ",\"ffmpeg\":");
+        mi_json_bool(&b, mi_which("ffmpeg"));
+        mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
         return;
@@ -1581,7 +1661,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                 }
                 char *out_dir = j->out_dir
                                     ? mi_strdup(j->out_dir)
-                                    : mi_asprintf("%s/%s", srv->cfg.work_dir, j->id);
+                                    : mi_asprintf("%s/%s", srv->download_dir, j->id);
 
                 /* Drop the record from the list before releasing the lock so a
                  * concurrent GET cannot resurrect it. */
@@ -1637,7 +1717,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
      * Everything here is measured, never estimated: statvfs for the volume and
      * a walk of the work dir for what this engine has written. */
     if (!strcmp(req->path, "/api/v1/system/storage") && !strcmp(req->method, "GET")) {
-        const char *work_dir = srv->cfg.work_dir;
+        const char *work_dir = srv->download_dir;
 
         mi_fs_info fs;
         int have_fs = mi_fs_stats(work_dir, &fs) == 0;
@@ -1670,10 +1750,20 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                                        fs_type, sizeof fs_type,
                                        fs_device, sizeof fs_device) == 0;
 
+        /* Writability is proven, not assumed: the UI needs to know whether the
+         * engine can really write here before it offers the path as a choice. */
+        char werr[160] = {0};
+        int writable = probe_writable(work_dir, werr, sizeof werr) == 0;
+
         mi_json_buf b;
         mi_json_init(&b);
         mi_json_raw(&b, "{\"work_dir\":");
         mi_json_string(&b, work_dir);
+        mi_json_raw(&b, ",\"writable\":");
+        mi_json_bool(&b, writable);
+        mi_json_raw(&b, ",\"write_error\":");
+        if (!writable) mi_json_string(&b, werr);
+        else mi_json_null(&b);
         mi_json_raw(&b, ",\"mount_point\":");
         if (have_mount && mount_point[0]) mi_json_string(&b, mount_point);
         else mi_json_null(&b);
@@ -1722,6 +1812,51 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, "}}");
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
+        return;
+    }
+
+    /* PUT /api/v1/storage/location  {dir} — choose where downloads are written.
+     * Validated with a real write before it is accepted, so the UI can trust
+     * the answer it gets back. */
+    if (!strcmp(req->path, "/api/v1/storage/location") && !strcmp(req->method, "PUT")) {
+        mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+        const char *dir = mi_json_get_string(in, "dir", NULL);
+        if (!dir || !*dir) {
+            send_error(fd, 400, "Bad Request", "missing or empty 'dir'", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        char err[160] = {0};
+        if (probe_writable(dir, err, sizeof err) != 0) {
+            mi_json_buf eb;
+            mi_json_init(&eb);
+            mi_json_raw(&eb, "{\"error\":");
+            mi_json_string(&eb, err);
+            mi_json_raw(&eb, ",\"dir\":");
+            mi_json_string(&eb, dir);
+            mi_json_raw(&eb, "}");
+            send_json(fd, 422, "Unprocessable Entity", &eb, cors);
+            mi_json_free(&eb);
+            mi_json_value_free(in);
+            return;
+        }
+        /* Nothing references the work dir directly, so a swap is safe: existing
+         * items keep the absolute path recorded in out_dir. */
+        pthread_mutex_lock(&srv->lock);
+        free(srv->download_dir);
+        srv->download_dir = mi_strdup(dir);
+        pthread_mutex_unlock(&srv->lock);
+
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"dir\":");
+        mi_json_string(&b, dir);
+        mi_json_raw(&b, ",\"writable\":");
+        mi_json_bool(&b, 1);
+        mi_json_raw(&b, "}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        mi_json_value_free(in);
         return;
     }
 
@@ -1779,6 +1914,7 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
     mi_server *srv = mi_calloc(1, sizeof *srv);
     if (!srv) return NULL;
     srv->cfg = *cfg;
+    srv->download_dir = mi_strdup(cfg->work_dir ? cfg->work_dir : "./downloads");
     srv->listen_fd = -1;
     srv->stop = 0;
     pthread_mutex_init(&srv->lock, NULL);
@@ -1790,6 +1926,7 @@ void mi_server_free(mi_server *srv) {
     for (size_t i = 0; i < srv->download_count; i++) download_free(srv->downloads[i]);
     free(srv->downloads);
     free(srv->threads);
+    free(srv->download_dir);
     if (srv->listen_fd >= 0) close(srv->listen_fd);
     pthread_mutex_destroy(&srv->lock);
     free(srv);

@@ -11,7 +11,7 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
-import { MediaApiProvider, useDownloads, useCreateDownload, useHealth } from '../src/hooks';
+import { MediaApiProvider, useDownloads, useCreateDownload, useHealth, useSystemStorage, useSetStorageLocation } from '../src/hooks';
 import { useConnectionStore, connectionSettings } from '../src/stores/connection-store';
 import { useStorageStore, effectiveCredentials } from '../src/stores/storage-store';
 import { useDownloadFormStore } from '../src/stores/download-form-store';
@@ -336,6 +336,58 @@ describe('job form store', () => {
     act(() => useDownloadFormStore.getState().setField('url', 'changed'));
     act(() => useDownloadFormStore.getState().reset());
     expect(useDownloadFormStore.getState().url).toBe('');
+  });
+});
+
+describe('system storage hooks', () => {
+  const storageBody = {
+    json: {
+      work_dir: '/srv/media',
+      writable: true,
+      write_error: null,
+      mount_point: '/srv',
+      fs_type: 'ext4',
+      fs_device: '/dev/sdb1',
+      filesystem: { total_bytes: 100, free_bytes: 40, avail_bytes: 30, used_bytes: 60 },
+      library: { bytes: 10, files: 2 },
+      downloads: { completed: 0, active: 0, failed: 0, bytes_transferred: 0 },
+    },
+  };
+
+  it('reports the engine\u2019s directory and that it is writable', async () => {
+    const { fetchImpl } = makeFetch({ 'GET /api/v1/system/storage': () => storageBody });
+    const { result } = renderHook(() => useSystemStorage(), { wrapper: wrapper(fetchImpl) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.workDir).toBe('/srv/media');
+    expect(result.current.data?.writable).toBe(true);
+  });
+
+  it('sends the chosen directory to the engine and refreshes the storage view', async () => {
+    const { fetchImpl, calls } = makeFetch({
+      'GET /api/v1/system/storage': () => storageBody,
+      'PUT /api/v1/storage/location': (init) => {
+        const dir = (JSON.parse(String(init.body)) as { dir: string }).dir;
+        return { json: { dir, writable: true } };
+      },
+    });
+    const { result } = renderHook(() => useSetStorageLocation(), { wrapper: wrapper(fetchImpl) });
+    await act(async () => {
+      await result.current.mutateAsync('/mnt/media');
+    });
+    const put = calls.find((c) => c.method === 'PUT');
+    expect(put?.url).toContain('/api/v1/storage/location');
+    expect(put?.body).toEqual({ dir: '/mnt/media' });
+  });
+
+  it('surfaces a refused directory as an error', async () => {
+    const { fetchImpl } = makeFetch({
+      'PUT /api/v1/storage/location': () => ({
+        status: 422,
+        json: { error: 'directory is not writable', dir: '/nope' },
+      }),
+    });
+    const { result } = renderHook(() => useSetStorageLocation(), { wrapper: wrapper(fetchImpl) });
+    await expect(result.current.mutateAsync('/nope')).rejects.toThrow();
   });
 });
 

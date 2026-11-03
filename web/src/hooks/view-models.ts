@@ -138,6 +138,46 @@ export function extensionOf(name: string): string {
   return name.slice(dot + 1).toLowerCase();
 }
 
+/** The extension the OS should see for a detected media kind. */
+const EXT_BY_KIND: Record<string, string> = {
+  mp4: 'mp4',
+  matroska: 'mkv',
+  avi: 'avi',
+  flv: 'flv',
+  ogg: 'ogv',
+  asf: 'wmv',
+  'mpeg-ts': 'ts',
+  'mpeg-ps': 'mpg',
+  hls: 'm3u8',
+  dash: 'mpd',
+  jpeg: 'jpg',
+  png: 'png',
+  gif: 'gif',
+  webp: 'webp',
+  bmp: 'bmp',
+  tiff: 'tiff',
+  avif: 'avif',
+  heic: 'heic',
+  mp3: 'mp3',
+  aac: 'aac',
+  flac: 'flac',
+  wav: 'wav',
+  'ogg-audio': 'ogg',
+};
+
+/**
+ * A filename an OS can act on: the on-disk name when the engine reported one,
+ * otherwise the display name with the detected kind's extension appended. A
+ * save with no extension produces a file no device knows how to open.
+ */
+export function filenameFor(d: Download): string {
+  const given = d.filename && d.filename.trim() ? d.filename : d.name;
+  const base = given && given.trim() ? given : fileNameFromUrl(d.url);
+  if (extensionOf(base)) return base;
+  const ext = d.media ? EXT_BY_KIND[d.media.kind] : undefined;
+  return ext ? `${base}.${ext}` : base;
+}
+
 /** Filename from a URL, falling back to the last path segment. */
 export function fileNameFromUrl(url: string): string {
   const withoutQuery = url.split('?')[0]?.split('#')[0] ?? url;
@@ -311,6 +351,8 @@ export interface DownloadView {
    *  formatted date. */
   createdAt: number;
   kindLabel: string;
+  /** The filename a save should use, extension included. */
+  filename: string;
   /** Frame size from the container, e.g. "640×360". Null when not stated. */
   resolutionLabel: string | null;
   /** Lowercase file extension from the name, e.g. "mp4" / "png". Used to decide
@@ -366,6 +408,7 @@ export function toDownloadView(d: Download): DownloadView {
     createdAtLabel: formatTimestamp(d.createdAt),
     createdAt: d.createdAt,
     kindLabel: d.media ? formatKind(d.media.kind) : '—',
+    filename: filenameFor(d),
     resolutionLabel:
       d.media && d.media.width > 0 && d.media.height > 0
         ? `${d.media.width}\u00d7${d.media.height}`

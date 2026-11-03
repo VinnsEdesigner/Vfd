@@ -8,15 +8,19 @@
 
 import type { ReactNode } from 'react';
 import { Button } from '../primitives/Button';
-import { IconX, IconExternal, IconFolder, IconTrash } from '../primitives/Icons';
+import { IconX, IconExternal, IconShare, IconTrash } from '../primitives/Icons';
 
 export interface ViewerShellProps {
   name: string;
   kindLabel: string;
   sizeLabel: string;
   onClose: () => void;
+  /** The file's own URL, used for the real "Download" action. */
+  downloadUrl: string;
+  /** Hands the file to another app (share sheet / app chooser). */
   onOpenWith?: () => void;
-  onReveal?: () => void;
+  /** Shares the file to another app or person. */
+  onShare?: () => void;
   onDelete?: () => void;
   /** Rendered under the media: metadata, notes, etc. */
   children: ReactNode;
@@ -29,8 +33,9 @@ export function ViewerShell({
   kindLabel,
   sizeLabel,
   onClose,
+  downloadUrl,
   onOpenWith,
-  onReveal,
+  onShare,
   onDelete,
   stage,
   children,
@@ -55,11 +60,14 @@ export function ViewerShell({
               <IconExternal /> Open with
             </Button>
           )}
-          {onReveal && (
-            <Button size="sm" variant="ghost" onClick={onReveal}>
-              <IconFolder /> Show in folder
+          {onShare && (
+            <Button size="sm" variant="ghost" onClick={onShare}>
+              <IconShare /> Share
             </Button>
           )}
+          <a className="btn btn--sm" href={downloadUrl} download={name}>
+            Download
+          </a>
           {onDelete && (
             <Button size="sm" variant="ghost" icon onClick={onDelete} aria-label="Delete file">
               <IconTrash />

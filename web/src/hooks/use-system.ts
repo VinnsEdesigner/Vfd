@@ -2,7 +2,7 @@
  * System hooks: health, capabilities, storage view.
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMediaApi } from './provider';
 import { queryKeys } from './query-keys';
 
@@ -38,5 +38,17 @@ export function useStorageConfig() {
   return useQuery({
     queryKey: queryKeys.storageConfig(),
     queryFn: ({ signal }) => api.system.storageConfig(signal),
+  });
+}
+
+/** Point the engine at a different download directory. */
+export function useSetStorageLocation() {
+  const { api } = useMediaApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (dir: string) => api.system.setLocation(dir),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.systemStorage() });
+    },
   });
 }

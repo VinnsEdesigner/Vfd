@@ -517,6 +517,7 @@
 .kv {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 .kv__row {
   display: flex;
@@ -525,6 +526,10 @@
   gap: 16px;
   padding: 11px 0;
   border-bottom: 1px solid var(--border);
+  /* A value can be a 64-char hash or an absolute path. Without this the row's
+     automatic minimum size is that string's min-content width, which widens the
+     whole page and pushes controls off a phone screen. */
+  min-width: 0;
 }
 .kv__row:last-child {
   border-bottom: none;
@@ -532,12 +537,14 @@
 .kv__k {
   font-size: 13px;
   color: var(--text-3);
+  flex: 0 0 auto;
 }
 .kv__v {
   font-family: var(--mono);
   font-size: 12.5px;
   text-align: right;
   word-break: break-all;
+  min-width: 0;
 }
 .kv__v--strong {
   color: var(--ok);
@@ -1412,10 +1419,13 @@
   cursor: progress;
 }
 
-/* Full-app boot splash: centred spinner plus the product mark. */
+/* Full-app boot splash: centred spinner plus the product mark. Pinned to the
+   visual viewport so it covers the whole screen even when the page scrolls. */
 .boot {
   position: fixed;
   inset: 0;
+  height: 100vh;
+  height: 100dvh;
   display: grid;
   place-items: center;
   background: var(--bg);
@@ -1907,11 +1917,14 @@
   flex-direction: column;
   gap: 16px;
   min-height: 0;
+  min-width: 0;
 }
 .viewerpage__bar {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 .viewerpage__ident {
   display: flex;
@@ -1939,11 +1952,13 @@
 .viewerpage__stage {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
 .viewerpage__info {
   max-width: 720px;
+  min-width: 0;
 }
 
 /* ------------------------------ Image viewer ------------------------------ */
@@ -3667,6 +3682,17 @@ input[type='range']:focus-visible {
    Storage chooser — what this device can do, and which option to use.
    ========================================================================== */
 
+.storchooser__scrim {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(16, 16, 16, 0.42);
+  z-index: 90;
+  animation: menu-in 0.12s ease;
+}
+
 .storchooser__modal {
   width: min(640px, 100%);
   max-height: calc(100vh - 48px);
@@ -3971,3 +3997,61 @@ input[type='range']:focus-visible {
   line-height: 1.55;
   color: var(--text-3);
 }
+
+/* ==========================================================================
+   Small-viewport overlays.
+
+   The mobile layout lets the page itself scroll (see base.css), so a modal that
+   centres itself in the *viewport* can still land above the fold: the sticky
+   header is already scrolled past, and the scrim is anchored to a document that
+   is taller than the screen. These rules pin the scrim to the viewport and
+   anchor its content to the top, so the dialog and the header are both visible
+   without scrolling. `dvh` is preferred where supported because mobile browser
+   chrome (the URL bar) makes `vh` taller than what is actually on screen.
+   ========================================================================== */
+
+@media (max-width: 860px) {
+  .cdialog__scrim,
+  .fdialog__scrim,
+  .storchooser__scrim {
+    position: fixed;
+    inset: 0;
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 12px;
+  }
+  .storchooser__modal {
+    width: 100%;
+    max-height: none;
+    margin: 0 0 12px;
+    overflow: visible;
+  }
+  .storchooser {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 720px) {
+  /* The player fills the width; a 320px floor pushed its controls off a short
+     screen. The bar wraps so the buttons stay reachable one-handed. */
+  .vplayer {
+    min-height: 200px;
+  }
+  .vplayer__bar {
+    padding: 8px 10px 10px;
+  }
+  .vplayer__row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .vplayer__time {
+    font-size: 11.5px;
+  }
+}
+

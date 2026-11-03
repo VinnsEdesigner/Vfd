@@ -40,6 +40,11 @@ export interface WireDownload {
   id: string;
   /** Display name. Optional: older servers only sent the id and url. */
   name?: string;
+  /**
+   * The name as it exists on disk, extension included. Optional: servers before
+   * this field only sent `name`, which may have no extension.
+   */
+  filename?: string;
   url: string;
   state: string;
   progress: WireDownloadProgress;
@@ -90,6 +95,10 @@ export interface WireCapabilities {
   hls: boolean;
   upload: boolean;
   purge: boolean;
+  max_body_bytes?: number;
+  workers?: number;
+  engine_version?: string;
+  ffmpeg?: boolean;
 }
 
 export interface WireStorageConfig {
@@ -136,10 +145,17 @@ export interface WireFsStats {
 
 export interface WireSystemStorage {
   work_dir: string;
+  writable?: boolean;
+  write_error?: string | null;
   mount_point?: string | null;
   fs_type?: string | null;
   fs_device?: string | null;
   filesystem: WireFsStats | null;
   library: { bytes: number; files: number };
   downloads: { completed: number; active: number; failed: number; bytes_transferred: number };
+}
+
+export interface WireSetLocationResult {
+  dir: string;
+  writable: boolean;
 }

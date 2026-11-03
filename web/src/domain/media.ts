@@ -78,6 +78,11 @@ export interface Download {
   /** What to call this item: the name it was renamed to, or the one derived
    *  from the source URL. Never an id. */
   name: string;
+  /**
+   * The name as it exists on disk, extension included. What a save-to-device
+   * must use: without the extension the OS cannot tell what the file is.
+   */
+  filename: string;
   url: string;
   state: DownloadState;
   progress: DownloadProgress;
@@ -109,11 +114,20 @@ export interface ProbeResult {
 }
 
 export interface Capabilities {
+  /** The API's own version, e.g. "1". */
   version: string;
+  /** The engine build, e.g. "0.1.0". Null when the server predates the field. */
+  engineVersion: string | null;
   detectors: MediaKind[];
   hls: boolean;
   upload: boolean;
   purge: boolean;
+  /** Request body cap the server enforces, in bytes (null when unreported). */
+  maxBodyBytes: number | null;
+  /** Connection workers the server runs (null when unreported). */
+  workers: number | null;
+  /** Whether the host actually has ffmpeg, probed by the engine. */
+  ffmpeg: boolean | null;
 }
 
 export interface StorageConfig {
@@ -189,6 +203,10 @@ export interface DownloadCounts {
 
 export interface SystemStorage {
   workDir: string;
+  /** Whether the engine proved it can write to `workDir`. */
+  writable: boolean;
+  /** Why not, when `writable` is false. */
+  writeError: string | null;
   /** The volume the work dir is on, as the kernel reports it. */
   mountPoint: string | null;
   /** Filesystem type, e.g. "ext4" / "overlay" / "apfs". */

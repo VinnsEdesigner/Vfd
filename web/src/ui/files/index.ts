@@ -9,5 +9,5 @@ export { FileDialog } from './FileDialog';
 export { useFileBrowser } from './useFileBrowser';
 export { useSelection } from './useSelection';
 export { useLongPress } from './useLongPress';
-export { shareItems, isShareSupported, mimeForName } from './share';
-export type { ShareTarget, ShareOutcome, ShareMethod } from './share';
+export { shareItems, isShareSupported, mimeForName, openWithItem, triggerDownload } from './share';
+export type { ShareTarget, ShareOutcome, ShareMethod, OpenWithResult } from './share';

@@ -486,3 +486,27 @@ void mi_amz_timestamps(time_t when, char amz[17], char date[9]) {
     strftime(amz, 17, "%Y%m%dT%H%M%SZ", &tmv);
     strftime(date, 9, "%Y%m%d", &tmv);
 }
+
+int mi_which(const char *name) {
+    if (!name || !*name) return 0;
+    /* An explicit path is checked directly. */
+    if (strchr(name, '/')) return access(name, X_OK) == 0;
+    const char *path = getenv("PATH");
+    if (!path || !*path) return 0;
+    char *copy = mi_strdup(path);
+    if (!copy) return 0;
+    int found = 0;
+    for (char *p = copy; p && *p;) {
+        char *colon = strchr(p, ':');
+        if (colon) *colon = '\0';
+        char *cand = mi_asprintf("%s/%s", *p ? p : ".", name);
+        if (cand) {
+            if (access(cand, X_OK) == 0) found = 1;
+            free(cand);
+        }
+        if (found) break;
+        p = colon ? colon + 1 : NULL;
+    }
+    free(copy);
+    return found;
+}

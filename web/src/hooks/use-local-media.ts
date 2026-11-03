@@ -98,7 +98,7 @@ export function useLocalMedia(): LocalMediaState {
         if (!response.ok) throw new Error(`the engine returned HTTP ${response.status}`);
         if (!response.body) throw new Error('the engine sent no body to stream');
 
-        writer = await s.createWriter({ id: file.id, name: file.name, type: mimeOf(file) });
+        writer = await s.createWriter({ id: file.id, name: file.filename, type: mimeOf(file) });
 
         const total = Number(response.headers.get('Content-Length') ?? 0) || file.bytes;
         const reader = response.body.getReader();
@@ -124,7 +124,7 @@ export function useLocalMedia(): LocalMediaState {
 
         const item = (await s.get(file.id)) ?? {
           id: file.id,
-          name: file.name,
+          name: file.filename,
           type: mimeOf(file),
           size: written,
           tier,

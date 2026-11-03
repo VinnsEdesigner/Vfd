@@ -55,8 +55,32 @@ export function StoragePanel({
   onRemove,
   onPlay,
 }: StoragePanelProps) {
+  // A remembered folder that the browser no longer lets us write through. This
+  // is the common case after the app is rebuilt: the handle survives in
+  // IndexedDB but the permission drops to "prompt", so the folder looks empty
+  // until access is granted again. Saying so is the difference between "your
+  // files are gone" and "one tap to see them".
+  const needsRegrant =
+    Boolean(directoryName) && directoryPermission !== 'granted' && Boolean(onRegrant);
+
   return (
     <>
+      {needsRegrant && (
+        <Card
+          title="Your folder needs permission again"
+          subtitle="The browser revoked access — the files are still on disk"
+        >
+          <p className="muted" style={{ marginBottom: 12 }}>
+            <strong>{directoryName}</strong> was remembered, but this build has not been
+            granted access yet, so its contents cannot be listed. Granting access reads the
+            folder as it is — nothing is moved or rewritten.
+          </p>
+          <Button size="sm" variant="primary" onClick={onRegrant} loading={busy}>
+            Grant access to {directoryName}
+          </Button>
+        </Card>
+      )}
+
       {/* First, because it is the actual answer to "where do my downloads go?" —
           the browser options below are only a second copy. */}
       {engineStorage && (

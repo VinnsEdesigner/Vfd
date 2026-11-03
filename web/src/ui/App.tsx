@@ -43,6 +43,8 @@ import {
   useDownloads,
   useDownloadViewsWithPipeline,
   useSystemStorage,
+  useCapabilities,
+  useSetStorageLocation,
   useCreateDownload,
   useCancelDownload,
   useRemoveDownload,
@@ -69,7 +71,7 @@ import { DownloadInfo } from './downloads/DownloadInfo';
 import { StorageChooser } from './storage/StorageChooser';
 import { StoragePanel } from './storage/StoragePanel';
 import type { EngineStorageFacts } from './storage/EngineStorageNotice';
-import { shareItems, mimeForName } from './files';
+import { shareItems, openWithItem, mimeForName } from './files';
 import {
   formatBytes,
   toQualityOptions,
@@ -88,7 +90,6 @@ const VIEW_TITLES: Record<ViewId, [string, string]> = {
   settings: ['Settings', 'Connection, storage location and engine capabilities'],
 };
 
-const DEFAULT_LOCAL_PATH = '/Users/you/Downloads/ingest';
 const DEFAULT_CLOUD_PATH = 's3://vyzorix-media/downloads';
 const LOCATION_KEY = 'ingest.storage-location';
 const THEME_KEY = 'ingest.theme';
@@ -118,12 +119,8 @@ function loadTheme(): Theme {
 
 const DEFAULT_LOCATION: StorageLocationValue = {
   target: 'local',
-  localPath: DEFAULT_LOCAL_PATH,
-  localPartsPath: '.parts',
-  openFolderOnFinish: true,
   bucket: 'vyzorix-media',
   keyPrefix: 'downloads/',
-  serveViaCdn: true,
 };
 
 function loadLocation(): StorageLocationValue {
@@ -203,6 +200,9 @@ export function App({ initialView = 'overview' }: AppProps) {
 
   const downloadsQuery = useDownloads();
   const systemStorageQuery = useSystemStorage();
+  const capabilitiesQuery = useCapabilities();
+  const capabilities = capabilitiesQuery.data ?? null;
+  const setStorageLocation = useSetStorageLocation();
   const createDownload = useCreateDownload();
   const cancelDownload = useCancelDownload();
   const probeUrl = useProbe();
@@ -403,6 +403,48 @@ export function App({ initialView = 'overview' }: AppProps) {
     [api.client.transport, toast],
   );
 
+  /**
+   * Hand a file to another app on the device. There is no web "open with" API,
+   * so this is the share sheet carrying the bytes — which is what makes Android
+   * offer its app chooser. When the platform cannot take files the file is
+   * downloaded instead, and the toast says so rather than claiming a handoff.
+   */
+  const openWithFile = useCallback(
+    (file: DownloadView) => {
+      const target = {
+        id: file.id,
+        name: file.name,
+        url: api.client.transport.resolve(
+          `/api/v1/downloads/${encodeURIComponent(file.id)}/content`,
+        ),
+        mime: mimeForName(file.name),
+      };
+      void openWithItem(target)
+        .then((result) => {
+          if (result.method === 'files' && result.message === '') return; // cancelled
+          toast.success('Open with', result.message);
+        })
+        .catch((e: unknown) => toast.error('Could not open', describeError(e)));
+    },
+    [api.client.transport, toast],
+  );
+
+  /** Row-menu variants of the viewer's open/share actions, keyed by id. */
+  const openWithById = useCallback(
+    (id: string) => {
+      const file = allViews.find((d) => d.id === id);
+      if (file) openWithFile(file);
+    },
+    [allViews, openWithFile],
+  );
+  const shareById = useCallback(
+    (id: string) => {
+      const file = allViews.find((d) => d.id === id);
+      if (file) shareFiles([file]);
+    },
+    [allViews, shareFiles],
+  );
+
   /** Move into a library folder. Reversible, so no confirmation. */
   const moveFiles = useCallback(
     (ids: readonly string[], folder: string) => {
@@ -471,7 +513,6 @@ export function App({ initialView = 'overview' }: AppProps) {
     endpoint: credentials.endpoint ?? '',
     region: credentials.region ?? '',
     bucket: credentials.bucket ?? '',
-    keyPrefix: '',
     accessKey: credentials.accessKey ?? '',
     secretKey: credentials.secretKey ?? '',
     cdnBase: credentials.cdnBase ?? '',
@@ -479,7 +520,8 @@ export function App({ initialView = 'overview' }: AppProps) {
     cfToken: credentials.cfToken ?? '',
   };
 
-  const localPath = location.target === 'local' ? location.localPath : DEFAULT_LOCAL_PATH;
+  // The engine owns the download directory; the row label shows its real path.
+  const localPath = systemStorage?.workDir ?? '';
   const cloudPath =
     location.target === 'cloud' ? `s3://${location.bucket}/${location.keyPrefix}` : DEFAULT_CLOUD_PATH;
 
@@ -742,7 +784,7 @@ export function App({ initialView = 'overview' }: AppProps) {
   return (
     <>
       {!storagePromptDone && localStore.environment && !localStore.choice && (
-        <div className="cdialog__scrim">
+        <div className="storchooser__scrim">
           <div className="storchooser__modal">
             <StorageChooser
               environment={localStore.environment}
@@ -782,13 +824,7 @@ export function App({ initialView = 'overview' }: AppProps) {
             setInfoId(null);
             setOpenFileId(infoDownload.id);
           }}
-          onReveal={() =>
-            toast.info(
-              location.target === 'local'
-                ? 'Revealed in file manager'
-                : 'Opened bucket in storage console',
-            )
-          }
+          onOpenWith={() => void openWithFile(infoDownload)}
           onDelete={() => {
             setInfoId(null);
             deleteFile(infoDownload.id);
@@ -856,18 +892,13 @@ export function App({ initialView = 'overview' }: AppProps) {
             src={api.client.transport.resolve(
               `/api/v1/downloads/${encodeURIComponent(openFile.id)}/content`,
             )}
+            downloadUrl={api.client.transport.resolve(
+              `/api/v1/downloads/${encodeURIComponent(openFile.id)}/content`,
+            )}
             location={location.target === 'local' ? localPath : cloudPath}
             onClose={() => setOpenFileId(null)}
-            onOpenWith={() =>
-              toast.info(`Opening ${openFile.name}`, 'Handing off to your default player.')
-            }
-            onReveal={() =>
-              toast.info(
-                location.target === 'local'
-                  ? 'Revealed in file manager'
-                  : 'Opened bucket in storage console',
-              )
-            }
+            onOpenWith={() => void openWithFile(openFile)}
+            onShare={() => shareFiles([openFile])}
             onDelete={() => {
               deleteFile(openFile.id);
               setOpenFileId(null);
@@ -887,6 +918,8 @@ export function App({ initialView = 'overview' }: AppProps) {
             disk={disk}
             onViewAll={() => setView('downloads')}
             onSelect={setOpenFileId}
+            onOpenWith={openWithById}
+            onShare={shareById}
             contentUrl={(id) =>
               api.client.transport.resolve(`/api/v1/downloads/${encodeURIComponent(id)}/content`)
             }
@@ -900,6 +933,8 @@ export function App({ initialView = 'overview' }: AppProps) {
             <DownloadsPage
               downloads={allViews}
               onOpen={setOpenFileId}
+              onOpenWith={openWithById}
+              onShare={shareById}
               onCancel={cancelDownloadById}
               onDelete={deleteFile}
               onInfo={setInfoId}
@@ -1019,10 +1054,6 @@ export function App({ initialView = 'overview' }: AppProps) {
             onAuthTokenChange={setAuthToken}
             darkTheme={theme === 'dark'}
             onDarkThemeChange={() => toggleTheme()}
-            autoStart
-            onAutoStartChange={() => {}}
-            verifyChecksums
-            onVerifyChecksumsChange={() => {}}
             location={location}
             onLocationChange={setLocation}
             downloads={allViews}
@@ -1042,9 +1073,16 @@ export function App({ initialView = 'overview' }: AppProps) {
                 engineStorage={engineStorage}
                 busy={busy === 'storage'}
                 onChoose={chooseStorage}
-                onRegrant={() => void localStore.regrantDirectory()}
+                onRegrant={() =>
+                  void localStore.regrantDirectory().then(() => localMedia.refresh())
+                }
                 onRequestPersistence={() => void localStore.requestPersistence()}
-                onRefresh={() => void refreshLocal()}
+                onRefresh={() => {
+                  // Re-detect the device *and* re-read what is stored: after a
+                  // rebuild or a re-grant the folder's contents are what changed.
+                  void refreshLocal();
+                  void localMedia.refresh();
+                }}
                 onRemove={(id) => void removeLocal(id)}
                 onPlay={(id) => void playLocal(id)}
               />
@@ -1061,29 +1099,26 @@ export function App({ initialView = 'overview' }: AppProps) {
                 { success: 'Settings saved', failure: 'Could not reach that endpoint' },
               )
             }
-            onSaveLocation={() =>
+            onSaveLocation={(dir) =>
               void runAction(
                 'save-location',
                 async () => {
+                  await setStorageLocation.mutateAsync(dir);
                   persistLocation(location);
                 },
                 { success: 'Storage location saved', failure: 'Could not save the location' },
               )
             }
-            onTestLocation={() =>
-              void runAction(
-                'test-location',
-                async () => {
-                  // A real write check: the engine reports the volume it can
-                  // actually write to, so a failure here is meaningful.
-                  const stats = await api.client.transport.request<{ work_dir?: string }>({
-                    method: 'GET',
-                    path: '/api/v1/system/storage',
-                  });
-                  if (!stats?.work_dir) throw new Error('The engine did not report a writable directory');
-                },
-                { success: 'Write access confirmed', failure: 'Write access failed' },
-              )
+            engineLocation={
+              systemStorage
+                ? {
+                    workDir: systemStorage.workDir,
+                    writable: systemStorage.writable,
+                    writeError: systemStorage.writeError,
+                    mountPoint: systemStorage.mountPoint,
+                    fsType: systemStorage.fsType,
+                  }
+                : null
             }
             busy={busy}
             usage={
@@ -1098,13 +1133,22 @@ export function App({ initialView = 'overview' }: AppProps) {
                 : undefined
             }
             engine={{
-              engineVersion: 'media-ingest 0.1.0',
-              ffmpeg: '7.1.5 · libx264',
-              hls: true,
-              upload: true,
-              purge: true,
-              maxBody: '64 MB',
-              workers: '16',
+              engineVersion: capabilities?.engineVersion
+                ? `media-ingest ${capabilities.engineVersion}`
+                : 'unknown',
+              ffmpeg: capabilities
+                ? capabilities.ffmpeg
+                  ? 'available'
+                  : 'not installed'
+                : 'unknown',
+              hls: capabilities?.hls ?? false,
+              upload: capabilities?.upload ?? false,
+              purge: capabilities?.purge ?? false,
+              maxBody:
+                capabilities?.maxBodyBytes != null
+                  ? formatBytes(capabilities.maxBodyBytes)
+                  : 'unknown',
+              workers: capabilities?.workers != null ? String(capabilities.workers) : 'unknown',
             }}
           />
           ))}

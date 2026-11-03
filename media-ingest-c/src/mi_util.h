@@ -19,6 +19,10 @@ enum {
     MI_ERR_ABORTED = -6
 };
 
+/* The engine's own version. Reported by `--help` and by the API, so it lives in
+ * one place rather than being spelled out in each. */
+#define MI_ENGINE_VERSION "0.1.0"
+
 /* Log levels, controlled by mi_log_set_level(). */
 typedef enum { MI_LOG_QUIET = 0, MI_LOG_ERROR, MI_LOG_INFO, MI_LOG_DEBUG } mi_log_level;
 
@@ -106,6 +110,10 @@ int mi_mount_info(const char *path, char *mount_point, size_t mp_size,
 /* Recursively total the regular files under `path`.
  * Returns 0 and writes the byte total and file count. */
 int mi_dir_usage(const char *path, int64_t *total_bytes, int64_t *file_count);
+
+/* Whether `name` resolves to an executable on PATH (or an explicit path).
+ * Returns 1 when found. */
+int mi_which(const char *name);
 
 /* Monotonic clock in seconds. */
 double mi_now(void);

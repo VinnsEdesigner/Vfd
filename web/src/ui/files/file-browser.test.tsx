@@ -13,7 +13,7 @@ import { FileLibrary } from './FileLibrary';
 import { FileToolbar } from './FileToolbar';
 import { useFileBrowser } from './useFileBrowser';
 import { renderHook } from '@testing-library/react';
-import { shareItems, mimeForName } from './share';
+import { shareItems, openWithItem, mimeForName } from './share';
 import { useFileBrowserStore } from '../../stores/file-browser-store';
 import type { DownloadView } from '../../hooks/view-models';
 
@@ -334,5 +334,71 @@ describe('mimeForName', () => {
     expect(mimeForName('a.PNG')).toBe('image/png');
     expect(mimeForName('a.flac')).toBe('audio/flac');
     expect(mimeForName('noext')).toBe('application/octet-stream');
+  });
+});
+
+describe('openWithItem', () => {
+  it('hands the bytes to the platform so the OS can show an app chooser', async () => {
+    const share = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { share, canShare: () => true, clipboard: undefined });
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+    );
+
+    const result = await openWithItem(
+      { id: 'a', name: 'clip.mp4', url: 'http://x/a', mime: 'video/mp4' },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+
+    expect(result.method).toBe('files');
+    const data = share.mock.calls[0]?.[0] as { files: File[] };
+    expect(data.files[0]?.name).toBe('clip.mp4');
+  });
+
+  it('falls back to a URL handoff when the platform will not take files', async () => {
+    const share = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { share, canShare: () => false });
+    const result = await openWithItem({
+      id: 'a',
+      name: 'clip.mp4',
+      url: 'http://x/a',
+      mime: 'video/mp4',
+    });
+    expect(result.method).toBe('url');
+  });
+
+  it('downloads the file when there is no share API at all', async () => {
+    vi.stubGlobal('navigator', { clipboard: undefined });
+    const click = vi.fn();
+    const realCreate = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = realCreate(tag) as HTMLElement;
+      if (tag === 'a') (el as HTMLAnchorElement).click = click;
+      return el;
+    });
+
+    const result = await openWithItem({
+      id: 'a',
+      name: 'clip.mp4',
+      url: 'http://x/a',
+      mime: 'video/mp4',
+    });
+
+    expect(result.method).toBe('download');
+    expect(click).toHaveBeenCalled();
+    expect(result.message).toMatch(/downloaded/i);
+  });
+
+  it('treats a cancelled picker as not-an-error', async () => {
+    const share = vi.fn().mockRejectedValue(new DOMException('abort', 'AbortError'));
+    vi.stubGlobal('navigator', { share, canShare: () => false });
+    const result = await openWithItem({
+      id: 'a',
+      name: 'clip.mp4',
+      url: 'http://x/a',
+      mime: 'video/mp4',
+    });
+    // An empty message is how the caller knows to stay silent.
+    expect(result.message).toBe('');
   });
 });

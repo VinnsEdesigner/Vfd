@@ -23,6 +23,8 @@ const serverBin = join(repoRoot, 'media-ingest-c', 'build', 'media-ingest');
 export interface ServerHandle {
   baseUrl: string;
   port: number;
+  /** The directory the engine was told to write downloads into. */
+  workDir: string;
   stop: () => Promise<void>;
 }
 
@@ -52,6 +54,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     port,
+    workDir,
     stop: async () => {
       await new Promise<void>((resolveStop) => {
         child.once('exit', () => resolveStop());

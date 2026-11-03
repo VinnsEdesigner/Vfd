@@ -23,7 +23,6 @@ export interface StorageCredentialsValue {
   endpoint: string;
   region: string;
   bucket: string;
-  keyPrefix: string;
   accessKey: string;
   secretKey: string;
   cdnBase: string;
@@ -173,11 +172,6 @@ export function StoragePage(props: StoragePageProps) {
             />
             <Field label="Region" value={credentials.region} onChange={(region) => set({ region })} />
             <Field label="Bucket" value={credentials.bucket} onChange={(bucket) => set({ bucket })} />
-            <Field
-              label="Key prefix"
-              value={credentials.keyPrefix}
-              onChange={(keyPrefix) => set({ keyPrefix })}
-            />
             <SecretField
               label="Access key ID"
               value={credentials.accessKey}

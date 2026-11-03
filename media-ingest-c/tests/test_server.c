@@ -190,7 +190,71 @@ static void test_http_api(void) {
     resp = http_call(port, "GET", "/api/v1/capabilities", NULL, "testtoken", &status);
     CHECK(status == 200, "capabilities 200");
     CHECK(strstr(body_of(resp), "\"hls\":true") != NULL, "capabilities body");
+    /* The limits are the server's real ones, not constants the UI hardcodes. */
+    CHECK(strstr(body_of(resp), "\"max_body_bytes\":67108864") != NULL,
+          "capabilities reports the real body cap");
+    CHECK(strstr(body_of(resp), "\"workers\":16") != NULL,
+          "capabilities reports the real worker count");
+    CHECK(strstr(body_of(resp), "\"engine_version\":\"0.1.0\"") != NULL,
+          "capabilities reports the engine version");
+    CHECK(strstr(body_of(resp), "\"ffmpeg\":") != NULL,
+          "capabilities reports ffmpeg availability");
     free(resp);
+
+    /* system/storage names the real directory and proves it is writable */
+    resp = http_call(port, "GET", "/api/v1/system/storage", NULL, "testtoken", &status);
+    CHECK(status == 200, "system/storage 200");
+    CHECK(strstr(body_of(resp), "\"writable\":true") != NULL,
+          "system/storage reports writable");
+    CHECK(strstr(body_of(resp), cfg.work_dir) != NULL,
+          "system/storage names the engine's directory");
+    free(resp);
+
+    /* PUT storage/location moves the engine's directory, and the change is
+     * visible on the next read rather than only in the response. */
+    {
+        const char *newdir = "/tmp/mi-test-relocated";
+        char body[256];
+        snprintf(body, sizeof body, "{\"dir\":\"%s\"}", newdir);
+        resp = http_call(port, "PUT", "/api/v1/storage/location", body, "testtoken", &status);
+        CHECK(status == 200, "set location 200");
+        CHECK(strstr(body_of(resp), newdir) != NULL, "set location echoes the dir");
+        free(resp);
+        resp = http_call(port, "GET", "/api/v1/system/storage", NULL, "testtoken", &status);
+        CHECK(strstr(body_of(resp), newdir) != NULL,
+              "the new directory is reported after the change");
+        free(resp);
+    }
+
+    /* A directory that cannot be created is refused, not accepted on faith. */
+    {
+        const char *f = "/tmp/mi-test-not-a-dir";
+        FILE *fp = fopen(f, "wb");
+        if (fp) { fputs("x", fp); fclose(fp); }
+        char body[256];
+        /* A path *underneath a regular file* can never be a directory. */
+        snprintf(body, sizeof body, "{\"dir\":\"%s/child\"}", f);
+        resp = http_call(port, "PUT", "/api/v1/storage/location", body, "testtoken", &status);
+        CHECK(status == 422, "unwritable location -> 422");
+        free(resp);
+        unlink(f);
+    }
+
+    /* An empty directory is a bad request, not a silent reset. */
+    resp = http_call(port, "PUT", "/api/v1/storage/location", "{\"dir\":\"\"}",
+                     "testtoken", &status);
+    CHECK(status == 400, "empty location -> 400");
+    free(resp);
+
+    /* Move the directory back so the download/move assertions below still see
+     * the layout they expect. */
+    {
+        char body[256];
+        snprintf(body, sizeof body, "{\"dir\":\"%s\"}", cfg.work_dir);
+        resp = http_call(port, "PUT", "/api/v1/storage/location", body, "testtoken", &status);
+        CHECK(status == 200, "location restored");
+        free(resp);
+    }
 
     /* empty download list */
     resp = http_call(port, "GET", "/api/v1/downloads", NULL, "testtoken", &status);
@@ -289,6 +353,41 @@ static void test_http_api(void) {
         CHECK(status == 200, "get download 200");
         CHECK(strstr(body_of(resp), "\"name\":\"nope.mp4\"") != NULL,
               "download name derived from url");
+        /* `filename` is what a client saves under. With no file on disk yet it
+         * falls back to the display name, but the field is always present so a
+         * client never has to guess. */
+        CHECK(strstr(body_of(resp), "\"filename\":\"nope.mp4\"") != NULL,
+              "filename is reported even before the bytes land");
+        free(resp);
+    }
+
+    /* Renaming drops the extension from the display name, but `filename` always
+     * has one: the kind's extension when it is known, `.bin` when it is not
+     * (this record failed, so nothing was detected). A save is therefore always
+     * openable rather than extension-less. */
+    {
+        char path[128];
+        snprintf(path, sizeof path, "/api/v1/downloads/%s", idbuf);
+        resp = http_call(port, "PATCH", path, "{\"name\":\"holiday clip\"}",
+                         "testtoken", &status);
+        CHECK(status == 200, "rename without extension 200");
+        CHECK(strstr(body_of(resp), "\"name\":\"holiday clip\"") != NULL,
+              "display name drops the extension");
+        CHECK(strstr(body_of(resp), "\"filename\":\"holiday clip.bin\"") != NULL,
+              "filename gains an extension even when the kind is unknown");
+        free(resp);
+    }
+
+    /* A name that already carries an extension is preserved exactly, so a
+     * deliberate ".mp4" is never rewritten to ".bin". */
+    {
+        char path[128];
+        snprintf(path, sizeof path, "/api/v1/downloads/%s", idbuf);
+        resp = http_call(port, "PATCH", path, "{\"name\":\"holiday.clip.mp4\"}",
+                         "testtoken", &status);
+        CHECK(status == 200, "rename with extension 200");
+        CHECK(strstr(body_of(resp), "\"filename\":\"holiday.clip.mp4\"") != NULL,
+              "an explicit extension is kept as given");
         free(resp);
     }
 

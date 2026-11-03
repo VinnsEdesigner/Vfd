@@ -141,6 +141,17 @@ describe('normalizeDownload', () => {
     expect(job.name).toBe('Renamed Clip.mp4');
   });
 
+  it('carries the on-disk filename through', () => {
+    const job = normalizeDownload({ ...wire, name: 'holiday clip', filename: 'holiday clip.mp4' });
+    expect(job.name).toBe('holiday clip');
+    expect(job.filename).toBe('holiday clip.mp4');
+  });
+
+  it('falls back to the display name when the server sends no filename', () => {
+    const job = normalizeDownload({ ...wire, name: 'y.mp4' });
+    expect(job.filename).toBe('y.mp4');
+  });
+
   it('derives a name from the url when the server omits it', () => {
     const job = normalizeDownload(wire);
     expect(job.name).toBe('y.mp4');

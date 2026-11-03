@@ -91,9 +91,14 @@ export function normalizeMedia(w: WireMedia | null | undefined): Media | null {
 }
 
 export function normalizeDownload(w: WireDownload): Download {
+  const name = w.name && w.name.trim() ? w.name : nameFromUrl(w.url);
   return {
     id: w.id,
-    name: w.name && w.name.trim() ? w.name : nameFromUrl(w.url),
+    name,
+    // Older servers sent only `name`, which may lack an extension. Fall back to
+    // it so nothing regresses; the extension is derived from the media kind
+    // downstream when it is missing.
+    filename: w.filename && w.filename.trim() ? w.filename : name,
     url: w.url,
     state: toDownloadState(w.state),
     progress: {
@@ -135,10 +140,14 @@ export function normalizeProbe(w: WireProbeResult): ProbeResult {
 export function normalizeCapabilities(w: WireCapabilities): Capabilities {
   return {
     version: w.version ?? '1',
+    engineVersion: w.engine_version ?? null,
     detectors: Array.isArray(w.detectors) ? w.detectors.map(toMediaKind) : [],
     hls: Boolean(w.hls),
     upload: Boolean(w.upload),
     purge: Boolean(w.purge),
+    maxBodyBytes: typeof w.max_body_bytes === 'number' ? w.max_body_bytes : null,
+    workers: typeof w.workers === 'number' ? w.workers : null,
+    ffmpeg: typeof w.ffmpeg === 'boolean' ? w.ffmpeg : null,
   };
 }
 
@@ -154,6 +163,8 @@ export function normalizeSystemStorage(w: WireSystemStorage): SystemStorage {
   const fs = w.filesystem;
   return {
     workDir: w.work_dir ?? '',
+    writable: w.writable ?? false,
+    writeError: w.write_error ?? null,
     mountPoint: w.mount_point ?? null,
     fsType: w.fs_type ?? null,
     fsDevice: w.fs_device ?? null,

@@ -25,6 +25,8 @@ export interface OverviewPageProps {
   disk: { freeLabel: string; usedPercent: number; summary: string } | null;
   onViewAll: () => void;
   onSelect: (id: string) => void;
+  onOpenWith?: (id: string) => void;
+  onShare?: (id: string) => void;
   /** Absolute URL of a finished item's bytes, for row thumbnails. */
   contentUrl?: (id: string) => string;
 }
@@ -47,6 +49,8 @@ export function OverviewPage({
   disk,
   onViewAll,
   onSelect,
+  onOpenWith,
+  onShare,
   contentUrl,
 }: OverviewPageProps) {
   const [libraryValue, libraryUnit] = splitValueUnit(libraryLabel);
@@ -101,6 +105,8 @@ export function OverviewPage({
           <DownloadTable
             downloads={downloads.slice(0, 6)}
             onOpen={onSelect}
+            {...(onOpenWith ? { onOpenWith } : {})}
+            {...(onShare ? { onShare } : {})}
             {...(contentUrl ? { contentUrl } : {})}
           />
         </Card>

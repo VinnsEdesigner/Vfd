@@ -19,6 +19,7 @@ import { Select } from '../primitives/Select';
 import {
   StorageLocationPanel,
   type StorageLocationValue,
+  type EngineLocationFacts,
 } from '../settings/StorageLocationPanel';
 import type { DownloadView } from '../../hooks/view-models';
 
@@ -43,15 +44,12 @@ export interface SettingsPageProps {
   onAuthTokenChange: (v: string) => void;
   darkTheme: boolean;
   onDarkThemeChange: (v: boolean) => void;
-  autoStart: boolean;
-  onAutoStartChange: (v: boolean) => void;
-  verifyChecksums: boolean;
-  onVerifyChecksumsChange: (v: boolean) => void;
   location: StorageLocationValue;
   onLocationChange: (next: StorageLocationValue) => void;
+  /** The engine's real directory and volume, or null while loading. */
+  engineLocation: EngineLocationFacts | null;
   onSaveConnection: () => void;
-  onSaveLocation: () => void;
-  onTestLocation: () => void;
+  onSaveLocation: (dir: string) => void;
   /** The local-storage section, rendered on its own tab. */
   storageSection?: React.ReactNode;
   /** Downloads selectable in the pipeline inspector ("More" tab). */
@@ -121,18 +119,6 @@ export function SettingsPage(props: SettingsPageProps) {
               checked={props.darkTheme}
               onChange={props.onDarkThemeChange}
             />
-            <SwitchRow
-              name="Start downloads automatically"
-              description="Begin fetching as soon as a source is added"
-              checked={props.autoStart}
-              onChange={props.onAutoStartChange}
-            />
-            <SwitchRow
-              name="Verify checksums"
-              description="Hash every finished file with SHA-256"
-              checked={props.verifyChecksums}
-              onChange={props.onVerifyChecksumsChange}
-            />
           </Card>
         </div>
       )}
@@ -141,8 +127,8 @@ export function SettingsPage(props: SettingsPageProps) {
         <StorageLocationPanel
           value={props.location}
           onChange={props.onLocationChange}
+          engineLocation={props.engineLocation}
           onSave={props.onSaveLocation}
-          onTest={props.onTestLocation}
           {...(props.busy ? { busy: props.busy } : {})}
           {...(props.usage ? { usage: props.usage } : {})}
         />

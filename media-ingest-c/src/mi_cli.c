@@ -23,7 +23,7 @@
 #include "mi_storage.h"
 #include "mi_util.h"
 
-#define MI_VERSION "0.1.0"
+#define MI_VERSION MI_ENGINE_VERSION
 
 /* ------------------------------------------------------------------ */
 /* storage option bundle                                               */

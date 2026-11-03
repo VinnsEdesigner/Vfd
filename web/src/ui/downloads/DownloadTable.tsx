@@ -26,6 +26,7 @@ import {
   IconTrash,
   IconX,
   IconExternal,
+  IconShare,
 } from '../primitives/Icons';
 import {
   formatRate,
@@ -38,6 +39,10 @@ export interface DownloadTableProps {
   /** Absolute URL of a finished item's bytes, for the row thumbnail. */
   contentUrl?: (id: string) => string;
   onOpen?: (id: string) => void;
+  /** Hands a finished item to another app on the device. */
+  onOpenWith?: (id: string) => void;
+  /** Shares a finished item to another app or person. */
+  onShare?: (id: string) => void;
   /** Stops an in-flight transfer but keeps the record. */
   onCancel?: (id: string) => void;
   /** Removes the record and its files. Destructive; the parent confirms. */
@@ -121,6 +126,8 @@ export function DownloadTable({
   downloads,
   contentUrl,
   onOpen,
+  onOpenWith,
+  onShare,
   onCancel,
   onDelete,
   cancellingId = null,
@@ -172,12 +179,20 @@ export function DownloadTable({
         onSelect: () => onOpen(d.id),
       });
     }
-    if (onOpen) {
+    if (onOpenWith && d.isOpenable) {
       actions.push({
         id: 'open-with',
         label: 'Open with…',
         icon: <IconExternal />,
-        onSelect: () => onOpen(d.id),
+        onSelect: () => onOpenWith(d.id),
+      });
+    }
+    if (onShare && d.isOpenable) {
+      actions.push({
+        id: 'share',
+        label: 'Share',
+        icon: <IconShare />,
+        onSelect: () => onShare(d.id),
       });
     }
     if (onCancel && d.isActive) {

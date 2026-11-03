@@ -12,6 +12,8 @@
  *   PATCH  /api/v1/downloads/{id}       {name?, move_to?}
  *   DELETE /api/v1/downloads/{id}
  *   POST   /api/v1/detect             (multipart or octet-stream sniff)
+ *   GET    /api/v1/system/storage      (work dir, volume, library figures)
+ *   PUT    /api/v1/storage/location    {dir} - set the download directory
  *   GET    /api/v1/storage/config
  */
 #ifndef MI_SERVER_H
