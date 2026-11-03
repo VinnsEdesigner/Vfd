@@ -50,6 +50,12 @@ export interface MediaStore {
   /** Everything currently stored. */
   list(): Promise<StoredItem[]>;
   get(id: string): Promise<StoredItem | null>;
+  /**
+   * Give an item a new name. The id is the key, so a rename must not change it:
+   * it updates the name the user sees *and* the name the bytes carry, so a file
+   * on a real disk is renamed there too.
+   */
+  rename(id: string, name: string): Promise<StoredItem | null>;
   remove(id: string): Promise<void>;
   /** Total bytes held. */
   usage(): Promise<number>;
@@ -125,6 +131,14 @@ export class MemoryStore implements MediaStore {
 
   async get(id: string): Promise<StoredItem | null> {
     return this.items.get(id)?.item ?? null;
+  }
+
+  async rename(id: string, name: string): Promise<StoredItem | null> {
+    const e = this.items.get(id);
+    if (!e) return null;
+    const next = { ...e.item, name };
+    this.items.set(id, { ...e, item: next });
+    return next;
   }
 
   async remove(id: string): Promise<void> {
@@ -227,6 +241,24 @@ export class OpfsStore implements MediaStore {
 
   async get(id: string): Promise<StoredItem | null> {
     return this.readMeta(id);
+  }
+
+  async rename(id: string, name: string): Promise<StoredItem | null> {
+    const dir = await this.dir(id, false);
+    if (!dir) return null;
+    const handle = await dir.getFileHandle('meta.json').catch(() => null);
+    if (!handle) return null;
+    let parsed: Omit<StoredItem, 'tier'>;
+    try {
+      parsed = JSON.parse(await (await handle.getFile()).text()) as Omit<StoredItem, 'tier'>;
+    } catch {
+      return null;
+    }
+    const next = { ...parsed, name };
+    const w = await (await dir.getFileHandle('meta.json', { create: true })).createWritable();
+    await w.write(JSON.stringify(next));
+    await w.close();
+    return { ...next, tier: 'opfs' };
   }
 
   async remove(id: string): Promise<void> {
@@ -345,6 +377,15 @@ export class IndexedDbStore implements MediaStore {
       : null;
   }
 
+  async rename(id: string, name: string): Promise<StoredItem | null> {
+    const db = await this.database();
+    const rec = await tx<IdbRecord | undefined>(db, 'readonly', (s) => s.get(id));
+    if (!rec) return null;
+    const next: IdbRecord = { ...rec, name };
+    await tx(db, 'readwrite', (s) => s.put(next));
+    return { id, name, type: next.type, size: next.size, tier: 'indexeddb' };
+  }
+
   async remove(id: string): Promise<void> {
     const url = this.urls.get(id);
     if (url) {
@@ -434,6 +475,49 @@ export class FileSystemStore implements MediaStore {
     return {
       id,
       name: file.name,
+      type: file.type || 'application/octet-stream',
+      size: file.size,
+      tier: 'file-system-access',
+      locationHint: this.dir.name,
+    };
+  }
+
+  async rename(id: string, name: string): Promise<StoredItem | null> {
+    const target = safeName(name);
+    const old = await this.dir.getFileHandle(id).catch(() => null);
+    if (!old) return null;
+    // In this tier the filename *is* the id, so a rename is a real move on disk.
+    if (target === id) {
+      const file = await old.getFile();
+      return {
+        id,
+        name: target,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+        tier: 'file-system-access',
+        locationHint: this.dir.name,
+      };
+    }
+    // Refuse to clobber an existing file: silently overwriting someone's saved
+    // media because they picked a name that was taken is data loss.
+    const existing = await this.dir.getFileHandle(target).catch(() => null);
+    if (existing) throw new Error(`"${target}" already exists in this folder`);
+
+    const file = await old.getFile();
+    const created = await this.dir.getFileHandle(target, { create: true });
+    const w = await created.createWritable();
+    await w.write(file);
+    await w.close();
+    await this.dir.removeEntry(id).catch(() => undefined);
+
+    const url = this.urls.get(id);
+    if (url) {
+      URL.revokeObjectURL(url);
+      this.urls.delete(id);
+    }
+    return {
+      id: target,
+      name: target,
       type: file.type || 'application/octet-stream',
       size: file.size,
       tier: 'file-system-access',

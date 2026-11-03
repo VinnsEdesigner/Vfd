@@ -8,7 +8,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../primitives/Button';
 import { IconFilter, IconSort, IconGrid, IconList, IconChevronDown, IconCheck } from '../primitives/Icons';
-import type { FileBrowserState, SortKey, StateFilter, TypeFilter } from './useFileBrowser';
+import type {
+  FileBrowserState,
+  LocationFilter,
+  SortKey,
+  StateFilter,
+  TypeFilter,
+} from './useFileBrowser';
 
 export interface FileToolbarProps {
   browser: FileBrowserState;
@@ -28,6 +34,12 @@ const STATE_OPTIONS: ReadonlyArray<{ id: StateFilter; label: string }> = [
   { id: 'ongoing', label: 'Ongoing' },
   { id: 'done', label: 'Finished' },
   { id: 'problem', label: 'Failed' },
+];
+
+const LOCATION_OPTIONS: ReadonlyArray<{ id: LocationFilter; label: string }> = [
+  { id: 'all', label: 'Anywhere' },
+  { id: 'device', label: 'On this device' },
+  { id: 'engine', label: 'On the engine' },
 ];
 
 const SORT_OPTIONS: ReadonlyArray<{ id: SortKey; label: string }> = [
@@ -117,6 +129,23 @@ export function FileToolbar({ browser, totalCount }: FileToolbarProps) {
                   {o.label}
                 </button>
               ))}
+              <div className="fpop__sep" />
+              <div className="fpop__label">Stored</div>
+              {LOCATION_OPTIONS.map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={browser.locationFilter === o.id}
+                  className="fpop__item"
+                  onClick={() => browser.setLocationFilter(o.id)}
+                >
+                  <span className="fpop__tick">
+                    {browser.locationFilter === o.id && <IconCheck />}
+                  </span>
+                  {o.label}
+                </button>
+              ))}
               {browser.activeFilterCount > 0 && (
                 <>
                   <div className="fpop__sep" />
@@ -126,6 +155,7 @@ export function FileToolbar({ browser, totalCount }: FileToolbarProps) {
                     onClick={() => {
                       browser.setTypeFilter('all');
                       browser.setStateFilter('all');
+                      browser.setLocationFilter('all');
                     }}
                   >
                     <span className="fpop__tick" />

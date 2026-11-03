@@ -40,6 +40,12 @@ export interface LocalMediaState {
   save: (file: DownloadView) => Promise<StoredItem>;
   /** A playable URL, or null when the file is not on this device. */
   urlFor: (id: string) => Promise<string | null>;
+  /**
+   * Rename a stored file. For the folder tier this renames the file on disk, so
+   * the change is real outside the app too. Returns the new id, which for that
+   * tier is the new filename.
+   */
+  rename: (id: string, name: string) => Promise<StoredItem | null>;
   remove: (id: string) => Promise<void>;
   has: (id: string) => boolean;
 }
@@ -189,6 +195,16 @@ export function useLocalMedia(): LocalMediaState {
     [store],
   );
 
+  const rename = useCallback(
+    async (id: string, name: string) => {
+      const s = await store;
+      const result = await s.rename(id, name);
+      await refresh();
+      return result;
+    },
+    [store, refresh],
+  );
+
   const remove = useCallback(
     async (id: string) => {
       const s = await store;
@@ -212,6 +228,7 @@ export function useLocalMedia(): LocalMediaState {
     refresh,
     save,
     urlFor,
+    rename,
     remove,
     has,
   };

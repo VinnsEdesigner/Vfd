@@ -220,6 +220,25 @@ describe('MemoryStore', () => {
     expect(await store.list()).toEqual([]);
   });
 
+  it('renames in place, keeping the id and the bytes', async () => {
+    const store = new MemoryStore();
+    const writer = await store.createWriter({ id: 'a', name: 'old.mp4', type: 'video/mp4' });
+    await writer.write(new Uint8Array([1, 2, 3]));
+    await writer.close(3);
+
+    const renamed = await store.rename('a', 'new.mp4');
+    expect(renamed).toMatchObject({ id: 'a', name: 'new.mp4', size: 3 });
+    // The id is the key, so it must not move; the bytes must survive.
+    expect((await store.get('a'))?.name).toBe('new.mp4');
+    expect(await store.usage()).toBe(3);
+    expect(await store.urlFor('a')).toMatch(/^blob:/);
+  });
+
+  it('reports a rename of something that is not there', async () => {
+    const store = new MemoryStore();
+    expect(await store.rename('missing', 'x.mp4')).toBeNull();
+  });
+
   it('is the tier createMediaStore falls back to', async () => {
     const store = await createMediaStore({ tier: 'memory' });
     expect(store.tier).toBe('memory');

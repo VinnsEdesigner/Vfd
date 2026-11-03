@@ -2052,6 +2052,11 @@
   background: #000;
   cursor: pointer;
 }
+/* Fill: the picture is cropped to the screen instead of letterboxed. The two
+   modes are what a player's aspect/zoom control switches between. */
+.vplayer__el.is-fill {
+  object-fit: cover;
+}
 .vplayer__error {
   position: absolute;
   inset: 0;

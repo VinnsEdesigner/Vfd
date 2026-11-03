@@ -211,7 +211,13 @@ export function FileLibrary({
           confirmLabel="Rename"
           busy={busy}
           onConfirm={(name) => {
-            onRename?.(renameTarget.id, name);
+            // Keep the extension the file already has: the dialog promises it,
+            // and for a device file the extension is what makes it openable.
+            const ext = renameTarget.extension;
+            const trimmed = name.trim();
+            const withExt =
+              ext && !trimmed.toLowerCase().endsWith(`.${ext}`) ? `${trimmed}.${ext}` : trimmed;
+            onRename?.(renameTarget.id, withExt);
             setRenameTarget(null);
           }}
           onClose={() => setRenameTarget(null)}

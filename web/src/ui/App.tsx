@@ -545,17 +545,33 @@ export function App({ initialView = 'overview' }: AppProps) {
     [moveDownload, runAction],
   );
 
+  /**
+   * Rename an item in whichever store holds it.
+   *
+   * A device copy is renamed through the device store, which for the folder tier
+   * renames the real file on disk. An engine item goes to the engine. When both
+   * exist we do both, so the two do not drift apart and leave the library
+   * disagreeing with itself.
+   */
   const renameFile = useCallback(
     (id: string, name: string) => {
+      const { engineIds, deviceIds } = partitionIds([id]);
       void runAction(
         'file-action',
         async () => {
-          await renameDownload.mutateAsync({ id, name });
+          if (deviceIds.length > 0) {
+            // The folder tier keys on the filename, so the id can change; refresh
+            // picks the new one up, which is why nothing here holds the old id.
+            await localMedia.rename(id, name);
+          }
+          if (engineIds.length > 0) {
+            await renameDownload.mutateAsync({ id, name });
+          }
         },
         { success: 'Renamed', failure: 'Could not rename' },
       );
     },
-    [renameDownload, runAction],
+    [partitionIds, localMedia, renameDownload, runAction],
   );
 
   const toggleTheme = useCallback(() => {

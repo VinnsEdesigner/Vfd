@@ -12,6 +12,7 @@
 import { useMemo } from 'react';
 import { useFileBrowserStore } from '../../stores/file-browser-store';
 import type {
+  LocationFilter,
   SortDirection,
   SortKey,
   StateFilter,
@@ -20,7 +21,7 @@ import type {
 } from '../../stores/file-browser-store';
 import type { DownloadView } from '../../hooks/view-models';
 
-export type { ViewMode, SortKey, SortDirection, TypeFilter, StateFilter };
+export type { ViewMode, SortKey, SortDirection, TypeFilter, StateFilter, LocationFilter };
 
 export interface FileBrowserState {
   view: ViewMode;
@@ -32,6 +33,8 @@ export interface FileBrowserState {
   setTypeFilter: (f: TypeFilter) => void;
   stateFilter: StateFilter;
   setStateFilter: (f: StateFilter) => void;
+  locationFilter: LocationFilter;
+  setLocationFilter: (f: LocationFilter) => void;
   /** Filters applied, then sorted. */
   visible: DownloadView[];
   activeFilterCount: number;
@@ -57,10 +60,12 @@ export function useFileBrowser(files: readonly DownloadView[]): FileBrowserState
   const sortDirection = useFileBrowserStore((s) => s.sortDirection);
   const typeFilter = useFileBrowserStore((s) => s.typeFilter);
   const stateFilter = useFileBrowserStore((s) => s.stateFilter);
+  const locationFilter = useFileBrowserStore((s) => s.locationFilter);
   const setView = useFileBrowserStore((s) => s.setView);
   const setSort = useFileBrowserStore((s) => s.setSort);
   const setTypeFilter = useFileBrowserStore((s) => s.setTypeFilter);
   const setStateFilter = useFileBrowserStore((s) => s.setStateFilter);
+  const setLocationFilter = useFileBrowserStore((s) => s.setLocationFilter);
 
   const visible = useMemo(() => {
     const byType = (f: DownloadView) => {
@@ -75,15 +80,21 @@ export function useFileBrowser(files: readonly DownloadView[]): FileBrowserState
       if (stateFilter === 'done') return f.state === 'done';
       return f.state === 'failed' || f.state === 'cancelled';
     };
+    const byLocation = (f: DownloadView) => {
+      if (locationFilter === 'all') return true;
+      return f.source === locationFilter;
+    };
 
-    const filtered = files.filter((f) => byType(f) && byState(f));
+    const filtered = files.filter((f) => byType(f) && byState(f) && byLocation(f));
     const sorted = [...filtered].sort((a, b) => compare(a, b, sortKey));
     if (sortDirection === 'desc') sorted.reverse();
     return sorted;
-  }, [files, typeFilter, stateFilter, sortKey, sortDirection]);
+  }, [files, typeFilter, stateFilter, locationFilter, sortKey, sortDirection]);
 
   const activeFilterCount =
-    (typeFilter !== 'all' ? 1 : 0) + (stateFilter !== 'all' ? 1 : 0);
+    (typeFilter !== 'all' ? 1 : 0) +
+    (stateFilter !== 'all' ? 1 : 0) +
+    (locationFilter !== 'all' ? 1 : 0);
 
   return {
     view,
@@ -95,6 +106,8 @@ export function useFileBrowser(files: readonly DownloadView[]): FileBrowserState
     setTypeFilter,
     stateFilter,
     setStateFilter,
+    locationFilter,
+    setLocationFilter,
     visible,
     activeFilterCount,
   };
