@@ -49,6 +49,15 @@ typedef struct {
     int64_t max_bytes; /* 0 == unlimited */
     char **headers;    /* extra "Key: Value" headers */
     size_t header_count;
+    /*
+     * The User-Agent to send. NULL uses the built-in default.
+     *
+     * Worth being able to change: some hosts refuse a request that does not
+     * look like a browser, and a caller fetching a page on the user's behalf
+     * may need to say so. It is a request header like any other, so it travels
+     * in the same list the extra headers do.
+     */
+    const char *user_agent;
     /* Optional: lets a caller stop a running download (pause/cancel). */
     const mi_download_control *control;
 } mi_download_config;

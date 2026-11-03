@@ -478,7 +478,8 @@ static void on_signal(int sig) {
 }
 
 static int cmd_serve(const char *host, int port, const char *work_dir,
-                     const char *auth_token, const char *allow_origins) {
+                     const char *auth_token, const char *allow_origins,
+                     const char *user_agent) {
     mi_server_config cfg;
     mi_server_config_init(&cfg);
     if (host) cfg.host = host;
@@ -486,6 +487,7 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
     if (work_dir) cfg.work_dir = work_dir;
     cfg.auth_token = (auth_token && *auth_token) ? auth_token : NULL;
     cfg.allow_origins = (allow_origins && *allow_origins) ? allow_origins : NULL;
+    cfg.user_agent = (user_agent && *user_agent) ? user_agent : NULL;
 
     mi_mkdir_p(cfg.work_dir);
 
@@ -556,7 +558,7 @@ static void usage(void) {
             "  media-ingest hls <input> -o <dir> [--renditions 1080,720,480] [--segment-seconds N]\n"
             "  media-ingest ingest <url> -o <dir> [--hls <dir>] [--upload] [-c N] [-q] [-H 'K: V']...\n"
             "  media-ingest serve [--host H] [--port N] [--work-dir D] [--auth-token T]\n"
-            "                      [--allow-origin ORIGINS]\n"
+            "                      [--allow-origin ORIGINS] [--user-agent UA]\n"
             "  media-ingest upload <file-or-dir> --bucket B --access-key K --secret-key S\n"
             "                          [--endpoint URL] [--region R] [--prefix P] [--cdn-base URL]\n"
             "                          [--path-style|--virtual-host] [--purge --cf-token T --cf-zone Z]\n"
@@ -624,6 +626,9 @@ int main(int argc, char **argv) {
     const char *serve_work_dir = NULL;
     const char *serve_token = getenv("MI_AUTH_TOKEN");
     const char *serve_allow_origins = NULL;
+    /* Some hosts refuse a request that does not look like a browser, so what the
+     * engine calls itself is settable rather than compiled in. */
+    const char *serve_user_agent = getenv("MI_USER_AGENT");
 
     storage_opts so;
     storage_opts_init(&so);
@@ -645,7 +650,7 @@ int main(int argc, char **argv) {
         OPT_SEGMENT, OPT_UPLOAD, OPT_ENDPOINT, OPT_REGION, OPT_BUCKET, OPT_ACCESS,
         OPT_SECRET, OPT_SESSION, OPT_PREFIX, OPT_CONTENTTYPE, OPT_VHOST, OPT_PATHSTYLE,
         OPT_CDN_BASE, OPT_PURGE, OPT_CF_TOKEN, OPT_CF_ZONE,
-        OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN
+        OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN, OPT_USERAGENT
     };
     static struct option long_opts[] = {
         {"output", required_argument, 0, 'o'},
@@ -677,6 +682,7 @@ int main(int argc, char **argv) {
         {"work-dir", required_argument, 0, OPT_WORKDIR},
         {"auth-token", required_argument, 0, OPT_AUTHTOKEN},
         {"allow-origin", required_argument, 0, OPT_ALLOWORIGIN},
+        {"user-agent", required_argument, 0, OPT_USERAGENT},
         {"header", required_argument, 0, 'H'},
         {"quiet", no_argument, 0, 'q'},
         {"verbose", no_argument, 0, 'v'},
@@ -720,6 +726,7 @@ int main(int argc, char **argv) {
             case OPT_WORKDIR: serve_work_dir = optarg; break;
             case OPT_AUTHTOKEN: serve_token = optarg; break;
             case OPT_ALLOWORIGIN: serve_allow_origins = optarg; break;
+            case OPT_USERAGENT: serve_user_agent = optarg; break;
             default: usage(); return 2;
         }
     }
@@ -781,7 +788,7 @@ int main(int argc, char **argv) {
             break;
         case CMD_SERVE:
             rc = cmd_serve(serve_host, serve_port, serve_work_dir, serve_token,
-                           serve_allow_origins);
+                           serve_allow_origins, serve_user_agent);
             break;
         default: rc = 2;
     }

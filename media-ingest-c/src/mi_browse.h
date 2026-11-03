@@ -39,9 +39,10 @@ void mi_browse_result_free(mi_browse_result *res);
  *
  * `base` is the URL the listing came from; relative references are resolved
  * against it, which is what makes a directory listing or a relative gallery
- * work. Returns MI_OK, or a negative MI_ERR_*.
+ * work. `user_agent` may be NULL for the built-in one. Returns MI_OK, or a
+ * negative MI_ERR_*.
  */
-int mi_browse_url(const char *url, mi_browse_result *out);
+int mi_browse_url(const char *url, const char *user_agent, mi_browse_result *out);
 
 /*
  * The same, over bytes already in hand. Exposed so the extraction can be tested

@@ -552,7 +552,7 @@ int mi_browse_parse(const char *body, size_t len, const char *base,
     return MI_OK;
 }
 
-int mi_browse_url(const char *url, mi_browse_result *out) {
+int mi_browse_url(const char *url, const char *user_agent, mi_browse_result *out) {
     if (!url || !out) return MI_ERR_ARG;
     result_init(out);
 
@@ -560,6 +560,9 @@ int mi_browse_url(const char *url, mi_browse_result *out) {
     mi_download_config_init(&cfg);
     /* A listing page is not itself media, so the media check must not apply. */
     cfg.require_media = 0;
+    /* Some hosts refuse a request that does not look like a browser, so the
+     * operator can say what the engine should call itself. */
+    cfg.user_agent = user_agent;
 
     char *body = mi_download_fetch_text(&cfg, url, MAX_BODY);
     if (!body) return MI_ERR_NET;

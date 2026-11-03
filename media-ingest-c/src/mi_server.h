@@ -43,6 +43,15 @@ typedef struct {
     const char *allow_origins;
     const char *auth_token;/* optional Bearer token; NULL disables auth */
     int max_downloads;          /* cap on retained download records */
+    /*
+     * The User-Agent the engine sends when it fetches on the caller's behalf —
+     * a download, a probe, or a page read for Browse.
+     *
+     * Some hosts refuse a request that does not look like a browser, so a
+     * deployment can set this without a rebuild. NULL keeps the built-in
+     * default, which identifies the engine honestly.
+     */
+    const char *user_agent;
 } mi_server_config;
 
 typedef struct mi_server mi_server;

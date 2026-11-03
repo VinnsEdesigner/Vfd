@@ -190,6 +190,8 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->allow_origins = NULL;
     cfg->auth_token = NULL;
     cfg->max_downloads = 200;
+    /* NULL means the engine's own default agent. */
+    cfg->user_agent = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1343,6 +1345,9 @@ static void *download_worker(void *arg) {
      * detector does not recognise are refused — unless the caller asked for
      * one, which is how a PDF or a text file gets through. */
     dcfg.require_media = !j->allow_non_media;
+    /* A host that refuses a non-browser agent is a host the operator may have
+     * told the engine how to present itself to. */
+    dcfg.user_agent = srv->cfg.user_agent;
 
     char *out_dir = j->out_dir ? mi_strdup(j->out_dir)
                                : mi_asprintf("%s/%s", srv->download_dir, j->id);
@@ -1746,6 +1751,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_download_config cfg;
         mi_download_config_init(&cfg);
         cfg.require_media = 0;
+        cfg.user_agent = srv->cfg.user_agent;
         mi_download_plan plan;
         if (mi_probe(&cfg, url, &plan) != MI_OK) {
             send_error(fd, 502, "Bad Gateway", "probe failed", cors);
@@ -1818,7 +1824,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         }
 
         mi_browse_result res;
-        int rc = mi_browse_url(url, &res);
+        int rc = mi_browse_url(url, srv->cfg.user_agent, &res);
         if (rc != MI_OK) {
             mi_browse_result_free(&res);
             send_error(fd, 502, "Bad Gateway", "could not fetch that page", cors);

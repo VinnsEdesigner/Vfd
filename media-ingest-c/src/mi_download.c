@@ -97,11 +97,22 @@ static size_t write_file(char *ptr, size_t size, size_t nmemb, void *userdata) {
     return n;
 }
 
+/* The User-Agent sent when the caller has not named one. */
+#define MI_DEFAULT_USER_AGENT "media-ingest-c/" MI_ENGINE_VERSION
+
 static struct curl_slist *build_headers(const mi_download_config *cfg,
                                         const char *range) {
     struct curl_slist *list = NULL;
     list = curl_slist_append(list, "Accept: */*");
-    list = curl_slist_append(list, "User-Agent: media-ingest-c/0.1");
+    /* The caller's agent when it named one, the built-in otherwise. A caller
+     * header list can still override this, because it is appended after. */
+    char *ua = mi_asprintf("User-Agent: %s",
+                           (cfg->user_agent && *cfg->user_agent) ? cfg->user_agent
+                                                                 : MI_DEFAULT_USER_AGENT);
+    if (ua) {
+        list = curl_slist_append(list, ua);
+        free(ua);
+    }
     for (size_t i = 0; i < cfg->header_count; i++) {
         list = curl_slist_append(list, cfg->headers[i]);
     }
@@ -661,6 +672,7 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->max_bytes = 0;
     cfg->headers = NULL;
     cfg->header_count = 0;
+    cfg->user_agent = NULL;
     cfg->control = NULL;
 }
 

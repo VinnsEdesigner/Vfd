@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "mi_browse.h"
+#include "mi_download.h"
 #include "mi_json.h"
 #include "mi_server.h"
 #include "mi_util.h"
@@ -1118,6 +1119,137 @@ static void test_browse_parse(void) {
     }
 }
 
+/* ---------------------------------------------------------------- */
+/* The configurable User-Agent                                        */
+/* ---------------------------------------------------------------- */
+
+/* A server that echoes the User-Agent it was sent, so the header can be
+ * observed end to end rather than assumed. */
+static void ua_serve_conn(int fd) {
+    char req[8192];
+    ssize_t got = read(fd, req, sizeof req - 1);
+    if (got <= 0) {
+        close(fd);
+        return;
+    }
+    req[got] = '\0';
+
+    /* Pull the User-Agent line out of the request head. */
+    char ua[512] = "(none)";
+    const char *p = strstr(req, "User-Agent: ");
+    if (p) {
+        p += strlen("User-Agent: ");
+        size_t n = 0;
+        while (p[n] && p[n] != '\r' && p[n] != '\n' && n + 1 < sizeof ua) {
+            ua[n] = p[n];
+            n++;
+        }
+        ua[n] = '\0';
+    }
+
+    char body[640];
+    int blen = snprintf(body, sizeof body, "{\"agent\":\"%s\"}", ua);
+    char header[256];
+    int hlen = snprintf(header, sizeof header,
+                        "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n"
+                        "Content-Type: application/json\r\nConnection: close\r\n\r\n",
+                        blen);
+    (void)!write(fd, header, (size_t)hlen);
+    (void)!write(fd, body, (size_t)blen);
+    close(fd);
+}
+
+static void ua_loop(int listen_fd) {
+    signal(SIGTERM, SIG_DFL);
+    for (;;) {
+        int fd = accept(listen_fd, NULL, NULL);
+        if (fd < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        ua_serve_conn(fd);
+    }
+    _exit(0);
+}
+
+static int start_ua_server(pid_t *pid_out) {
+    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_fd < 0) return -1;
+    int one = 1;
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+        close(listen_fd);
+        return -1;
+    }
+    socklen_t alen = sizeof addr;
+    getsockname(listen_fd, (struct sockaddr *)&addr, &alen);
+    listen(listen_fd, 8);
+    pid_t pid = fork();
+    if (pid == 0) ua_loop(listen_fd);
+    close(listen_fd);
+    *pid_out = pid;
+    return ntohs(addr.sin_port);
+}
+
+static void test_user_agent(void) {
+    pid_t pid = -1;
+    int port = start_ua_server(&pid);
+    CHECK(port > 0, "user-agent: echo server started");
+    if (port <= 0) return;
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    /* The built-in default identifies the engine, and is what is sent when the
+     * caller has named nothing. */
+    {
+        mi_download_config cfg;
+        mi_download_config_init(&cfg);
+        cfg.require_media = 0;
+        char *body = mi_download_fetch_text(&cfg, url, 64 * 1024);
+        CHECK(body != NULL, "user-agent: default fetch succeeds");
+        CHECK(body && strstr(body, "media-ingest-c/") != NULL,
+              "user-agent: the default agent identifies the engine");
+        free(body);
+    }
+
+    /* A caller-supplied agent is sent instead, which is the whole point: a host
+     * that refuses anything but a browser can be satisfied without a rebuild. */
+    {
+        mi_download_config cfg;
+        mi_download_config_init(&cfg);
+        cfg.require_media = 0;
+        cfg.user_agent = "Mozilla/5.0 (TestBrowser)";
+        char *body = mi_download_fetch_text(&cfg, url, 64 * 1024);
+        CHECK(body != NULL, "user-agent: custom fetch succeeds");
+        CHECK(body && strstr(body, "\"agent\":\"Mozilla/5.0 (TestBrowser)\"") != NULL,
+              "user-agent: a custom agent is sent verbatim");
+        CHECK(body && strstr(body, "media-ingest-c/") == NULL,
+              "user-agent: the default is not also sent");
+        free(body);
+    }
+
+    /* An empty string means "unset", not "send an empty header", which some
+     * servers reject outright. */
+    {
+        mi_download_config cfg;
+        mi_download_config_init(&cfg);
+        cfg.require_media = 0;
+        cfg.user_agent = "";
+        char *body = mi_download_fetch_text(&cfg, url, 64 * 1024);
+        CHECK(body != NULL, "user-agent: an empty agent still fetches");
+        CHECK(body && strstr(body, "media-ingest-c/") != NULL,
+              "user-agent: an empty string falls back to the default");
+        free(body);
+    }
+
+    if (pid > 0) kill(pid, SIGKILL);
+}
+
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
     mi_log_set_level(MI_LOG_ERROR);
@@ -1128,6 +1260,7 @@ int main(void) {
     test_json_rejects_bad();
     test_json_unicode_escape();
     test_browse_parse();
+    test_user_agent();
     test_http_api();
     test_hls_serve_and_convert();
 
