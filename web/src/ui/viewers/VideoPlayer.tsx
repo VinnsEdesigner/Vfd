@@ -483,25 +483,30 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
                 hud.value * 100,
               )}%`}
             >
-              <div className="vplayer__hud-track">
-                {/* The level travels as a variable: the track is vertical in
-                    portrait and horizontal in landscape, and the stylesheet
-                    decides which dimension that drives. */}
-                <div
-                  className="vplayer__hud-fill"
-                  style={{ '--level': String(hud.value) } as React.CSSProperties}
-                />
+              {/* Two levels, like the control bar: the outer element places the
+                  indicator (which in landscape means a quarter turn across the
+                  whole screen) and this inner box is the indicator itself. */}
+              <div className="vplayer__hud-box">
+                <div className="vplayer__hud-track">
+                  {/* The level travels as a variable: the track is vertical in
+                      portrait and horizontal in landscape, and the stylesheet
+                      decides which dimension that drives. */}
+                  <div
+                    className="vplayer__hud-fill"
+                    style={{ '--level': String(hud.value) } as React.CSSProperties}
+                  />
+                </div>
+                <span className="vplayer__hud-icon">
+                  {hud.side === 'brightness' ? (
+                    <IconSun />
+                  ) : hud.value === 0 ? (
+                    <IconVolumeOff />
+                  ) : (
+                    <IconVolume />
+                  )}
+                </span>
+                <span className="vplayer__hud-value">{Math.round(hud.value * 100)}%</span>
               </div>
-              <span className="vplayer__hud-icon">
-                {hud.side === 'brightness' ? (
-                  <IconSun />
-                ) : hud.value === 0 ? (
-                  <IconVolumeOff />
-                ) : (
-                  <IconVolume />
-                )}
-              </span>
-              <span className="vplayer__hud-value">{Math.round(hud.value * 100)}%</span>
             </div>
           )}
 

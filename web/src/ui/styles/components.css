@@ -2158,65 +2158,56 @@
  *
  * It is drawn in the player's own box, which is NOT rotated, so in landscape it
  * would sit upright against the glass while the picture and the controls are on
- * their side — the bar in the wrong place, pointing the wrong way. Rotating it
- * by the same quarter turn puts it back on the picture's edge, reading the right
- * way up for someone holding the device turned. Sized from the viewport and
- * centred, exactly as the bar is, because in landscape the frame is the screen.
+ * their side. It takes the same quarter turn as the picture and the bar, and is
+ * positioned exactly as the bar is — sized from the viewport and centred —
+ * because in landscape the frame is the whole screen.
+ *
+ * As with the bar, the turn maps the element's own edges onto the screen: its
+ * left edge becomes the screen's top and its right edge becomes the screen's
+ * bottom. So the *placement* is `row` + `justify-content`, which packs the
+ * indicator against one of those, while the indicator inside keeps its own
+ * portrait layout. Turning the outer element and letting the inner one lay
+ * itself out is the same split the bar uses.
  */
 .vplayer.is-landscape .vplayer__hud {
   top: 50%;
   left: 50%;
   width: 100vh;
   height: 100vw;
+  display: flex;
   flex-direction: row;
-  justify-content: flex-start;
-  align-items: center;
-  border-radius: 0;
-  background: none;
-  backdrop-filter: none;
-  padding: 0;
-  gap: 0;
+  /* Centred along the element's width, which after the turn is the screen's
+     vertical — so the indicator sits mid-screen, as it does in portrait. */
+  justify-content: center;
+  /* Top and bottom of the element become the screen's left and right, so the
+     inset that keeps the indicator off the edge is this axis. */
+  padding: 18px 0;
   transform: translate(-50%, -50%) rotate(90deg);
-  animation: none;
 }
-/* After the quarter turn the picture's left edge is the screen's top, so the
-   two levels sit against the screen's top and bottom. */
+/*
+ * Which side of the screen each one lands on is `align-items`, not
+ * `justify-content`: with the element on its side, its own top-to-bottom axis is
+ * the screen's left-to-right one. Its bottom edge becomes the screen's left and
+ * its top edge the screen's right, so `flex-end` is the left and `flex-start`
+ * the right — putting brightness on the right and volume on the left, the sides
+ * the fingers reach for when the device is held turned.
+ */
 .vplayer.is-landscape .vplayer__hud--brightness {
   left: 50%;
-  top: 50%;
-  align-items: flex-start;
-  padding-top: 18px;
+  right: auto;
+  align-items: flex-end;
 }
 .vplayer.is-landscape .vplayer__hud--volume {
   right: auto;
   left: 50%;
-  top: 50%;
-  align-items: flex-end;
-  padding-bottom: 18px;
+  align-items: flex-start;
 }
-/* The readout becomes a horizontal bar running across the picture. */
+/* The track keeps its portrait shape in the indicator's own frame; the quarter
+   turn across the whole indicator lays it across the screen, so the level fills
+   in the same direction the finger travels. */
 .vplayer.is-landscape .vplayer__hud-track {
-  width: 140px;
-  height: 8px;
-  align-items: stretch;
-  justify-content: flex-start;
-}
-.vplayer.is-landscape .vplayer__hud-fill {
-  width: calc(var(--level, 0) * 100%);
-  height: 100%;
-}
-/* The icon and the number go beside the bar rather than under it. */
-.vplayer.is-landscape .vplayer__hud-icon,
-.vplayer.is-landscape .vplayer__hud-value {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-}
-.vplayer.is-landscape .vplayer__hud-icon {
-  top: 46px;
-}
-.vplayer.is-landscape .vplayer__hud-value {
-  bottom: 46px;
+  width: 8px;
+  height: 140px;
 }
 .vplayer__el {
   flex: 1;
@@ -2241,6 +2232,19 @@
   top: 50%;
   transform: translateY(-50%);
   z-index: 3;
+  color: #fff;
+  pointer-events: none;
+}
+.vplayer__hud--brightness {
+  left: 18px;
+}
+.vplayer__hud--volume {
+  right: 18px;
+}
+/* The indicator itself: the pill, its parts and its own layout. Kept separate
+   from the element above, which only places it, so the landscape rules can turn
+   the placement without disturbing this. */
+.vplayer__hud-box {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2249,17 +2253,9 @@
   border-radius: var(--r-lg);
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(6px);
-  color: #fff;
-  pointer-events: none;
   /* It appears on movement and leaves on a timer, so it fades rather than
      blinking in and out. */
   animation: vplayer-hud-in 0.14s ease-out;
-}
-.vplayer__hud--brightness {
-  left: 18px;
-}
-.vplayer__hud--volume {
-  right: 18px;
 }
 @keyframes vplayer-hud-in {
   from {
