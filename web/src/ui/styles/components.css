@@ -2098,11 +2098,17 @@
   height: 100vw;
   transform: translate(-50%, -50%) rotate(90deg);
 }
-/* The bar stays horizontal at the bottom of the screen, over the picture.
-   The bar itself is turned the same quarter turn as the picture, so the controls
-   read the right way up for someone who has physically turned the device — the
-   same thing every phone player does. It is sized from the viewport because in
-   landscape the frame is the whole screen. */
+/* The bar is turned the same quarter turn as the picture, so the controls read
+   the right way up for someone who has physically turned the device — the same
+   thing every phone player does.
+
+   Which edge it lands on is decided by the flex direction, because the rotation
+   maps the bar's own edges onto the screen: after rotate(90deg), the bar's
+   *bottom* becomes the screen's left, and its top becomes the screen's right.
+   So `column` + `flex-end` packs the controls against the bar's bottom, which is
+   the bottom of the screen as the viewer holding the turned device sees it.
+
+   Sized from the viewport because in landscape the frame is the whole screen. */
 .vplayer.is-landscape .vplayer__bar {
   position: absolute;
   z-index: 2;
@@ -2111,10 +2117,7 @@
   width: 100vh;
   height: 100vw;
   display: flex;
-  /* Reversed so the seek line lands on the screen edge with the buttons beside
-     it, instead of the buttons sitting in the padding with the line floating
-     inside them. */
-  flex-direction: column-reverse;
+  flex-direction: column;
   justify-content: flex-end;
   transform: translate(-50%, -50%) rotate(90deg);
   background: none;
