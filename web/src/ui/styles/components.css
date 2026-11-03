@@ -2054,27 +2054,57 @@
   overflow: hidden;
 }
 /*
- * Landscape: the standard web-player technique, sized from the frame.
+ * Landscape.
  *
- * The player is given the frame's *transpose* (height and width swapped) and
- * turned a quarter turn about its own centre. The swap is what makes it fill the
- * space — without it the video stays in the narrow upright box and is letterboxed
- * down to a strip. The width/height come from the measurement in the component
- * (inline style), because the frame's height is set by flex and so is not a
- * definite size a container query could use.
+ * The picture is turned on its side while the controls stay upright along the
+ * bottom, which is how a phone player behaves when you turn the device. So only
+ * the *video* is rotated — rotating the whole player turned the control bar into
+ * a vertical strip down one edge and left the bar's own height as dead space.
  *
- * `inset: 0; margin: auto` centres the turned box; the default
- * `transform-origin` (50% 50%) keeps it centred while it rotates. The video
- * inside keeps `object-fit: contain`, so the picture is fitted, never cropped.
+ * The video is drawn in the window's transpose and turned a quarter turn about
+ * its centre; the controls sit underneath it in normal flow.
+ *
+ * `100vh`/`100vw` are correct here because landscape takes over the screen (see
+ * `.vplayer__frame.is-landscape`, which is fixed to the viewport). The picture
+ * keeps `object-fit: contain`, so it is fitted, never cropped.
  */
-.vplayer.is-landscape {
+.vplayer__frame.is-landscape {
+  position: fixed;
   inset: 0;
-  margin: auto;
-  transform: rotate(90deg);
-  border-radius: 0;
+  z-index: 60;
+  min-height: 0;
+  background: #000;
+  display: flex;
+  flex-direction: column;
 }
-/* The bar sits at the bottom of the *screen*, which is the rotated right edge. */
+.vplayer.is-landscape {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border-radius: 0;
+  overflow: hidden;
+}
+/*
+ * The picture: drawn in the window's transpose and turned a quarter turn. It is
+ * positioned absolutely and centred with translate, because the transposed box
+ * (844 wide in a 390-wide screen) overflows, and auto margins resolve to zero for
+ * an overflowing flex item — which left the picture off-screen to the right.
+ */
+.vplayer.is-landscape .vplayer__el {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100vh;
+  height: 100vw;
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+/* The bar stays horizontal at the bottom of the screen, over the picture. */
 .vplayer.is-landscape .vplayer__bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
   padding: 8px 14px 10px;
 }
 .vplayer__el {

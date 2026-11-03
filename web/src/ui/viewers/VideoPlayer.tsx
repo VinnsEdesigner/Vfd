@@ -7,7 +7,7 @@
  * and fullscreen. Keyboard shortcuts follow the conventions people already know.
  */
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../primitives/Button';
 import {
   IconPlay, IconPause, IconVolume, IconVolumeOff, IconSkipBack, IconSkipForward,
@@ -43,12 +43,6 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
   const [fullscreen, setFullscreen] = useState(false);
   const [showRate, setShowRate] = useState(false);
   const [orientation, setOrientation] = useState<Orientation>('portrait');
-  /**
-   * The frame's size. Landscape needs the transpose, and the frame's height comes
-   * from flex, so it has to be measured — but only the *frame*, which the player
-   * cannot influence (it is absolutely positioned inside it).
-   */
-  const [frame, setFrame] = useState<{ w: number; h: number } | null>(null);
   /**
    * Whether the control bar is showing. It hides itself after a few seconds of
    * playback so it does not sit over the picture, and a tap brings it back —
@@ -99,19 +93,6 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
     }
     return clearHideTimer;
   }, [state.playing, clearHideTimer]);
-
-  useEffect(() => {
-    const el = wrapRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const measure = () => {
-      const r = el.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) setFrame({ w: r.width, h: r.height });
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
 
   useEffect(() => {
     if (state.error) onError?.(state.error);
@@ -196,17 +177,14 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
   const bufPct = state.duration > 0 ? (state.buffered / state.duration) * 100 : 0;
   const landscape = orientation === 'landscape';
 
-  // The frame's transpose, so the turned player fills the space instead of
-  // showing a narrow strip. Applied inline because the size is measured.
-  const playerStyle: CSSProperties =
-    landscape && frame ? { width: `${frame.h}px`, height: `${frame.w}px` } : {};
-
   return (
     <>
-      <div className="vplayer__frame" ref={wrapRef}>
+      <div
+        className={landscape ? 'vplayer__frame is-landscape' : 'vplayer__frame'}
+        ref={wrapRef}
+      >
         <div
           className={landscape ? 'vplayer is-landscape' : 'vplayer'}
-          style={playerStyle}
           // Desktop: moving the mouse over the picture brings the controls back,
           // the way every player behaves. Touch uses the tap instead.
           onMouseMove={revealControls}
