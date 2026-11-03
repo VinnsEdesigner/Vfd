@@ -2034,9 +2034,9 @@
 
 /* ------------------------------ Video player ------------------------------ */
 
-/* The space the player is given. The player is taken out of the flow below, so
-   its size can never influence this box — which is what makes rotation stable
-   rather than feeding the rotated size back into the measurement. */
+/* The space the player is given. The player is absolutely positioned, so its
+   size can never influence this box — which is what makes the landscape sizing
+   stable rather than feeding the rotated size back in. */
 .vplayer__frame {
   position: relative;
   flex: 1;
@@ -2053,12 +2053,29 @@
   border-radius: var(--r-lg);
   overflow: hidden;
 }
-/* Landscape is sized in the frame's transpose and turned a quarter turn, so a
-   portrait window shows the video wide. Absolute + auto insets + auto margins
-   centre the turned box in the frame. */
+/*
+ * Landscape: the standard web-player technique, sized from the frame.
+ *
+ * The player is given the frame's *transpose* (height and width swapped) and
+ * turned a quarter turn about its own centre. The swap is what makes it fill the
+ * space — without it the video stays in the narrow upright box and is letterboxed
+ * down to a strip. The width/height come from the measurement in the component
+ * (inline style), because the frame's height is set by flex and so is not a
+ * definite size a container query could use.
+ *
+ * `inset: 0; margin: auto` centres the turned box; the default
+ * `transform-origin` (50% 50%) keeps it centred while it rotates. The video
+ * inside keeps `object-fit: contain`, so the picture is fitted, never cropped.
+ */
 .vplayer.is-landscape {
-  inset: auto;
+  inset: 0;
   margin: auto;
+  transform: rotate(90deg);
+  border-radius: 0;
+}
+/* The bar sits at the bottom of the *screen*, which is the rotated right edge. */
+.vplayer.is-landscape .vplayer__bar {
+  padding: 8px 14px 10px;
 }
 .vplayer__el {
   flex: 1;
@@ -2085,6 +2102,21 @@
 .vplayer__bar {
   padding: 10px 12px 12px;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.75));
+  /* The bar fades out while watching and comes back on a tap. Kept out of the
+     way rather than removed, so the layout never jumps. */
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+/* Hidden: faded out and nudged down, but still mounted. `pointer-events: none`
+   is what makes it non-interactive while invisible. */
+.vplayer__bar.is-hidden {
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+}
+/* Touch devices have no hover to reveal the bar, so the video itself is the tap
+   target; the cursor stays out of the way when the controls are hidden. */
+.vplayer__el.is-hidden-cursor {
+  cursor: none;
 }
 .vplayer__scrub {
   position: relative;

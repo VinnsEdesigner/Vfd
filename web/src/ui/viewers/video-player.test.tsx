@@ -7,9 +7,73 @@
  * is always fitted, never cropped.
  */
 
-import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { VideoPlayer } from './VideoPlayer';
+
+/** The control bar, whether or not it is currently showing. */
+function bar(container: HTMLElement): HTMLElement {
+  return container.querySelector('.vplayer__bar') as HTMLElement;
+}
+
+describe('VideoPlayer controls visibility', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows the controls to begin with', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    expect(bar(container).className).not.toContain('is-hidden');
+  });
+
+  it('keeps the controls up while paused — that is when they are wanted', () => {
+    vi.useFakeTimers();
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(bar(container).className).not.toContain('is-hidden');
+  });
+
+  it('hides the controls while playing, and a tap brings them back', () => {
+    vi.useFakeTimers();
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    const video = container.querySelector('video') as HTMLVideoElement;
+    // jsdom does not play, so report the state a real element would.
+    Object.defineProperty(video, 'paused', { configurable: true, value: false });
+
+    // Start playing, then let the hide timer run: the state update has to flush
+    // before the timer is advanced, or the timeout is scheduled too late.
+    act(() => {
+      video.dispatchEvent(new Event('play'));
+    });
+    act(() => {
+      vi.advanceTimersByTime(3_500);
+    });
+    expect(bar(container).className).toContain('is-hidden');
+
+    // A tap on the picture reveals them; it must not also toggle playback, or
+    // reaching for the pause button would pause on the way.
+    act(() => {
+      fireEvent.click(video);
+    });
+    expect(bar(container).className).not.toContain('is-hidden');
+  });
+
+  it('hides them from assistive tech while invisible', () => {
+    vi.useFakeTimers();
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    const video = container.querySelector('video') as HTMLVideoElement;
+    Object.defineProperty(video, 'paused', { configurable: true, value: false });
+    act(() => {
+      video.dispatchEvent(new Event('play'));
+    });
+    act(() => {
+      vi.advanceTimersByTime(3_500);
+    });
+    expect(bar(container).getAttribute('aria-hidden')).toBe('true');
+  });
+});
 
 describe('VideoPlayer orientation', () => {
   it('starts upright and offers a sideways control', () => {
