@@ -31,6 +31,7 @@ import {
   SettingsPage,
   type StorageTab,
   type SettingsTab,
+  type BrowseMode,
   type IngestFormValue,
   type ProbeOutcome,
   type StorageCredentialsValue,
@@ -47,6 +48,7 @@ import {
   useSystemStorage,
   useCapabilities,
   useBrowse,
+  useBrowseUrl,
   useSetStorageLocation,
   useCreateDownload,
   useCancelDownload,
@@ -177,6 +179,11 @@ export function App({ initialView = 'overview' }: AppProps) {
   const [browseTerm, setBrowseTerm] = useState('');
   const [browseKind, setBrowseKind] = useState<BrowseKind | 'all'>('all');
   const [browsePage, setBrowsePage] = useState(1);
+  /** Which source Browse is reading: the built-in search, or a URL the user typed. */
+  const [browseMode, setBrowseMode] = useState<BrowseMode>('search');
+  const [browseUrl, setBrowseUrl] = useState('');
+  /** The URL actually submitted, so typing does not fire a request per keystroke. */
+  const [browseUrlSubmitted, setBrowseUrlSubmitted] = useState<string | null>(null);
   const [browseQueueingId, setBrowseQueueingId] = useState<string | null>(null);
   /** A browse result being previewed, if any. */
   const [browsePreview, setBrowsePreview] = useState<BrowseItem | null>(null);
@@ -220,6 +227,7 @@ export function App({ initialView = 'overview' }: AppProps) {
   const capabilities = capabilitiesQuery.data ?? null;
   const setStorageLocation = useSetStorageLocation();
   const browseQuery = useBrowse({ term: browseTerm, kind: browseKind, page: browsePage });
+  const browseUrlQuery = useBrowseUrl(browseUrlSubmitted);
   const createDownload = useCreateDownload();
   const cancelDownload = useCancelDownload();
   const probeUrl = useProbe();
@@ -1151,11 +1159,21 @@ export function App({ initialView = 'overview' }: AppProps) {
               setBrowseKind(k);
               setBrowsePage(1);
             }}
-            items={browseQuery.data?.items ?? []}
-            total={browseQuery.data?.total ?? -1}
-            hasMore={browseQuery.data?.hasMore ?? false}
-            loading={browseQuery.isFetching}
-            error={browseQuery.error ? describeError(browseQuery.error) : null}
+            // Whichever source is active supplies the cards; the other query is
+            // left alone so switching back does not re-fetch.
+            items={(browseMode === 'url' ? browseUrlQuery.data : browseQuery.data)?.items ?? []}
+            total={(browseMode === 'url' ? browseUrlQuery.data : browseQuery.data)?.total ?? -1}
+            hasMore={(browseMode === 'url' ? browseUrlQuery.data : browseQuery.data)?.hasMore ?? false}
+            loading={browseMode === 'url' ? browseUrlQuery.isFetching : browseQuery.isFetching}
+            error={
+              browseMode === 'url'
+                ? browseUrlQuery.error
+                  ? describeError(browseUrlQuery.error)
+                  : null
+                : browseQuery.error
+                  ? describeError(browseQuery.error)
+                  : null
+            }
             queueingId={browseQueueingId}
             onPreview={setBrowsePreview}
             onDownload={downloadBrowsed}
@@ -1164,6 +1182,12 @@ export function App({ initialView = 'overview' }: AppProps) {
             onNextPage={() => setBrowsePage((p) => p + 1)}
             onPrevPage={() => setBrowsePage((p) => Math.max(1, p - 1))}
             canSaveToDevice={activeTier !== 'memory'}
+            mode={browseMode}
+            onModeChange={setBrowseMode}
+            sourceUrl={browseUrl}
+            onSourceUrlChange={setBrowseUrl}
+            onReadUrl={() => setBrowseUrlSubmitted(browseUrl.trim())}
+            sourceTitle={browseUrlQuery.data?.title ?? null}
           />
         )}
 

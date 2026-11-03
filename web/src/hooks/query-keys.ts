@@ -14,4 +14,6 @@ export const queryKeys = {
   /** In-app search results. Keyed by term, kind and page so each page caches. */
   browse: (term: string, kind: string, page: number, perPage: number) =>
     ['browse', term.trim().toLowerCase(), kind, page, perPage] as const,
+  /** A listing fetched from a URL the user typed. */
+  browseUrl: (url: string) => ['browse', 'url', url.trim()] as const,
 };

@@ -58,6 +58,11 @@ export interface BrowseResult {
   total: number;
   /** True when another page is likely to exist. */
   hasMore: boolean;
+  /**
+   * The listing page's own title, when it had one. Only a URL listing has this;
+   * a search has no single page behind it.
+   */
+  title?: string | null;
 }
 
 /** Which kinds a given MIME type and filename imply. */

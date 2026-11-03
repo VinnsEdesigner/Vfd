@@ -9,6 +9,7 @@ import {
   normalizeCapabilities,
   normalizeDownload,
   normalizeDownloadList,
+  normalizeBrowseResult,
   normalizeMedia,
   normalizeProbe,
   toDownloadState,
@@ -248,5 +249,68 @@ describe('domain helpers', () => {
   it('every normalised download satisfies the domain type', () => {
     const download: Download = normalizeDownload({ id: 'a', url: 'u', state: 'queued' } as unknown as WireDownload);
     expect(download.id).toBe('a');
+  });
+});
+
+describe('normalizeBrowseResult', () => {
+  const wire = (patch: Partial<import('./wire').WireBrowseResult> = {}) => ({
+    url: 'https://host.example/media/',
+    title: 'My Gallery',
+    items: [
+      { url: 'https://host.example/media/clip.mp4', filename: 'clip.mp4', mime: 'video/mp4', bytes: 1234 },
+      { url: 'https://host.example/media/photo.png', filename: 'photo.png', mime: 'image/png', bytes: -1 },
+    ],
+    count: 2,
+    ...patch,
+  });
+
+  it('maps a listing onto candidates', () => {
+    const r = normalizeBrowseResult(wire());
+    expect(r.items).toHaveLength(2);
+    expect(r.total).toBe(2);
+    expect(r.title).toBe('My Gallery');
+    const clip = r.items[0]!;
+    expect(clip.filename).toBe('clip.mp4');
+    expect(clip.title).toBe('clip');
+    expect(clip.kind).toBe('video');
+    expect(clip.bytes).toBe(1234);
+    // The page a person would visit is the listing itself.
+    expect(clip.pageUrl).toBe('https://host.example/media/');
+    expect(clip.source).toBe('host.example');
+  });
+
+  it('infers the kind from the mime, and falls back to the extension', () => {
+    const r = normalizeBrowseResult(
+      wire({
+        items: [
+          { url: 'https://h/a.bin', filename: 'a.mp3', mime: '', bytes: -1 },
+          { url: 'https://h/b', filename: 'b', mime: 'image/png', bytes: -1 },
+        ],
+        count: 2,
+      }),
+    );
+    expect(r.items[0]!.kind).toBe('audio');
+    expect(r.items[1]!.kind).toBe('image');
+  });
+
+  it('drops an entry with no url, and never invents a size', () => {
+    const r = normalizeBrowseResult(
+      wire({
+        items: [
+          { url: '', filename: 'x.mp4', mime: '', bytes: 5 },
+          { url: 'https://h/ok.mp4', filename: 'ok.mp4', mime: '', bytes: -1 },
+        ],
+        count: 2,
+      }),
+    );
+    expect(r.items).toHaveLength(1);
+    expect(r.items[0]!.bytes).toBe(-1);
+  });
+
+  it('handles a missing title and a missing item list', () => {
+    const r = normalizeBrowseResult({ url: 'https://h/', title: null, items: [], count: 0 });
+    expect(r.items).toEqual([]);
+    expect(r.title).toBeNull();
+    expect(r.hasMore).toBe(false);
   });
 });

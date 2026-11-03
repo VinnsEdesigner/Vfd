@@ -20,7 +20,7 @@ export {
   useConvertDownload,
 } from './use-downloads';
 export { useProbe, useDetectBytes } from './use-media';
-export { useBrowse } from './use-browse';
+export { useBrowse, useBrowseUrl } from './use-browse';
 export type { UseBrowseArgs } from './use-browse';
 export { useLocalMedia } from './use-local-media';
 export type { LocalMediaState } from './use-local-media';

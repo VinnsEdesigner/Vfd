@@ -19,6 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "mi_browse.h"
 #include "mi_detect.h"
 #include "mi_download.h"
 #include "mi_hls.h"
@@ -1793,6 +1794,64 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
         mi_download_plan_free(&plan);
+        mi_json_value_free(in);
+        return;
+    }
+
+    /* POST /api/v1/browse  {url} — list the media a page or directory offers.
+     *
+     * The console cannot do this itself: the browser enforces CORS and most
+     * media hosts send no CORS headers, so a direct fetch from the page is
+     * blocked. The engine is not bound by that, so the listing happens here. */
+    if (!strcmp(req->path, "/api/v1/browse") && !strcmp(req->method, "POST")) {
+        mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+        const char *url = mi_json_get_string(in, "url", NULL);
+        if (!url || !*url) {
+            send_error(fd, 400, "Bad Request", "missing or empty 'url'", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        if (strncasecmp(url, "http://", 7) != 0 && strncasecmp(url, "https://", 8) != 0) {
+            send_error(fd, 400, "Bad Request", "url must be http or https", cors);
+            mi_json_value_free(in);
+            return;
+        }
+
+        mi_browse_result res;
+        int rc = mi_browse_url(url, &res);
+        if (rc != MI_OK) {
+            mi_browse_result_free(&res);
+            send_error(fd, 502, "Bad Gateway", "could not fetch that page", cors);
+            mi_json_value_free(in);
+            return;
+        }
+
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"url\":");
+        mi_json_string(&b, url);
+        mi_json_raw(&b, ",\"title\":");
+        mi_json_string(&b, res.title);
+        mi_json_raw(&b, ",\"items\":[");
+        for (size_t i = 0; i < res.count; i++) {
+            const mi_browse_item *it = &res.items[i];
+            if (i) mi_json_raw(&b, ",");
+            mi_json_raw(&b, "{\"url\":");
+            mi_json_string(&b, it->url);
+            mi_json_raw(&b, ",\"filename\":");
+            mi_json_string(&b, it->filename);
+            mi_json_raw(&b, ",\"mime\":");
+            mi_json_string(&b, it->mime);
+            mi_json_raw(&b, ",\"bytes\":");
+            mi_json_int(&b, it->bytes);
+            mi_json_raw(&b, "}");
+        }
+        mi_json_raw(&b, "],\"count\":");
+        mi_json_int(&b, (int64_t)res.count);
+        mi_json_raw(&b, "}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        mi_browse_result_free(&res);
         mi_json_value_free(in);
         return;
     }

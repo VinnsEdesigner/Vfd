@@ -11,7 +11,7 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
-import { MediaApiProvider, useDownload, useDownloads, useCreateDownload, useConvertDownload, useHealth, useSystemStorage, useSetStorageLocation } from '../src/hooks';
+import { MediaApiProvider, useDownload, useDownloads, useCreateDownload, useConvertDownload, useBrowseUrl, useHealth, useSystemStorage, useSetStorageLocation } from '../src/hooks';
 import { useConnectionStore, connectionSettings, DEFAULT_CONNECTION } from '../src/stores/connection-store';
 import { useStorageStore, effectiveCredentials } from '../src/stores/storage-store';
 import { useDownloadFormStore } from '../src/stores/download-form-store';
@@ -482,6 +482,67 @@ describe('useConvertDownload', () => {
     await vi.advanceTimersByTimeAsync(5_000);
     vi.useRealTimers();
     expect(calls.length).toBe(before);
+  });
+});
+
+describe('useBrowseUrl', () => {
+  const listing = {
+    json: {
+      url: 'https://host.example/media/',
+      title: 'A Gallery',
+      items: [
+        { url: 'https://host.example/media/clip.mp4', filename: 'clip.mp4', mime: 'video/mp4', bytes: 10 },
+      ],
+      count: 1,
+    },
+  };
+
+  it('asks the engine to read the URL, and maps the listing', async () => {
+    const { fetchImpl, calls } = makeFetch({ 'POST /api/v1/browse': () => listing });
+    const { result } = renderHook(() => useBrowseUrl('https://host.example/media/'), {
+      wrapper: wrapper(fetchImpl),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    // It goes to the engine, not the third-party host: CORS would block the
+    // browser fetching an arbitrary site, and the engine is allowed to.
+    const post = calls.find((c) => c.method === 'POST');
+    expect(post?.url).toContain('/api/v1/browse');
+    expect(post?.body).toEqual({ url: 'https://host.example/media/' });
+    expect(result.current.data?.items[0]?.filename).toBe('clip.mp4');
+    expect(result.current.data?.title).toBe('A Gallery');
+  });
+
+  it('makes no request until the URL is absolute', async () => {
+    const { fetchImpl, calls } = makeFetch({ 'POST /api/v1/browse': () => listing });
+    const { result } = renderHook(() => useBrowseUrl('not-a-url-yet'), {
+      wrapper: wrapper(fetchImpl),
+    });
+    // Give any stray request a chance to fire.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(calls).toHaveLength(0);
+    expect(result.current.fetchStatus).toBe('idle');
+  });
+
+  it('makes no request at all when there is no URL', async () => {
+    const { fetchImpl, calls } = makeFetch({ 'POST /api/v1/browse': () => listing });
+    renderHook(() => useBrowseUrl(null), { wrapper: wrapper(fetchImpl) });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('surfaces a page that could not be read', async () => {
+    const { fetchImpl } = makeFetch({
+      'POST /api/v1/browse': () => ({ status: 502, json: { error: 'could not fetch that page', status: 502 } }),
+    });
+    const { result } = renderHook(() => useBrowseUrl('https://nope.example/x'), {
+      wrapper: wrapper(fetchImpl),
+    });
+    await waitFor(() => expect(result.current.isError).toBe(true));
   });
 });
 

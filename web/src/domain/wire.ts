@@ -89,6 +89,23 @@ export interface WireProbeRequest {
   duration_seconds?: number;
 }
 
+/** One media reference the engine found on a page. */
+export interface WireBrowseItem {
+  url: string;
+  filename: string;
+  mime: string;
+  /** -1 when the source did not say. */
+  bytes: number;
+}
+
+export interface WireBrowseResult {
+  url: string;
+  /** The page's own title, when it had one. */
+  title: string | null;
+  items: WireBrowseItem[];
+  count: number;
+}
+
 export interface WireDeleteResult {
   deleted?: boolean;
   cancelled?: boolean;

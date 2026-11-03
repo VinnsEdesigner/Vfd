@@ -15,7 +15,9 @@ import type {
   ProbeResult,
   StorageConfig,
 } from './media';
+import { browseKindFor, type BrowseItem, type BrowseResult } from './browse';
 import type {
+  WireBrowseResult,
   WireSystemStorage,
   WireCapabilities,
   WireDownload,
@@ -24,6 +26,16 @@ import type {
   WireProbeResult,
   WireStorageConfig,
 } from './wire';
+
+/** The host of a URL, for naming where a result came from. The domain's own
+ *  copy, because `domain` may not import the hooks layer that formats this. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
+}
 
 const MEDIA_KINDS: ReadonlySet<string> = new Set<MediaKind>([
   'mp4', 'matroska', 'avi', 'flv', 'ogg', 'asf', 'mpeg-ts', 'mpeg-ps', 'hls', 'dash',
@@ -142,6 +154,42 @@ export function normalizeDownload(w: WireDownload): Download {
 
 export function normalizeDownloadList(w: WireDownloadList): Download[] {
   return Array.isArray(w.items) ? w.items.map(normalizeDownload) : [];
+}
+
+/**
+ * A page listing from the engine, as candidates.
+ *
+ * The engine has already resolved each reference against the page and kept only
+ * media, so this maps names and kinds rather than re-deriving them. The page URL
+ * becomes each item's `pageUrl`: that is where a person would go to learn about
+ * the file, and it is what the card links to.
+ */
+export function normalizeBrowseResult(w: WireBrowseResult): BrowseResult {
+  const page = w.url ?? '';
+  const items = Array.isArray(w.items)
+    ? w.items
+        .filter((i) => i && typeof i.url === 'string' && i.url)
+        .map((i) => {
+          const filename = i.filename && i.filename.trim() ? i.filename : nameFromUrl(i.url);
+          return {
+            id: i.url,
+            title: filename.replace(/\.[a-z0-9]{1,5}$/i, '') || filename,
+            source: page ? hostOf(page) : 'the web',
+            pageUrl: page || null,
+            kind: browseKindFor(i.mime ?? '', filename),
+            mime: i.mime ?? '',
+            filename,
+            bytes: typeof i.bytes === 'number' ? i.bytes : -1,
+            url: i.url,
+            thumbUrl: null,
+            licence: '',
+            width: null,
+            height: null,
+            durationSeconds: null,
+          } satisfies BrowseItem;
+        })
+    : [];
+  return { items, total: w.count ?? items.length, hasMore: false, title: w.title ?? null };
 }
 
 export function normalizeProbe(w: WireProbeResult): ProbeResult {

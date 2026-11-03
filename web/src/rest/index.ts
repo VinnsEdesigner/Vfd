@@ -3,6 +3,7 @@
  */
 
 import { createApiClient, type ApiClient, type TransportConfig } from '../api-client';
+import { createBrowseResource, type BrowseResource } from './browse';
 import { createDownloadsResource, type DownloadsResource } from './downloads';
 import { createMediaResource, type MediaResource } from './media';
 import { createSystemResource, type SystemResource } from './system';
@@ -12,6 +13,8 @@ export interface RestApi {
   downloads: DownloadsResource;
   media: MediaResource;
   system: SystemResource;
+  /** List the media a page or directory offers, via the engine. */
+  browse: BrowseResource;
 }
 
 export function createRestApi(config: TransportConfig): RestApi {
@@ -21,10 +24,12 @@ export function createRestApi(config: TransportConfig): RestApi {
     downloads: createDownloadsResource(client),
     media: createMediaResource(client),
     system: createSystemResource(client),
+    browse: createBrowseResource(client),
   };
 }
 
 export type { TransportConfig } from '../api-client';
+export type { BrowseResource } from './browse';
 export type { DownloadsResource } from './downloads';
 export type { MediaResource } from './media';
 export type { SystemResource } from './system';

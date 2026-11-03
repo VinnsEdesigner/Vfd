@@ -20,6 +20,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "mi_browse.h"
 #include "mi_json.h"
 #include "mi_server.h"
 #include "mi_util.h"
@@ -998,6 +999,125 @@ static void test_mount_info(void) {
           "a relative path fails");
 }
 
+/* ---------------------------------------------------------------- */
+/* Browse: extracting media references from a page or a listing      */
+/* ---------------------------------------------------------------- */
+
+/** Whether the result offers a filename. */
+static int has(mi_browse_result *r, const char *filename) {
+    for (size_t i = 0; i < r->count; i++) {
+        if (!strcmp(r->items[i].filename, filename)) return 1;
+    }
+    return 0;
+}
+
+/** The URL offered for a filename, or NULL. */
+static const char *url_of(mi_browse_result *r, const char *filename) {
+    for (size_t i = 0; i < r->count; i++) {
+        if (!strcmp(r->items[i].filename, filename)) return r->items[i].url;
+    }
+    return NULL;
+}
+
+static void test_browse_parse(void) {
+    /* --- HTML: references are resolved against the page, and only media is
+     * offered. A stylesheet, a script and a fragment must all be dropped. --- */
+    {
+        const char *html =
+            "<!doctype html><html><head><title>My  &amp;  Gallery</title>"
+            "<link rel=\"stylesheet\" href=\"/style.css\">"
+            "<script src=\"/app.js\"></script></head><body>"
+            "<a href=\"clips/holiday.mp4\">Holiday</a>"
+            "<a href=\"/music/song.mp3\">Song</a>"
+            "<a href=\"#top\">Top</a>"
+            "<a href=\"https://cdn.example.com/photo.jpg\">Photo</a>"
+            "<img src=\"thumbs/tiny.png\" alt=\"thumb\">"
+            "<a href=\"page.html\">Another page</a>"
+            "</body></html>";
+        mi_browse_result r;
+        CHECK(mi_browse_parse(html, strlen(html), "https://host.example/gallery/index.html", &r) == MI_OK,
+              "browse: html parses");
+        CHECK(r.title && !strcmp(r.title, "My & Gallery"), "browse: title read and entities decoded");
+        /* Relative to the page's directory, not the host root. */
+        CHECK(url_of(&r, "holiday.mp4") &&
+                  !strcmp(url_of(&r, "holiday.mp4"), "https://host.example/gallery/clips/holiday.mp4"),
+              "browse: a document-relative href resolves against the page");
+        CHECK(url_of(&r, "song.mp3") &&
+                  !strcmp(url_of(&r, "song.mp3"), "https://host.example/music/song.mp3"),
+              "browse: a root-relative href resolves against the host");
+        CHECK(url_of(&r, "photo.jpg") &&
+                  !strcmp(url_of(&r, "photo.jpg"), "https://cdn.example.com/photo.jpg"),
+              "browse: an absolute href is kept as it is");
+        CHECK(has(&r, "tiny.png"), "browse: an img src is offered");
+        /* Non-media, and a same-page fragment, are not files to fetch. */
+        CHECK(!has(&r, "style.css"), "browse: a stylesheet is not offered");
+        CHECK(!has(&r, "app.js"), "browse: a script is not offered");
+        CHECK(!has(&r, "page.html"), "browse: a non-media link is not offered");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- A repeated reference is offered once. --- */
+    {
+        const char *html =
+            "<a href=\"a.mp4\">one</a><a href=\"a.mp4\">two</a>"
+            "<video src=\"a.mp4\"></video>";
+        mi_browse_result r;
+        CHECK(mi_browse_parse(html, strlen(html), "https://h/p.html", &r) == MI_OK, "browse: repeats parse");
+        CHECK(r.count == 1, "browse: the same file offered once");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- ".." is collapsed, so a listing cannot walk above the host root. --- */
+    {
+        const char *html = "<a href=\"../../../../etc/passwd.mp4\">x</a>";
+        mi_browse_result r;
+        CHECK(mi_browse_parse(html, strlen(html), "https://h/a/b/c.html", &r) == MI_OK, "browse: dotdot parses");
+        CHECK(r.count == 1, "browse: the dotdot link is still offered");
+        CHECK(url_of(&r, "passwd.mp4") &&
+                  !strcmp(url_of(&r, "passwd.mp4"), "https://h/etc/passwd.mp4"),
+              "browse: .. is collapsed and cannot climb above the host root");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- JSON: an array of entries, and an object wrapping one. --- */
+    {
+        const char *json =
+            "{\"items\":[{\"url\":\"/v/one.mp4\",\"size\":1234},"
+            "{\"file\":\"two.mp3\"},{\"nope\":\"three.txt\"}]}";
+        mi_browse_result r;
+        CHECK(mi_browse_parse(json, strlen(json), "https://h/list", &r) == MI_OK, "browse: json parses");
+        CHECK(url_of(&r, "one.mp4") && !strcmp(url_of(&r, "one.mp4"), "https://h/v/one.mp4"),
+              "browse: a json url is resolved");
+        CHECK(has(&r, "two.mp3"), "browse: the `file` key is understood");
+        CHECK(!has(&r, "three.txt"), "browse: an entry with no known url key is skipped");
+        for (size_t i = 0; i < r.count; i++) {
+            if (!strcmp(r.items[i].filename, "one.mp4")) {
+                CHECK(r.items[i].bytes == 1234, "browse: the size the listing gave is kept");
+            }
+        }
+        mi_browse_result_free(&r);
+    }
+
+    /* --- Percent-encoded names are decoded for display. --- */
+    {
+        const char *html = "<a href=\"Six_weeks_old_cat_%28aka%29.jpg\">x</a>";
+        mi_browse_result r;
+        mi_browse_parse(html, strlen(html), "https://h/", &r);
+        CHECK(has(&r, "Six_weeks_old_cat_(aka).jpg"),
+              "browse: a percent-encoded name is decoded");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- A page with no media yields an empty list, not a failure. --- */
+    {
+        const char *html = "<html><body><p>Nothing here.</p></body></html>";
+        mi_browse_result r;
+        CHECK(mi_browse_parse(html, strlen(html), "https://h/", &r) == MI_OK, "browse: empty page is ok");
+        CHECK(r.count == 0, "browse: no media means no items");
+        mi_browse_result_free(&r);
+    }
+}
+
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
     mi_log_set_level(MI_LOG_ERROR);
@@ -1007,6 +1127,7 @@ int main(void) {
     test_json_parse_roundtrip();
     test_json_rejects_bad();
     test_json_unicode_escape();
+    test_browse_parse();
     test_http_api();
     test_hls_serve_and_convert();
 

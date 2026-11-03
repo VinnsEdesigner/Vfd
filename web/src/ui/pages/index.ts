@@ -9,7 +9,7 @@ export type { StoragePageProps, StorageTab, StorageCredentialsValue } from './St
 export { SettingsPage } from './SettingsPage';
 export type { SettingsPageProps, SettingsTab, EngineFacts } from './SettingsPage';
 export { BrowsePage } from './BrowsePage';
-export type { BrowsePageProps } from './BrowsePage';
+export type { BrowsePageProps, BrowseMode } from './BrowsePage';
 export type { StorageLocationValue } from '../settings/StorageLocationPanel';
 export {
   OverviewSkeleton,

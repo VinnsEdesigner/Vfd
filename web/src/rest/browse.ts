@@ -12,7 +12,10 @@
  * this app is for.
  */
 
+import type { ApiClient } from '../api-client';
+import { normalizeBrowseResult } from '../domain/normalize';
 import { browseKindFor, type BrowseItem, type BrowseKind, type BrowseQuery, type BrowseResult } from '../domain/browse';
+import type { WireBrowseResult } from '../domain/wire';
 
 const API = 'https://commons.wikimedia.org/w/api.php';
 
@@ -102,6 +105,31 @@ export interface BrowseSourceOptions {
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }
+
+/**
+ * List the media a page or directory offers, by asking the engine.
+ *
+ * This has to go through the engine rather than the browser: the browser
+ * enforces CORS, and most media hosts send no CORS headers, so a direct fetch
+ * from the page is blocked. The engine has no such limit. It also means the
+ * user's engine credentials are used for the request, which is correct — the
+ * engine is the thing allowed to fetch on their behalf.
+ */
+export function createBrowseResource(client: ApiClient) {
+  return {
+    async listFromUrl(url: string, signal?: AbortSignal): Promise<BrowseResult> {
+      const wire = await client.transport.request<WireBrowseResult>({
+        method: 'POST',
+        path: '/api/v1/browse',
+        body: { url },
+        ...(signal ? { signal } : {}),
+      });
+      return normalizeBrowseResult(wire);
+    },
+  };
+}
+
+export type BrowseResource = ReturnType<typeof createBrowseResource>;
 
 /**
  * Search Commons. Returns candidates only — nothing is downloaded here.

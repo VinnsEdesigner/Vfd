@@ -74,6 +74,67 @@ describe('system resource', () => {
   });
 });
 
+describe('browse resource', () => {
+  it('rejects a non-http url without trying to fetch it', async () => {
+    await expect(api.browse.listFromUrl('file:///etc/passwd')).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it('reports a page it could not read, rather than an empty listing', async () => {
+    // A port nothing is listening on: the engine cannot reach it, and must say so
+    // instead of reporting "no media here".
+    await expect(api.browse.listFromUrl('http://127.0.0.1:1/nothing')).rejects.toMatchObject({
+      status: 502,
+    });
+  });
+
+  it('lists the media a real directory offers', async () => {
+    // A real HTTP server serving a directory listing, so the extraction runs
+    // against real markup rather than a fixture.
+    const { createServer } = await import('node:http');
+    const server = createServer((req, res) => {
+      if (req.url === '/media/') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(
+          '<html><head><title>Index of /media</title></head><body>' +
+            '<a href="clip.mp4">clip.mp4</a>' +
+            '<a href="song.mp3">song.mp3</a>' +
+            '<a href="notes.txt">notes.txt</a>' +
+            '<a href="archive.zip">archive.zip</a>' +
+            '<link rel="stylesheet" href="style.css">' +
+            '</body></html>',
+        );
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+
+    try {
+      const result = await api.browse.listFromUrl(`http://127.0.0.1:${port}/media/`);
+      const names = result.items.map((i) => i.filename);
+      expect(names).toContain('clip.mp4');
+      expect(names).toContain('song.mp3');
+      // Text is a kind this app can show, so it is a candidate too.
+      expect(names).toContain('notes.txt');
+      // But a stylesheet and an archive are not media: the listing is not a
+      // mirror of every link on the page.
+      expect(names).not.toContain('style.css');
+      expect(names).not.toContain('archive.zip');
+      // Relative references are resolved against the page they came from.
+      const clip = result.items.find((i) => i.filename === 'clip.mp4');
+      expect(clip?.url).toBe(`http://127.0.0.1:${port}/media/clip.mp4`);
+      expect(result.title).toBe('Index of /media');
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
 describe('media resource', () => {
   it('detects a real MP4 from raw bytes', async () => {
     const bytes = makeMp4Header();
