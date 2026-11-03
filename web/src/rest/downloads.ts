@@ -49,6 +49,7 @@ function toWireRequest(input: CreateDownloadInput): WireCreateDownloadRequest {
     purge: input.purge,
     connections: input.connections,
   };
+  if (input.allowNonMedia) req.allow_non_media = true;
   if (input.quality) req.quality = input.quality;
   if (input.prefix) req.prefix = input.prefix;
   if (input.hlsDir) req.hls_dir = input.hlsDir;

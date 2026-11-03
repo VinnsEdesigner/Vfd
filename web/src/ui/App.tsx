@@ -12,6 +12,7 @@ import { AppShell, type NavItem } from './layout';
 import {
   IconGrid,
   IconList,
+  IconSearch,
   IconPlus,
   IconDatabase,
   IconSettings,
@@ -26,6 +27,7 @@ import {
   DownloadsPage,
   NewIngestPage,
   StoragePage,
+  BrowsePage,
   SettingsPage,
   type StorageTab,
   type SettingsTab,
@@ -44,6 +46,7 @@ import {
   useDownloadViewsWithPipeline,
   useSystemStorage,
   useCapabilities,
+  useBrowse,
   useSetStorageLocation,
   useCreateDownload,
   useCancelDownload,
@@ -61,6 +64,8 @@ import {
   useMediaApi,
   isApiError,
   isNetworkError,
+  type BrowseItem,
+  type BrowseKind,
 } from '../hooks';
 import { useToast } from './feedback';
 import { ConfirmDialog } from './primitives/ConfirmDialog';
@@ -75,17 +80,19 @@ import { shareItems, openWithItem, mimeForName } from './files';
 import {
   formatBytes,
   toDeviceView,
+  toRemoteView,
   toQualityOptions,
   hostFromUrl,
   fileNameFromUrl,
   type DownloadView,
 } from '../hooks/view-models';
 
-export type ViewId = 'overview' | 'downloads' | 'ingest' | 'storage' | 'settings';
+export type ViewId = 'overview' | 'downloads' | 'browse' | 'ingest' | 'storage' | 'settings';
 
 const VIEW_TITLES: Record<ViewId, [string, string]> = {
   overview: ['Overview', 'Pipeline health and recent activity'],
   downloads: ['Downloads', 'Everything being fetched, and what has finished'],
+  browse: ['Browse', 'Find open media, then preview or keep it'],
   ingest: ['New download', 'Queue a source to fetch, transcode and deliver'],
   storage: ['Storage', 'Downloaded files, object storage and delivery'],
   settings: ['Settings', 'Connection, storage location and engine capabilities'],
@@ -165,6 +172,13 @@ export function App({ initialView = 'overview' }: AppProps) {
   const [storageTab, setStorageTab] = useState<StorageTab>('files');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('general');
   const [openFileId, setOpenFileId] = useState<string | null>(null);
+  /** Browse view: the term is presentation state, so it lives here. */
+  const [browseTerm, setBrowseTerm] = useState('');
+  const [browseKind, setBrowseKind] = useState<BrowseKind | 'all'>('all');
+  const [browsePage, setBrowsePage] = useState(1);
+  const [browseQueueingId, setBrowseQueueingId] = useState<string | null>(null);
+  /** A browse result being previewed, if any. */
+  const [browsePreview, setBrowsePreview] = useState<BrowseItem | null>(null);
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   /** Formats offered before a download starts; null when not choosing. */
@@ -204,6 +218,7 @@ export function App({ initialView = 'overview' }: AppProps) {
   const capabilitiesQuery = useCapabilities();
   const capabilities = capabilitiesQuery.data ?? null;
   const setStorageLocation = useSetStorageLocation();
+  const browseQuery = useBrowse({ term: browseTerm, kind: browseKind, page: browsePage });
   const createDownload = useCreateDownload();
   const cancelDownload = useCancelDownload();
   const probeUrl = useProbe();
@@ -291,6 +306,12 @@ export function App({ initialView = 'overview' }: AppProps) {
   const openFile = useMemo(
     () => (openFileId ? libraryViews.find((d) => d.id === openFileId) ?? null : null),
     [openFileId, libraryViews],
+  );
+
+  /** A browse result being previewed, as the viewer's input shape. */
+  const browsePreviewView = useMemo(
+    () => (browsePreview ? toRemoteView(browsePreview) : null),
+    [browsePreview],
   );
 
   /** The bytes to play: the device copy when there is one, else the engine. */
@@ -574,6 +595,57 @@ export function App({ initialView = 'overview' }: AppProps) {
     [partitionIds, localMedia, renameDownload, runAction],
   );
 
+
+  /**
+   * Queue a browse result with the engine.
+   *
+   * A document or a text file is not media, and the engine refuses an
+   * unrecognised payload unless it is told to accept one — so the flag is set
+   * from the item's kind rather than blanket-applied.
+   */
+  const downloadBrowsed = useCallback(
+    (item: BrowseItem) => {
+      setBrowseQueueingId(item.id);
+      void runAction(
+        'browse-download',
+        async () => {
+          await createDownload.mutateAsync({
+            input: {
+              url: item.url,
+              hls: false,
+              upload: false,
+              purge: false,
+              connections: 4,
+              ...(item.kind === 'document' || item.kind === 'text' ? { allowNonMedia: true } : {}),
+            },
+          });
+        },
+        { success: 'Queued', failure: `Could not queue ${item.title}` },
+      ).finally(() => setBrowseQueueingId(null));
+    },
+    [createDownload, runAction],
+  );
+
+  /** Save a browse result straight onto this device, without the engine. */
+  const saveBrowsedToDevice = useCallback(
+    (item: BrowseItem) => {
+      void runAction(
+        'browse-save',
+        async () => {
+          await localMedia.saveRemote({
+            id: item.id,
+            url: item.url,
+            name: item.filename,
+            type: item.mime,
+            bytes: item.bytes,
+          });
+        },
+        { success: 'Saved to this device', failure: `Could not save ${item.title}` },
+      );
+    },
+    [localMedia, runAction],
+  );
+
   const toggleTheme = useCallback(() => {
     setTheme((prev) => {
       const next: Theme = prev === 'dark' ? 'light' : 'dark';
@@ -590,6 +662,7 @@ export function App({ initialView = 'overview' }: AppProps) {
   const navItems: NavItem[] = [
     { id: 'overview', label: 'Overview', icon: <IconGrid /> },
     { id: 'downloads', label: 'Downloads', icon: <IconList />, count: counts.active },
+    { id: 'browse', label: 'Browse', icon: <IconSearch /> },
     { id: 'ingest', label: 'New download', icon: <IconPlus /> },
     { id: 'storage', label: 'Storage', icon: <IconDatabase /> },
     { id: 'settings', label: 'Settings', icon: <IconSettings /> },
@@ -982,7 +1055,22 @@ export function App({ initialView = 'overview' }: AppProps) {
           </>
         }
       >
-        {openFile ? (
+        {browsePreview && browsePreviewView ? (
+          <FileViewer
+            file={browsePreviewView}
+            src={browsePreview.url}
+            downloadUrl={browsePreview.url}
+            location={`${browsePreview.source} — ${browsePreview.licence}`}
+            onClose={() => setBrowsePreview(null)}
+            onOpenWith={() => void openWithItem({ id: browsePreview.id, name: browsePreview.filename, url: browsePreview.url, mime: browsePreview.mime })}
+            onShare={() => shareItems([{ id: browsePreview.id, name: browsePreview.filename, url: browsePreview.url, mime: browsePreview.mime }])}
+            onDelete={() => {
+              // Nothing local to delete: this is a remote candidate. Queue it.
+              downloadBrowsed(browsePreview);
+              setBrowsePreview(null);
+            }}
+          />
+        ) : openFile ? (
           <FileViewer
             file={openFile}
             src={contentUrlFor(openFile)}
@@ -1018,6 +1106,34 @@ export function App({ initialView = 'overview' }: AppProps) {
             }}
           />
         ))}
+
+        {view === 'browse' && (
+          <BrowsePage
+            term={browseTerm}
+            onTermChange={(t) => {
+              setBrowseTerm(t);
+              setBrowsePage(1);
+            }}
+            kind={browseKind}
+            onKindChange={(k) => {
+              setBrowseKind(k);
+              setBrowsePage(1);
+            }}
+            items={browseQuery.data?.items ?? []}
+            total={browseQuery.data?.total ?? -1}
+            hasMore={browseQuery.data?.hasMore ?? false}
+            loading={browseQuery.isFetching}
+            error={browseQuery.error ? describeError(browseQuery.error) : null}
+            queueingId={browseQueueingId}
+            onPreview={setBrowsePreview}
+            onDownload={downloadBrowsed}
+            onSaveToDevice={saveBrowsedToDevice}
+            page={browsePage}
+            onNextPage={() => setBrowsePage((p) => p + 1)}
+            onPrevPage={() => setBrowsePage((p) => Math.max(1, p - 1))}
+            canSaveToDevice={activeTier !== 'memory'}
+          />
+        )}
 
         {view === 'downloads' &&
           (isLoading ? (

@@ -81,6 +81,10 @@ typedef struct {
     volatile int pause_requested;
     /* 1 while a worker owns the record, so the server never starts a second. */
     int worker_active;
+    /* Accept a payload the detector does not recognise (a PDF, a text file).
+     * Off by default: the downloader is for media, and refusing an unexpected
+     * payload early is the safer default. The API lets a caller opt in. */
+    int allow_non_media;
     char *sha256;
     char *master_playlist;
     char *error;
@@ -400,8 +404,39 @@ static void download_free(mi_download_rec *j) {
     free(j);
 }
 
-/* The last path segment of a URL, query and fragment stripped. Falls back to
- * the whole string when it has no path, and to "download" when that is empty. */
+/* A hex digit's value, or -1 when it is not one. */
+static int hex_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Percent-decode a URL path segment. A filename in a URL is percent-encoded
+ * ("(" arrives as "%28"), so the bytes have to be decoded or the file on disk is
+ * literally called "cat_%28aka%29.jpg", which no person would recognise and no
+ * other app would match. A '+' is left alone: in a path segment it is a literal
+ * plus, not a space (only a query string treats it as a space). */
+static char *percent_decode(const char *s, size_t len) {
+    char *out = mi_malloc(len + 1);
+    if (!out) return NULL;
+    size_t o = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] == '%' && i + 2 < len) {
+            int hi = hex_value(s[i + 1]);
+            int lo = hex_value(s[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out[o++] = (char)((hi << 4) | lo);
+                i += 2;
+                continue;
+            }
+        }
+        out[o++] = s[i];
+    }
+    out[o] = '\0';
+    return out;
+}
+
 static char *basename_from_url(const char *url) {
     if (!url) return mi_strdup("download");
     const char *q = strpbrk(url, "?#");
@@ -410,7 +445,7 @@ static char *basename_from_url(const char *url) {
     const char *start = end;
     while (start > url && start[-1] != '/') start--;
     if (start == end) return mi_strdup("download");
-    return mi_strndup(start, (size_t)(end - start));
+    return percent_decode(start, (size_t)(end - start));
 }
 
 /* The name an item is shown under. A renamed record keeps its name; everything
@@ -536,6 +571,9 @@ static void download_to_json(const mi_download_rec *j, mi_json_buf *b) {
     mi_json_key(b, "purge");
     mi_json_bool(b, j->do_purge);
     mi_json_raw(b, ",");
+    mi_json_key(b, "allow_non_media");
+    mi_json_bool(b, j->allow_non_media);
+    mi_json_raw(b, ",");
     mi_json_key(b, "created_at");
     mi_json_double(b, j->created_at);
     mi_json_raw(b, ",");
@@ -612,6 +650,11 @@ static const char *extension_for_kind(const char *kind) {
     if (!strcmp(kind, "flac")) return "flac";
     if (!strcmp(kind, "wav")) return "wav";
     if (!strcmp(kind, "ogg-audio")) return "ogg";
+    /* Non-media, only reachable with allow_non_media. A PDF or a text file
+     * still needs the right extension or the OS cannot open it. */
+    if (!strcmp(kind, "pdf")) return "pdf";
+    if (!strcmp(kind, "text")) return "txt";
+    if (!strcmp(kind, "zip")) return "zip";
     return "bin";
 }
 
@@ -1104,8 +1147,9 @@ static void *download_worker(void *arg) {
     mi_download_control control = {.stop = download_should_stop, .user = j};
     dcfg.control = &control;
     /* Video, image and audio are all valid downloads; only payloads the
-     * detector does not recognise are refused. */
-    dcfg.require_media = 1;
+     * detector does not recognise are refused — unless the caller asked for
+     * one, which is how a PDF or a text file gets through. */
+    dcfg.require_media = !j->allow_non_media;
 
     char *out_dir = j->out_dir ? mi_strdup(j->out_dir)
                                : mi_asprintf("%s/%s", srv->download_dir, j->id);
@@ -1471,6 +1515,9 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         j->do_purge = mi_json_get_bool(in, "purge", 0);
         int conns = (int)mi_json_get_int(in, "connections", 8);
         j->connections = conns > 0 ? conns : 8;
+        /* A caller that wants a document or text file has to say so, because
+         * refusing an unrecognised payload is the safer default. */
+        j->allow_non_media = mi_json_get_bool(in, "allow_non_media", 0);
 
         storage_snapshot *snap = snapshot_from_headers(req);
 

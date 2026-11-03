@@ -36,7 +36,11 @@ typedef enum {
     MI_KIND_AAC,      /* ADTS */
     MI_KIND_FLAC,
     MI_KIND_WAV,
-    MI_KIND_OGG_AUDIO /* Ogg carrying Vorbis/Opus rather than Theora */
+    MI_KIND_OGG_AUDIO, /* Ogg carrying Vorbis/Opus rather than Theora */
+
+    /* documents — only downloaded when the caller allows non-media */
+    MI_KIND_PDF,
+    MI_KIND_TEXT
 } mi_media_kind;
 
 /* One selectable rendition advertised by an HLS master playlist or a DASH

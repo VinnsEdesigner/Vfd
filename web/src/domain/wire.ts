@@ -127,6 +127,8 @@ export interface WireCreateDownloadRequest {
   upload?: boolean;
   purge?: boolean;
   connections?: number;
+  /** Accept a payload the detector does not recognise (a PDF, a text file). */
+  allow_non_media?: boolean;
   prefix?: string;
   hls_dir?: string;
 }

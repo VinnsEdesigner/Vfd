@@ -216,6 +216,16 @@ export function IconExternal(props: IconProps) {
   );
 }
 
+/** A magnifier, for search affordances. */
+export function IconSearch(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <circle cx="8.8" cy="8.8" r="5.3" {...stroke} strokeWidth={1.6} />
+      <path d="M12.8 12.8L17 17" {...stroke} strokeWidth={1.6} />
+    </svg>
+  );
+}
+
 export function IconImage(props: IconProps) {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>

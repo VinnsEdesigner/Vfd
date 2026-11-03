@@ -145,6 +145,12 @@ export interface CreateDownloadInput {
   upload: boolean;
   purge: boolean;
   connections: number;
+  /**
+   * Accept a payload the detector does not recognise. Off by default: the engine
+   * refuses an unexpected payload early, and only a caller that knows it wants a
+   * document or a text file should turn that off.
+   */
+  allowNonMedia?: boolean;
   prefix?: string;
   hlsDir?: string;
   /** Title runtime in seconds. Used only to derive sizes for a manifest

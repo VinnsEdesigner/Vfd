@@ -11,4 +11,7 @@ export const queryKeys = {
   downloads: () => ['downloads'] as const,
   downloadList: () => [...queryKeys.downloads(), 'list'] as const,
   download: (id: string) => [...queryKeys.downloads(), 'detail', id] as const,
+  /** In-app search results. Keyed by term, kind and page so each page caches. */
+  browse: (term: string, kind: string, page: number, perPage: number) =>
+    ['browse', term.trim().toLowerCase(), kind, page, perPage] as const,
 };

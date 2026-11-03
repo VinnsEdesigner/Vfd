@@ -38,6 +38,14 @@ export interface LocalMediaState {
   refresh: () => Promise<void>;
   /** Streams a finished download into local storage. */
   save: (file: DownloadView) => Promise<StoredItem>;
+  /** Streams a remote URL straight to this device, with no engine involved. */
+  saveRemote: (remote: {
+    id: string;
+    url: string;
+    name: string;
+    type: string;
+    bytes: number;
+  }) => Promise<StoredItem>;
   /** A playable URL, or null when the file is not on this device. */
   urlFor: (id: string) => Promise<string | null>;
   /**
@@ -118,24 +126,29 @@ export function useLocalMedia(): LocalMediaState {
     void refresh();
   }, [refresh]);
 
-  const save = useCallback(
-    async (file: DownloadView): Promise<StoredItem> => {
-      const s = await store;
-      setSaving((prev) => new Set(prev).add(file.id));
-      setProgress((prev) => new Map(prev).set(file.id, 0));
+  /**
+   * Stream a URL into the chosen store, reporting progress and verifying the
+   * size. Shared by the engine save and the browse save, because the streaming,
+   * the progress and the size check are identical — only where the bytes come
+   * from differs.
+   */
+  const streamInto = useCallback(
+    async (
+      s: MediaStore,
+      opts: { id: string; url: string; name: string; type: string; expectedBytes: number },
+    ): Promise<StoredItem> => {
+      setSaving((prev) => new Set(prev).add(opts.id));
+      setProgress((prev) => new Map(prev).set(opts.id, 0));
 
-      const url = api.client.transport.resolve(
-        `/api/v1/downloads/${encodeURIComponent(file.id)}/content`,
-      );
       let writer: Awaited<ReturnType<MediaStore['createWriter']>> | null = null;
       try {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`the engine returned HTTP ${response.status}`);
-        if (!response.body) throw new Error('the engine sent no body to stream');
+        const response = await fetch(opts.url);
+        if (!response.ok) throw new Error(`the source returned HTTP ${response.status}`);
+        if (!response.body) throw new Error('the source sent no body to stream');
 
-        writer = await s.createWriter({ id: file.id, name: file.filename, type: mimeOf(file) });
+        writer = await s.createWriter({ id: opts.id, name: opts.name, type: opts.type });
 
-        const total = Number(response.headers.get('Content-Length') ?? 0) || file.bytes;
+        const total = Number(response.headers.get('Content-Length') ?? 0) || opts.expectedBytes;
         const reader = response.body.getReader();
         let written = 0;
         for (;;) {
@@ -145,7 +158,7 @@ export function useLocalMedia(): LocalMediaState {
           await writer.write(value);
           written += value.byteLength;
           if (total > 0) {
-            setProgress((prev) => new Map(prev).set(file.id, Math.min(written / total, 1)));
+            setProgress((prev) => new Map(prev).set(opts.id, Math.min(written / total, 1)));
           }
         }
         await writer.close(written);
@@ -153,20 +166,20 @@ export function useLocalMedia(): LocalMediaState {
 
         // A short write is a failed save, not a success with a small file.
         if (total > 0 && written !== total) {
-          await s.remove(file.id);
+          await s.remove(opts.id);
           throw new Error(`wrote ${written} of ${total} bytes`);
         }
 
-        const item = (await s.get(file.id)) ?? {
-          id: file.id,
-          name: file.filename,
-          type: mimeOf(file),
+        const item = (await s.get(opts.id)) ?? {
+          id: opts.id,
+          name: opts.name,
+          type: opts.type,
           size: written,
           tier,
         };
         await refresh();
         // Best-effort: also hand it to the service worker so it survives offline.
-        void cacheMediaOffline(url);
+        void cacheMediaOffline(opts.url);
         return item;
       } catch (e) {
         if (writer) await writer.abort().catch(() => undefined);
@@ -174,17 +187,59 @@ export function useLocalMedia(): LocalMediaState {
       } finally {
         setSaving((prev) => {
           const next = new Set(prev);
-          next.delete(file.id);
+          next.delete(opts.id);
           return next;
         });
         setProgress((prev) => {
           const next = new Map(prev);
-          next.delete(file.id);
+          next.delete(opts.id);
           return next;
         });
       }
     },
-    [store, api.client.transport, tier, refresh],
+    [refresh, tier],
+  );
+
+  const save = useCallback(
+    async (file: DownloadView): Promise<StoredItem> => {
+      const s = await store;
+      const url = api.client.transport.resolve(
+        `/api/v1/downloads/${encodeURIComponent(file.id)}/content`,
+      );
+      return streamInto(s, {
+        id: file.id,
+        url,
+        name: file.filename,
+        type: mimeOf(file),
+        expectedBytes: file.bytes,
+      });
+    },
+    [store, api.client.transport, streamInto],
+  );
+
+  /**
+   * Save a file from anywhere on the internet straight onto this device, with no
+   * engine involved. Used by Browse, where the point is to keep one file without
+   * queueing it through the pipeline first.
+   */
+  const saveRemote = useCallback(
+    async (remote: {
+      id: string;
+      url: string;
+      name: string;
+      type: string;
+      bytes: number;
+    }): Promise<StoredItem> => {
+      const s = await store;
+      return streamInto(s, {
+        id: remote.id,
+        url: remote.url,
+        name: remote.name,
+        type: remote.type || 'application/octet-stream',
+        expectedBytes: remote.bytes,
+      });
+    },
+    [store, streamInto],
   );
 
   const urlFor = useCallback(
@@ -227,6 +282,7 @@ export function useLocalMedia(): LocalMediaState {
     error,
     refresh,
     save,
+    saveRemote,
     urlFor,
     rename,
     remove,

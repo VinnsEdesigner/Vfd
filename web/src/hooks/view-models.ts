@@ -338,7 +338,7 @@ export interface DownloadView {
    * a first-class entry in the file manager (playable, shareable, openable), not
    * only a note on an engine record.
    */
-  source: 'engine' | 'device';
+  source: 'engine' | 'device' | 'remote';
   /** The playback URL for a device copy; null for an engine item. */
   localUrl: string | null;
   /** 0..1 */
@@ -451,6 +451,66 @@ export function withPipeline(
 
 export function toDownloadViews(list: Download[]): DownloadView[] {
   return list.map(toDownloadView);
+}
+
+/**
+ * A browse result as something the viewer can render.
+ *
+ * Previewing a remote candidate must not require downloading it first, so the
+ * viewer needs a view model for a file that is not in the library and may never
+ * be. `source: 'remote'` keeps it honest — nothing has been saved.
+ */
+export function toRemoteView(item: {
+  id: string;
+  title: string;
+  filename: string;
+  url: string;
+  mime: string;
+  bytes: number;
+  thumbUrl: string | null;
+  licence: string;
+}): DownloadView {
+  const kind = kindFromMime(item.mime, item.filename);
+  const ext = extensionOf(item.filename);
+  return {
+    id: item.id,
+    url: item.url,
+    name: item.filename,
+    source: 'remote',
+    localUrl: item.thumbUrl,
+    state: 'done',
+    tone: 'done',
+    fraction: 1,
+    percent: 100,
+    bytes: item.bytes,
+    bytesLabel: item.bytes >= 0 ? formatBytes(item.bytes) : 'unknown size',
+    downloadedLabel: '',
+    bytesPerSecond: 0,
+    sha256: null,
+    masterPlaylist: null,
+    artifacts: [],
+    error: null,
+    createdAtLabel: '—',
+    createdAt: 0,
+    kindLabel: formatKind(kind),
+    filename: item.filename,
+    resolutionLabel: null,
+    extension: ext,
+    isActive: false,
+    isResumable: false,
+    isSettled: true,
+    isOpenable: true,
+    isVideo: VIDEO_KINDS.has(kind),
+    isImage: IMAGE_KINDS.has(kind),
+    isAudio: AUDIO_KINDS.has(kind),
+    qualities: [],
+    pipeline: [],
+    requestedQuality: null,
+    connections: 0,
+    hls: false,
+    upload: false,
+    purge: false,
+  };
 }
 
 /** A stored file on this device, as the file manager needs to see it. */

@@ -4,7 +4,7 @@
  * and any future capability check cannot disagree.
  */
 
-export type ViewerKind = 'image' | 'video' | 'audio' | 'unsupported';
+export type ViewerKind = 'image' | 'video' | 'audio' | 'document' | 'text' | 'unsupported';
 
 /** Video the browser plays natively. MKV/AVI/FLV/MPEG-TS will not decode. */
 const NATIVE_VIDEO = new Set(['mp4', 'webm', 'ogg']);
@@ -12,6 +12,10 @@ const NATIVE_VIDEO = new Set(['mp4', 'webm', 'ogg']);
 const NATIVE_IMAGE = new Set(['jpeg', 'png', 'gif', 'webp', 'bmp', 'avif']);
 /** Audio the browser plays. */
 const NATIVE_AUDIO = new Set(['mp3', 'wav', 'aac', 'ogg-audio', 'flac']);
+/** Documents the browser can render itself (PDF) or that have a reader. */
+const DOCUMENT_KINDS = new Set(['pdf', 'djvu']);
+/** Plain text the app renders into a <pre>. */
+const TEXT_KINDS = new Set(['txt', 'text', 'markdown', 'csv', 'json', 'xml', 'srt', 'vtt', 'log']);
 
 export interface ViewerCapability {
   kind: ViewerKind;
@@ -61,6 +65,16 @@ export function viewerFor(file: {
           playable: false,
           reason: `${file.kindLabel} is not natively playable — transcode to HLS for an in-app preview.`,
         };
+  }
+
+  // Documents and text are not "played"; they are rendered. A PDF goes to the
+  // browser's own viewer (which may refuse framing — the viewer says so), and
+  // plain text is fetched and shown.
+  if (DOCUMENT_KINDS.has(kind)) {
+    return { kind: 'document', playable: true };
+  }
+  if (TEXT_KINDS.has(kind)) {
+    return { kind: 'text', playable: true };
   }
 
   return { kind: 'unsupported', playable: false, reason: 'No viewer for this file type.' };

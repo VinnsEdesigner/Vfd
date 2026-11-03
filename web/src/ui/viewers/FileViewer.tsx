@@ -11,6 +11,8 @@ import { ViewerShell } from './ViewerShell';
 import { ImageViewer } from './ImageViewer';
 import { VideoPlayer } from './VideoPlayer';
 import { AudioPlayer } from './AudioPlayer';
+import { DocumentViewer } from './DocumentViewer';
+import { TextViewer } from './TextViewer';
 import { viewerFor } from './format';
 import { Note } from '../primitives/Note';
 import { IconFile, IconImage, IconMusic } from '../primitives/Icons';
@@ -118,6 +120,10 @@ export function FileViewer({
     stage = <ImageViewer src={src} alt={file.name} onDimensions={setDims} />;
   } else if (capability.kind === 'video') {
     stage = <VideoPlayer src={src} onError={setPlaybackError} />;
+  } else if (capability.kind === 'document') {
+    stage = <DocumentViewer src={src} title={file.name} openUrl={downloadUrl} />;
+  } else if (capability.kind === 'text') {
+    stage = <TextViewer src={src} title={file.name} />;
   } else {
     stage = <AudioPlayer src={src} title={file.name} onError={setPlaybackError} />;
   }

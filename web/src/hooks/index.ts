@@ -3,6 +3,9 @@
  */
 export { MediaApiProvider, useMediaApi } from './provider';
 export { queryKeys } from './query-keys';
+export { searchCommons, SUPPORTED_KINDS } from '../rest/browse';
+export { browseKindFor, browseKindLabel } from '../domain/browse';
+export type { BrowseItem, BrowseKind, BrowseQuery, BrowseResult } from '../domain/browse';
 export { useHealth, useCapabilities, useStorageConfig, useSystemStorage, useSetStorageLocation } from './use-system';
 export {
   useDownloads,
@@ -16,6 +19,8 @@ export {
   useResumeDownload,
 } from './use-downloads';
 export { useProbe, useDetectBytes } from './use-media';
+export { useBrowse } from './use-browse';
+export type { UseBrowseArgs } from './use-browse';
 export { useLocalMedia } from './use-local-media';
 export type { LocalMediaState } from './use-local-media';
 export type { ProbeVariables } from './use-media';

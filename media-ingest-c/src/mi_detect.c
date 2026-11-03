@@ -334,6 +334,55 @@ static int detect_avif_heic(const unsigned char *buf, size_t len, mi_media_info 
     return 0;
 }
 
+/* ---------------- documents ---------------- */
+
+/* A PDF starts with "%PDF-". High confidence: nothing else does. */
+static int detect_pdf(const unsigned char *buf, size_t len, mi_media_info *out) {
+    if (len >= 5 && memcmp(buf, "%PDF-", 5) == 0) {
+        set_info(out, MI_KIND_PDF, 0.99, "pdf", 0);
+        return 1;
+    }
+    return 0;
+}
+
+/* Plain text has no signature, so this is a *conservative* check: the leading
+ * bytes must all be printable ASCII or common whitespace, and there must be
+ * enough of them to mean something. That deliberately refuses to call a binary
+ * blob text just because it happens to start with a letter.
+ *
+ * Markup is excluded on purpose. An HTML error page is the classic case where
+ * "it is text" would be actively harmful: it would be saved as a .txt file that
+ * looks like a successful download of something it is not. Keeping HTML unknown
+ * means it is refused, which is the existing and correct behaviour. */
+static int detect_text(const unsigned char *buf, size_t len, mi_media_info *out) {
+    size_t probe = len < 512 ? len : 512;
+    if (probe < 16) return 0;
+    /* Skip a UTF-8 BOM and any leading whitespace before the markup check. */
+    size_t start = 0;
+    if (probe >= 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF) start = 3;
+    while (start < probe && (buf[start] == ' ' || buf[start] == '\t' ||
+                             buf[start] == '\r' || buf[start] == '\n')) {
+        start++;
+    }
+    if (start < probe && buf[start] == '<') return 0;
+
+    int printable = 0;
+    for (size_t i = 0; i < probe; i++) {
+        unsigned char c = buf[i];
+        if ((c >= 0x20 && c < 0x7F) || c == '\n' || c == '\r' || c == '\t') {
+            printable++;
+        } else if (c == 0) {
+            /* A NUL in the first block means binary, not text. */
+            return 0;
+        }
+    }
+    /* Allow a little slack for UTF-8 multibyte sequences, which read as high
+     * bytes, without accepting a file that is mostly binary. */
+    if ((size_t)printable * 100 < probe * 90) return 0;
+    set_info(out, MI_KIND_TEXT, 0.6, "text", 0);
+    return 1;
+}
+
 /* ---------------- audio ---------------- */
 
 static int detect_mp3(const unsigned char *buf, size_t len, mi_media_info *out) {
@@ -389,6 +438,9 @@ static const detector_fn DETECTORS[] = {
     /* containers */
     detect_iso_bmff, detect_matroska, detect_avi,  detect_flv, detect_ogg,
     detect_asf,      detect_mpeg_ts,  detect_mpeg_ps, detect_hls, detect_dash,
+    /* documents, so an allowed non-media download still gets the right kind
+       (and therefore the right file extension) */
+    detect_pdf, detect_text,
 };
 
 /* ------------------------------------------------------------------ */
@@ -420,6 +472,8 @@ const char *mi_kind_name(mi_media_kind kind) {
         case MI_KIND_FLAC: return "flac";
         case MI_KIND_WAV: return "wav";
         case MI_KIND_OGG_AUDIO: return "ogg-audio";
+        case MI_KIND_PDF: return "pdf";
+        case MI_KIND_TEXT: return "text";
         default: return "unknown";
     }
 }

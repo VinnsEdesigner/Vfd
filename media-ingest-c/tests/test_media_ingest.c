@@ -234,6 +234,36 @@ static void test_detect_empty(void) {
     mi_media_info_free(&info);
 }
 
+/* Documents. These only ever get downloaded with allow_non_media, but the kind
+ * still has to be right or the file lands with the wrong extension. */
+static void test_detect_documents(void) {
+    mi_media_info info;
+
+    const char *pdf = "%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n";
+    mi_detect((const unsigned char *)pdf, strlen(pdf), &info);
+    CHECK(info.kind == MI_KIND_PDF, "pdf detected");
+    CHECK(strcmp(info.container, "pdf") == 0, "pdf container");
+    CHECK(info.is_video == 0 && info.is_image == 0 && info.is_audio == 0,
+          "pdf is not media");
+    mi_media_info_free(&info);
+
+    const char *txt = "This is a plain text file.\nIt has several lines.\n";
+    mi_detect((const unsigned char *)txt, strlen(txt), &info);
+    CHECK(info.kind == MI_KIND_TEXT, "text detected");
+    CHECK(strcmp(info.container, "text") == 0, "text container");
+    mi_media_info_free(&info);
+
+    /* A binary blob that happens to start with letters must NOT be called text:
+     * the check is deliberately conservative so a .zip is not mistaken for one. */
+    unsigned char bin[64];
+    memset(bin, 0, sizeof bin);
+    bin[0] = 'P'; bin[1] = 'K'; bin[2] = 0x03; bin[3] = 0x04;
+    for (size_t i = 4; i < sizeof bin; i++) bin[i] = (unsigned char)(i * 7);
+    mi_detect(bin, sizeof bin, &info);
+    CHECK(info.kind != MI_KIND_TEXT, "a binary blob is not text");
+    mi_media_info_free(&info);
+}
+
 /* ---------------------------------------------------------------- */
 /* download tests                                                    */
 /* ---------------------------------------------------------------- */
@@ -895,6 +925,7 @@ int main(void) {
     test_detect_html_not_video();
     test_detect_hls_manifest();
     test_detect_empty();
+    test_detect_documents();
     test_sha256();
     test_probe_and_download();
     test_refuse_non_video();

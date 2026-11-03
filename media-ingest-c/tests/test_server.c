@@ -340,6 +340,19 @@ static void test_http_api(void) {
     }
     CHECK(terminal, "download reaches a terminal state");
 
+    /* A percent-encoded filename is decoded, so the file is not called
+     * "cat_%28aka%29.jpg" on disk. This is the name a person sees and the OS
+     * matches, so it has to be the real one. */
+    {
+        resp = http_call(port, "POST", "/api/v1/downloads",
+                         "{\"url\":\"http://127.0.0.1:1/Six_weeks_old_cat_%28aka%29.jpg\",\"hls\":false}",
+                         "testtoken", &status);
+        CHECK(status == 202, "encoded-name download accepted");
+        CHECK(strstr(body_of(resp), "\"name\":\"Six_weeks_old_cat_(aka).jpg\"") != NULL,
+              "percent-encoded name is decoded");
+        free(resp);
+    }
+
     /* delete an unknown download */
     resp = http_call(port, "DELETE", "/api/v1/downloads/deadbeef", NULL, "testtoken", &status);
     CHECK(status == 404, "delete unknown download 404");
