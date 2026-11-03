@@ -1963,6 +1963,28 @@
 
 /* ------------------------------ Image viewer ------------------------------ */
 
+/* The bar and the stage, as one box, so it can be the full-screen element.
+   It fills the viewer's stage column the same way the pair used to. */
+.imgviewer {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+/* Full screen: the whole viewer fills the viewport and the picture is fitted
+   to it. A dark backdrop is what every image lightbox uses, so the picture
+   reads as the subject rather than sitting on the app's chrome. */
+.imgviewer:fullscreen {
+  background: var(--bg);
+  padding: 16px;
+  gap: 10px;
+}
+.imgviewer:fullscreen .imgstage {
+  flex: 1;
+  min-height: 0;
+}
+
 .imgbar {
   display: flex;
   align-items: center;

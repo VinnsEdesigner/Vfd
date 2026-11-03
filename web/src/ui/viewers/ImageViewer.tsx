@@ -14,11 +14,23 @@
  * Pinch is implemented on raw pointer events rather than the browser's own
  * gesture handling: `touch-action: none` on the stage stops the browser claiming
  * the gesture, so both fingers arrive here and the scale is ours to control.
+ *
+ * Full screen uses the browser's own API on the whole viewer (bar and stage
+ * together, not the picture alone), so the controls stay reachable and the
+ * picture is fitted to the viewport rather than left at its old zoom.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../primitives/Button';
-import { IconZoomIn, IconZoomOut, IconRotate, IconFit, IconReset } from '../primitives/Icons';
+import {
+  IconZoomIn,
+  IconZoomOut,
+  IconRotate,
+  IconFit,
+  IconReset,
+  IconFullscreen,
+  IconExitFullscreen,
+} from '../primitives/Icons';
 
 export interface ImageViewerProps {
   src: string;
@@ -43,8 +55,11 @@ export function ImageViewer({ src, alt, onDimensions }: ImageViewerProps) {
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [pinching, setPinching] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
 
   const stageRef = useRef<HTMLDivElement>(null);
+  /** The whole viewer, so full screen keeps the toolbar reachable. */
+  const rootRef = useRef<HTMLDivElement>(null);
   /** Live pointers, by id. One means drag; two means pinch. */
   const pointers = useRef(new Map<number, Point>());
   const dragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
@@ -110,6 +125,35 @@ export function ImageViewer({ src, alt, onDimensions }: ImageViewerProps) {
     reset();
   }, [reset]);
 
+  /**
+   * Toggle full screen on the whole viewer. Entering also fits the picture: a
+   * view zoomed to a detail would otherwise land in full screen still cropped,
+   * which is the opposite of what the button promises. Exiting leaves the view
+   * alone, so the user's zoom survives the trip.
+   *
+   * The fit happens before the request is awaited, so it is applied at once
+   * rather than after the browser has answered. A refused request then leaves
+   * the view fitted, which is harmless.
+   */
+  const toggleFullscreen = useCallback(async () => {
+    const el = rootRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => undefined);
+    } else {
+      fit();
+      await el.requestFullscreen?.().catch(() => undefined);
+    }
+  }, [fit]);
+
+  // Track the browser's own state, so the button reflects reality even when the
+  // user leaves full screen with Esc or F11 rather than our control.
+  useEffect(() => {
+    const onChange = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
   // Wheel zoom; passive:false so preventDefault actually stops page scroll.
   useEffect(() => {
     const stage = stageRef.current;
@@ -122,17 +166,19 @@ export function ImageViewer({ src, alt, onDimensions }: ImageViewerProps) {
     return () => stage.removeEventListener('wheel', onWheel);
   }, [zoomAt]);
 
-  // Keyboard shortcuts, only while the viewer owns the page.
+  // Keyboard shortcuts, only while the viewer owns the page. `f` is the key
+  // every player uses for full screen.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === '+' || e.key === '=') zoomAt(1.2);
       else if (e.key === '-') zoomAt(1 / 1.2);
       else if (e.key === '0') fit();
       else if (e.key.toLowerCase() === 'r') setRotation((r) => (r + 90) % 360);
+      else if (e.key.toLowerCase() === 'f') void toggleFullscreen();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [zoomAt, fit]);
+  }, [zoomAt, fit, toggleFullscreen]);
 
   /** The two live pointer positions, when exactly two are down. */
   const twoPointers = (): [Point, Point] | null => {
@@ -247,7 +293,7 @@ export function ImageViewer({ src, alt, onDimensions }: ImageViewerProps) {
   };
 
   return (
-    <>
+    <div ref={rootRef} className="imgviewer">
       <div className="imgbar">
         <Button size="sm" variant="ghost" onClick={() => zoomAt(1 / 1.2)} aria-label="Zoom out">
           <IconZoomOut />
@@ -265,6 +311,17 @@ export function ImageViewer({ src, alt, onDimensions }: ImageViewerProps) {
         </Button>
         <Button size="sm" variant="ghost" onClick={reset} aria-label="Reset view">
           <IconReset />
+        </Button>
+        <span className="imgbar__sep" />
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => void toggleFullscreen()}
+          aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}
+          aria-pressed={fullscreen}
+          title={fullscreen ? 'Exit full screen' : 'Full screen'}
+        >
+          {fullscreen ? <IconExitFullscreen /> : <IconFullscreen />}
         </Button>
         {natural && (
           <span className="imgbar__dims">
@@ -301,6 +358,6 @@ export function ImageViewer({ src, alt, onDimensions }: ImageViewerProps) {
           }}
         />
       </div>
-    </>
+    </div>
   );
 }

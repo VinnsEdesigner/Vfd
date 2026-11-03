@@ -169,6 +169,57 @@ describe('ImageViewer zoom controls', () => {
     expect(img(container).style.transform).toContain('rotate(0deg)');
   });
 
+  it('offers full screen, and fits the picture when it is entered', () => {
+    const { container } = render(<ImageViewer src="http://x/a.png" alt="a" />);
+    const root = container.querySelector('.imgviewer') as HTMLElement;
+    // jsdom has no full-screen API, so provide just enough for the toggle.
+    const request = vi.fn().mockResolvedValue(undefined);
+    (root as unknown as { requestFullscreen: unknown }).requestFullscreen = request;
+    Object.defineProperty(document, 'fullscreenElement', {
+      configurable: true,
+      get: () => null,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /zoom in/i }));
+    expect(scaleOf(container)).toBeCloseTo(1.2, 2);
+
+    fireEvent.click(screen.getByRole('button', { name: /full screen/i }));
+    // The whole viewer is the full-screen element, so the bar stays reachable.
+    expect(request).toHaveBeenCalledTimes(1);
+    // Entering fits: a zoomed detail would otherwise land in full screen cropped.
+    expect(scaleOf(container)).toBe(1);
+  });
+
+  it('reflects the browser leaving full screen, and exits on the control', async () => {
+    const { container } = render(<ImageViewer src="http://x/a.png" alt="a" />);
+    const root = container.querySelector('.imgviewer') as HTMLElement;
+    let full: Element | null = root;
+    Object.defineProperty(document, 'fullscreenElement', {
+      configurable: true,
+      get: () => full,
+    });
+    const exit = vi.fn().mockImplementation(async () => {
+      full = null;
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    Object.defineProperty(document, 'exitFullscreen', {
+      configurable: true,
+      value: exit,
+    });
+    (root as unknown as { requestFullscreen: unknown }).requestFullscreen = vi
+      .fn()
+      .mockImplementation(async () => {
+        document.dispatchEvent(new Event('fullscreenchange'));
+      });
+
+    // The browser reports it is in full screen, so the control offers the exit.
+    await act(async () => {
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    fireEvent.click(screen.getByRole('button', { name: /exit full screen/i }));
+    expect(exit).toHaveBeenCalled();
+  });
+
   it('reports the natural size once the image loads', () => {
     const onDimensions = vi.fn();
     const { container } = render(
