@@ -117,6 +117,58 @@ describe('useDownloads', () => {
   });
 });
 
+describe('useDownloads polling', () => {
+  const listBody = (state: string) => ({
+    json: {
+      items: [
+        {
+          id: 'j1',
+          url: 'http://x/a.mp4',
+          state,
+          progress: { downloaded_bytes: 1, total_bytes: 2 },
+          media: null,
+          bytes: 0,
+          sha256: null,
+          master_playlist: null,
+          artifacts: [],
+          error: null,
+          created_at: 1,
+          finished_at: 0,
+        },
+      ],
+      count: 1,
+    },
+  });
+
+  it('polls the list while a download is still moving', async () => {
+    const { fetchImpl, calls } = makeFetch({
+      'GET /api/v1/downloads': () => listBody('running'),
+    });
+    vi.useFakeTimers();
+    renderHook(() => useDownloads(), { wrapper: wrapper(fetchImpl) });
+    await vi.advanceTimersByTimeAsync(0);
+    const before = calls.length;
+    await vi.advanceTimersByTimeAsync(3_200);
+    const after = calls.length;
+    vi.useRealTimers();
+    // Without this, a download started from the UI never leaves "running 0%".
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it('stops polling once everything has settled', async () => {
+    const { fetchImpl, calls } = makeFetch({
+      'GET /api/v1/downloads': () => listBody('done'),
+    });
+    vi.useFakeTimers();
+    renderHook(() => useDownloads(), { wrapper: wrapper(fetchImpl) });
+    await vi.advanceTimersByTimeAsync(0);
+    const before = calls.length;
+    await vi.advanceTimersByTimeAsync(5_000);
+    vi.useRealTimers();
+    expect(calls.length).toBe(before);
+  });
+});
+
 describe('useCreateDownload', () => {
   it('posts the wire request and seeds the cache', async () => {
     const { fetchImpl, calls } = makeFetch({
