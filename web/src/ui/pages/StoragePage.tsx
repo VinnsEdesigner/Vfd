@@ -2,7 +2,8 @@
  * StoragePage — tabbed: downloaded Files, Object storage, CDN & delivery.
  *
  * The Files tab is the download library: in-progress cards on top (each with a
- * bar carrying % and transfer rate), then a filterable table of everything.
+ * bar carrying % and transfer rate), then the file browser (grid or rows, with
+ * its own filter/sort controls and multi-select).
  */
 
 import { useState } from 'react';
@@ -12,11 +13,11 @@ import { Button } from '../primitives/Button';
 import { Field, SecretField } from '../primitives/Field';
 import { Note } from '../primitives/Note';
 import { DownloadCardList } from '../downloads/DownloadCardList';
-import { FileTable, type StorageTarget } from '../files/FileTable';
+import { FileLibrary, type StorageTarget } from '../files';
+import { IconShare } from '../primitives/Icons';
 import type { DownloadView } from '../../hooks/view-models';
 
 export type StorageTab = 'files' | 'object' | 'cdn';
-export type FileFilter = 'all' | 'ongoing' | 'done' | 'problem';
 
 export interface StorageCredentialsValue {
   endpoint: string;
@@ -35,8 +36,6 @@ export interface StoragePageProps {
   onTabChange: (tab: StorageTab) => void;
   downloads: ReadonlyArray<DownloadView>;
   ongoing: ReadonlyArray<DownloadView>;
-  filter: FileFilter;
-  onFilterChange: (f: FileFilter) => void;
   target: StorageTarget;
   localPath: string;
   cloudPath: string;
@@ -50,6 +49,16 @@ export interface StoragePageProps {
   cancellingId?: string | null;
   /** Destructive; the parent confirms before calling. */
   onDeleteFile?: (id: string) => void;
+  /** Destructive, in bulk; the parent confirms once before calling. */
+  onDeleteFiles?: (ids: readonly string[]) => void;
+  /** Outbound share; the parent owns the Web Share call and its toast. */
+  onShareFiles?: (files: readonly DownloadView[]) => void;
+  /** Relocate items into a library folder. */
+  onMoveFiles?: (ids: readonly string[], folder: string) => void;
+  /** Rename an item in place. */
+  onRenameFile?: (id: string, name: string) => void;
+  /** Absolute URL of an item's bytes, for sharing and thumbnails. */
+  contentUrl: (id: string) => string;
   /** Which action is in flight, so its button can spin. */
   busy?: string | null;
 }
@@ -60,8 +69,6 @@ export function StoragePage(props: StoragePageProps) {
     onTabChange,
     downloads,
     ongoing,
-    filter,
-    onFilterChange,
     target,
     localPath,
     cloudPath,
@@ -74,12 +81,22 @@ export function StoragePage(props: StoragePageProps) {
     onCancelDownload,
     cancellingId = null,
     onDeleteFile,
+    onDeleteFiles,
+    onShareFiles,
+    onMoveFiles,
+    onRenameFile,
+    contentUrl,
     busy = null,
   } = props;
 
   const doneCount = downloads.filter((d) => d.state === 'done').length;
   const set = (patch: Partial<StorageCredentialsValue>) =>
     onCredentialsChange({ ...credentials, ...patch });
+
+  const deleteSelected = (ids: readonly string[]) => {
+    if (onDeleteFiles) onDeleteFiles(ids);
+    else ids.forEach((id) => onDeleteFile?.(id));
+  };
 
   return (
     <>
@@ -101,26 +118,19 @@ export function StoragePage(props: StoragePageProps) {
             target === 'local' ? 'this device' : 'object storage'
           }`}
           actions={
-            <Button size="sm" variant="ghost" onClick={onGoToSettings}>
-              Change location
-            </Button>
-          }
-          footerHead={
-            <div className="card__head files__head-split">
-              <div className="card__title">Library</div>
-              <Tabs
-                label="File filter"
-                active={filter}
-                onChange={onFilterChange}
-                className="tabs--inline"
-                items={[
-                  { id: 'all', label: 'All' },
-                  { id: 'ongoing', label: 'Ongoing' },
-                  { id: 'done', label: 'Finished' },
-                  { id: 'problem', label: 'Failed' },
-                ]}
-              />
-            </div>
+            <>
+              <Button size="sm" variant="ghost" onClick={onGoToSettings}>
+                Change location
+              </Button>
+              {onShareFiles && downloads.length > 0 && (
+                <Button
+                  size="sm"
+                  onClick={() => onShareFiles(downloads.filter((d) => d.state === 'done'))}
+                >
+                  <IconShare /> Share
+                </Button>
+              )}
+            </>
           }
           flush
         >
@@ -135,15 +145,19 @@ export function StoragePage(props: StoragePageProps) {
               cancellingId={cancellingId}
             />
           </div>
-          <div style={{ marginTop: 20 }}>
-            <FileTable
+          <div className="files__library">
+            <FileLibrary
               files={downloads}
               target={target}
               localPath={localPath}
               cloudPath={cloudPath}
+              contentUrl={contentUrl}
               onOpen={onOpenFile}
-              onDetails={onSelect}
-              {...(onDeleteFile ? { onDelete: onDeleteFile } : {})}
+              onShare={(list) => onShareFiles?.(list)}
+              onDelete={deleteSelected}
+              onMove={(ids, folder) => onMoveFiles?.(ids, folder)}
+              {...(onRenameFile ? { onRename: onRenameFile } : {})}
+              busy={busy === 'file-action'}
             />
           </div>
         </Card>

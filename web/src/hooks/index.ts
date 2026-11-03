@@ -10,10 +10,13 @@ export {
   useCreateDownload,
   useCancelDownload,
   useRemoveDownload,
+  useRenameDownload,
+  useMoveDownload,
 } from './use-downloads';
 export { useProbe, useDetectBytes } from './use-media';
 export type { ProbeVariables } from './use-media';
-export { useDownloadViews } from './use-download-views';
+export { useDownloadViews, useDownloadViewsWithPipeline } from './use-download-views';
+export type { DownloadPipelineOptions } from './use-download-views';
 export {
   qualityLabel,
   toQualityOptions,
@@ -24,16 +27,33 @@ export {
   formatTimestamp,
   formatKind,
   fileNameFromUrl,
+  extensionOf,
+  hostFromUrl,
+  pathFromUrl,
+  pipelineStages,
   statusTone,
   statusLabel,
   isActiveState,
   isSettledState,
 } from './view-models';
-export type { DownloadView, StatusTone, QualityOption } from './view-models';
+export type {
+  DownloadView,
+  StatusTone,
+  QualityOption,
+  PipelineStageKey,
+  PipelineStageStatus,
+  PipelineStageView,
+  PipelineOptions,
+} from './view-models';
 
 // Error helpers, re-exported so `ui` never reaches into `api-client` directly.
 export { ApiError, NetworkError, isApiError, isNetworkError } from '../api-client';
-export type { CreateDownloadVariables, RemoveDownloadVariables } from './use-downloads';
+export type {
+  CreateDownloadVariables,
+  RemoveDownloadVariables,
+  RenameDownloadVariables,
+  MoveDownloadVariables,
+} from './use-downloads';
 
 // Re-exported from stores so the UI has exactly one import surface (`../hooks`).
 export { useConnectionStore, connectionSettings, DEFAULT_CONNECTION } from '../stores/connection-store';

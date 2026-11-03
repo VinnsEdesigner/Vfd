@@ -1,22 +1,25 @@
 /**
- * PipelineSteps — the six-stage progress view for one download.
+ * PipelineSteps — the stage list for one download.
  *
- * Stage state is derived from the download's own state and stage index, so the
- * component is a pure function of its props.
+ * The statuses are derived in the data layer from the record's own facts, so
+ * this component only renders them. It never asserts a stage is done: a stage
+ * with no evidence reads "Pending", and a stage the job was not asked to run
+ * reads "Skipped" rather than being hidden, so the list keeps its shape.
  */
 
-import { IconCheck, IconX } from '../primitives/Icons';
-import type { DownloadState } from '../../hooks/view-models';
+import { IconCheck, IconX, IconMinus } from '../primitives/Icons';
+import type { PipelineStageKey, PipelineStageStatus } from '../../hooks/view-models';
 
-export interface PipelineStage {
-  key: string;
+export interface PipelineStageMeta {
+  key: PipelineStageKey;
   name: string;
   meta: string;
 }
 
-export const PIPELINE_STAGES: ReadonlyArray<PipelineStage> = [
+/** Display copy for the stages, in engine order. */
+export const PIPELINE_STAGES: ReadonlyArray<PipelineStageMeta> = [
   { key: 'probe', name: 'Probe', meta: 'HEAD + byte sniff' },
-  { key: 'fetch', name: 'Fetch', meta: 'Ranged, 8 connections' },
+  { key: 'fetch', name: 'Fetch', meta: 'Ranged, multi-connection' },
   { key: 'verify', name: 'Verify', meta: 'SHA-256 checksum' },
   { key: 'transcode', name: 'Transcode', meta: 'HLS adaptive ladder' },
   { key: 'upload', name: 'Upload', meta: 'S3-compatible PUT' },
@@ -24,47 +27,39 @@ export const PIPELINE_STAGES: ReadonlyArray<PipelineStage> = [
 ];
 
 export interface PipelineStepsProps {
-  state: DownloadState;
-  /** Index of the stage currently in flight (or where it stopped). */
-  stage: number;
-  stages?: ReadonlyArray<PipelineStage>;
+  /** Derived status per stage, in the same order as PIPELINE_STAGES. */
+  stages: ReadonlyArray<{ key: PipelineStageKey; status: PipelineStageStatus }>;
+  /** Copy overrides; defaults to PIPELINE_STAGES. */
+  meta?: ReadonlyArray<PipelineStageMeta>;
 }
 
-type StepStatus = 'done' | 'active' | 'fault' | 'pending';
-
-function stepStatus(index: number, stage: number, state: DownloadState): StepStatus {
-  if (index < stage) return 'done';
-  if (index !== stage) return 'pending';
-  if (state === 'running' || state === 'queued') return 'active';
-  if (state === 'failed') return 'fault';
-  if (state === 'done') return 'done';
-  return 'pending';
-}
-
-const STATUS_LABEL: Record<StepStatus, string> = {
+const STATUS_LABEL: Record<PipelineStageStatus, string> = {
   done: 'Complete',
   active: 'Running',
   fault: 'Failed',
   pending: 'Pending',
+  skipped: 'Skipped',
 };
 
-export function PipelineSteps({
-  state,
-  stage,
-  stages = PIPELINE_STAGES,
-}: PipelineStepsProps) {
+function glyph(status: PipelineStageStatus, index: number) {
+  if (status === 'done') return <IconCheck />;
+  if (status === 'fault') return <IconX />;
+  if (status === 'skipped') return <IconMinus />;
+  return String(index + 1);
+}
+
+export function PipelineSteps({ stages, meta = PIPELINE_STAGES }: PipelineStepsProps) {
+  const byKey = new Map(stages.map((s) => [s.key, s.status]));
   return (
     <div className="steps">
-      {stages.map((s, i) => {
-        const status = stepStatus(i, stage, state);
-        const glyph =
-          status === 'done' ? <IconCheck /> : status === 'fault' ? <IconX /> : String(i + 1);
+      {meta.map((m, i) => {
+        const status = byKey.get(m.key) ?? 'pending';
         return (
-          <div key={s.key} className={`step step--${status}`}>
-            <span className="step__dot">{glyph}</span>
+          <div key={m.key} className={`step step--${status}`}>
+            <span className="step__dot">{glyph(status, i)}</span>
             <div className="step__body">
-              <div className="step__name">{s.name}</div>
-              <div className="step__meta">{s.meta}</div>
+              <div className="step__name">{m.name}</div>
+              <div className="step__meta">{m.meta}</div>
             </div>
             <span className="step__right">{STATUS_LABEL[status]}</span>
           </div>

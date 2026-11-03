@@ -96,6 +96,34 @@ export function formatTimestamp(unixSeconds: number): string {
   });
 }
 
+/** The host of a source URL, for a readable "where did this come from" line.
+ *  Falls back to the whole string when it does not parse as a URL. */
+export function hostFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.host || url;
+  } catch {
+    return url;
+  }
+}
+
+/** The path (no host, no query) of a source URL, for a secondary detail line. */
+export function pathFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname;
+  } catch {
+    return '';
+  }
+}
+
+/** Lowercase extension of a filename, or '' when it has none. */
+export function extensionOf(name: string): string {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || dot === name.length - 1) return '';
+  return name.slice(dot + 1).toLowerCase();
+}
+
 /** Filename from a URL, falling back to the last path segment. */
 export function fileNameFromUrl(url: string): string {
   const withoutQuery = url.split('?')[0]?.split('#')[0] ?? url;
@@ -166,6 +194,72 @@ export function toQualityOptions(qualities: readonly Quality[]): QualityOption[]
     .sort((a, b) => b.height - a.height);
 }
 
+/* ------------------------------ pipeline ------------------------------ */
+
+export type PipelineStageKey = 'probe' | 'fetch' | 'verify' | 'transcode' | 'upload' | 'purge';
+
+export type PipelineStageStatus = 'done' | 'active' | 'pending' | 'skipped' | 'fault';
+
+export interface PipelineStageView {
+  key: PipelineStageKey;
+  status: PipelineStageStatus;
+}
+
+/** Which optional stages a given download was asked to run. */
+export interface PipelineOptions {
+  hls: boolean;
+  upload: boolean;
+  purge: boolean;
+}
+
+/**
+ * Where a download has actually got to, from observable facts only:
+ *   - a record exists, so the probe succeeded;
+ *   - `bytes > 0` means the fetch finished;
+ *   - `sha256` is written after verification;
+ *   - `masterPlaylist` / `artifacts` are the output of transcode / upload.
+ *
+ * A stage the engine cannot report on stays "pending" rather than being guessed
+ * at, because a pipeline that shows a stage as done when it is not is worse
+ * than one that admits it does not know. Stages a job was not asked to run are
+ * "skipped", not "done".
+ */
+export function pipelineStages(
+  d: DownloadView,
+  options: PipelineOptions,
+): PipelineStageView[] {
+  const finished = d.state === 'done';
+  const faulted = d.state === 'failed';
+  const running = d.state === 'running' || d.state === 'queued';
+  const fetched = d.bytes > 0;
+
+  const stages: PipelineStageView[] = [
+    { key: 'probe', status: 'done' },
+    { key: 'fetch', status: fetched ? 'done' : faulted ? 'fault' : running ? 'active' : 'pending' },
+    {
+      key: 'verify',
+      status: d.sha256 ? 'done' : faulted ? 'fault' : finished ? 'done' : 'pending',
+    },
+  ];
+
+  const optional = (
+    key: PipelineStageKey,
+    wanted: boolean,
+    evidence: boolean,
+  ): PipelineStageView => {
+    if (!wanted) return { key, status: 'skipped' };
+    if (evidence) return { key, status: 'done' };
+    if (faulted && fetched) return { key, status: 'fault' };
+    if (finished) return { key, status: 'done' };
+    return { key, status: 'pending' };
+  };
+
+  stages.push(optional('transcode', options.hls, d.masterPlaylist !== null));
+  stages.push(optional('upload', options.upload, d.artifacts.length > 0));
+  stages.push(optional('purge', options.purge && options.upload, false));
+  return stages;
+}
+
 /* ------------------------------ view models ------------------------------ */
 
 export interface DownloadView {
@@ -183,10 +277,18 @@ export interface DownloadView {
   /** Live transfer rate. Only meaningful while downloading; 0 otherwise. */
   bytesPerSecond: number;
   sha256: string | null;
+  /** Master playlist path, present once HLS transcode produced output. */
+  masterPlaylist: string | null;
   artifacts: string[];
   error: string | null;
   createdAtLabel: string;
+  /** Raw timestamp, so sorting is numeric rather than string-comparing a
+   *  formatted date. */
+  createdAt: number;
   kindLabel: string;
+  /** Lowercase file extension from the name, e.g. "mp4" / "png". Used to decide
+   *  whether the grid can show a real thumbnail. */
+  extension: string;
   isActive: boolean;
   isSettled: boolean;
   isOpenable: boolean;
@@ -195,6 +297,8 @@ export interface DownloadView {
   isImage: boolean;
   isAudio: boolean;
   qualities: QualityOption[];
+  /** Which stages this download ran, and where each got to. */
+  pipeline: PipelineStageView[];
 }
 
 export function toDownloadView(d: Download): DownloadView {
@@ -208,7 +312,9 @@ export function toDownloadView(d: Download): DownloadView {
   return {
     id: d.id,
     url: d.url,
-    name: fileNameFromUrl(d.url),
+    // The server now names an item, and a rename changes it. Fall back to the
+    // URL segment so a record from an older server still reads sensibly.
+    name: d.name && d.name.trim() ? d.name : fileNameFromUrl(d.url),
     state: d.state,
     tone: statusTone(d.state),
     fraction,
@@ -218,10 +324,13 @@ export function toDownloadView(d: Download): DownloadView {
     downloadedLabel: formatBytes(d.progress.downloadedBytes),
     bytesPerSecond: d.bytesPerSecond,
     sha256: d.sha256,
+    masterPlaylist: d.masterPlaylist,
     artifacts: d.artifacts,
     error: d.error,
     createdAtLabel: formatTimestamp(d.createdAt),
+    createdAt: d.createdAt,
     kindLabel: d.media ? formatKind(d.media.kind) : '—',
+    extension: extensionOf(d.name),
     isActive: isActiveState(d.state),
     isSettled: isSettledState(d.state),
     isOpenable: d.state === 'done',
@@ -229,7 +338,16 @@ export function toDownloadView(d: Download): DownloadView {
     isImage: Boolean(d.media?.isImage),
     isAudio: Boolean(d.media?.isAudio),
     qualities: d.media ? toQualityOptions(d.media.qualities) : [],
+    pipeline: [],
   };
+}
+
+/** Fills in the pipeline for a view once its options are known. */
+export function withPipeline(
+  view: DownloadView,
+  options: PipelineOptions,
+): DownloadView {
+  return { ...view, pipeline: pipelineStages(view, options) };
 }
 
 export function toDownloadViews(list: Download[]): DownloadView[] {

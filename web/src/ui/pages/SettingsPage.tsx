@@ -1,5 +1,9 @@
 /**
- * SettingsPage — tabbed: Connection, Storage location, Engine.
+ * SettingsPage — tabbed: Connection, Storage location, Engine, More.
+ *
+ * "More" holds the diagnostics that are useful but not everyday: the pipeline
+ * inspector for a chosen download. It lives here rather than on the Overview
+ * because it is a per-item detail, not a dashboard summary.
  */
 
 import { Card } from '../primitives/Card';
@@ -7,12 +11,17 @@ import { Tabs } from '../primitives/Tabs';
 import { Button } from '../primitives/Button';
 import { Field, SecretField } from '../primitives/Field';
 import { SwitchRow } from '../primitives/SwitchRow';
+import { PipelineSteps } from '../downloads/PipelineSteps';
+import { StatusBadge } from '../downloads/StatusBadge';
+import { EmptyState } from '../primitives/EmptyState';
+import { Select } from '../primitives/Select';
 import {
   StorageLocationPanel,
   type StorageLocationValue,
 } from '../settings/StorageLocationPanel';
+import type { DownloadView } from '../../hooks/view-models';
 
-export type SettingsTab = 'general' | 'location' | 'engine';
+export type SettingsTab = 'general' | 'location' | 'engine' | 'more';
 
 export interface EngineFacts {
   engineVersion: string;
@@ -42,6 +51,11 @@ export interface SettingsPageProps {
   onSaveConnection: () => void;
   onSaveLocation: () => void;
   onTestLocation: () => void;
+  /** Downloads selectable in the pipeline inspector ("More" tab). */
+  downloads: ReadonlyArray<DownloadView>;
+  /** Which download the inspector shows. */
+  inspectedId: string | null;
+  onInspectChange: (id: string) => void;
   /** Which action is in flight, so its button can spin. */
   busy?: string | null;
   usage?: { library: string; transferred: string; free: string; usedPercent: number; summary: string };
@@ -61,6 +75,7 @@ export function SettingsPage(props: SettingsPageProps) {
           { id: 'general', label: 'Connection' },
           { id: 'location', label: 'Storage location' },
           { id: 'engine', label: 'Engine' },
+          { id: 'more', label: 'More' },
         ]}
       />
 
@@ -165,6 +180,72 @@ export function SettingsPage(props: SettingsPageProps) {
           </div>
         </Card>
       )}
+
+      {tab === 'more' && (
+        <PipelineInspector
+          downloads={props.downloads}
+          inspectedId={props.inspectedId}
+          onInspectChange={props.onInspectChange}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * PipelineInspector — pick a download and see how far each engine stage got.
+ *
+ * The stage statuses come from the record's own facts (see `pipelineStages`),
+ * so this shows what actually happened rather than a fixed diagram.
+ */
+function PipelineInspector({
+  downloads,
+  inspectedId,
+  onInspectChange,
+}: {
+  downloads: ReadonlyArray<DownloadView>;
+  inspectedId: string | null;
+  onInspectChange: (id: string) => void;
+}) {
+  const current = downloads.find((d) => d.id === inspectedId) ?? downloads[0] ?? null;
+
+  if (!current) {
+    return (
+      <Card title="Pipeline inspector">
+        <EmptyState
+          title="Nothing to inspect"
+          description="Start a download and its pipeline will appear here."
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      title="Pipeline inspector"
+      subtitle={current.name}
+      actions={<StatusBadge state={current.state} />}
+    >
+      {downloads.length > 1 && (
+        <div className="field field--full" style={{ marginBottom: 14 }}>
+          <span className="field__label">Download</span>
+          <Select
+            label="Download to inspect"
+            value={current.id}
+            options={downloads.map((d) => ({
+              value: d.id,
+              label: d.name,
+              detail: d.state,
+            }))}
+            onChange={onInspectChange}
+          />
+        </div>
+      )}
+      <PipelineSteps stages={current.pipeline} />
+      <div className="field__hint" style={{ marginTop: 12 }}>
+        Stages a download was not asked to run are shown as skipped. A stage the
+        engine does not report on stays pending rather than being assumed done.
+      </div>
+    </Card>
   );
 }

@@ -2,6 +2,7 @@
 #include "mi_util.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <dirent.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -184,6 +185,86 @@ int mi_fs_stats(const char *path, mi_fs_info *out) {
     out->total_bytes = (int64_t)(vfs.f_blocks * unit);
     out->free_bytes = (int64_t)(vfs.f_bfree * unit);
     out->avail_bytes = (int64_t)(vfs.f_bavail * unit);
+    return 0;
+}
+
+/* Parse one /proc/mounts line into device, mount point and fstype.
+ * The kernel escapes spaces and tabs in the path as \040 and \011. */
+static int parse_mount_line(const char *line, char *dev, size_t dev_size,
+                            char *mp, size_t mp_size, char *type, size_t type_size) {
+    const char *p = line;
+    size_t fields = 0;
+    char *outs[3] = {dev, mp, type};
+    size_t sizes[3] = {dev_size, mp_size, type_size};
+    while (*p && fields < 3) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p || *p == '\n') break;
+        const char *start = p;
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
+        size_t len = (size_t)(p - start);
+        if (len >= sizes[fields]) len = sizes[fields] - 1;
+        memcpy(outs[fields], start, len);
+        outs[fields][len] = '\0';
+        fields++;
+    }
+    return fields == 3 ? 0 : -1;
+}
+
+int mi_mount_info(const char *path, char *mount_point, size_t mp_size,
+                  char *fs_type, size_t ft_size, char *device, size_t dev_size) {
+    if (mount_point && mp_size) mount_point[0] = '\0';
+    if (fs_type && ft_size) fs_type[0] = '\0';
+    if (device && dev_size) device[0] = '\0';
+    if (!path || !mount_point || mp_size == 0) return -1;
+
+    /* The work dir may not exist yet on first run, so fall back to the nearest
+     * ancestor that does: that is still the volume it will be created on. */
+    char candidate[PATH_MAX];
+    snprintf(candidate, sizeof candidate, "%s", path);
+    char real[PATH_MAX];
+    for (;;) {
+        if (realpath(candidate, real)) break;
+        if (!strcmp(candidate, "/")) return -1;
+        char *slash = strrchr(candidate, '/');
+        if (!slash) return -1;
+        if (slash == candidate) snprintf(candidate, sizeof candidate, "/");
+        else *slash = '\0';
+    }
+    struct stat st;
+    if (stat(real, &st) != 0) return -1;
+
+    /* The mount point is the highest ancestor that is still on the same device:
+     * walk up while the parent reports the same st_dev. */
+    char cur[PATH_MAX];
+    snprintf(cur, sizeof cur, "%s", real);
+    for (;;) {
+        if (!strcmp(cur, "/")) break;
+        char parent[PATH_MAX];
+        snprintf(parent, sizeof parent, "%s", cur);
+        char *slash = strrchr(parent, '/');
+        if (!slash) break;
+        if (slash == parent) snprintf(parent, sizeof parent, "/");
+        else *slash = '\0';
+        struct stat pst;
+        if (stat(parent, &pst) != 0) break;
+        if (pst.st_dev != st.st_dev) break; /* `cur` is the mount point */
+        snprintf(cur, sizeof cur, "%s", parent);
+    }
+    snprintf(mount_point, mp_size, "%s", cur);
+
+    /* Then read the type and backing device for that mount point. */
+    FILE *f = fopen("/proc/mounts", "r");
+    if (!f) return 0;
+    char line[4096];
+    char d[512], m[512], t[128];
+    while (fgets(line, sizeof line, f)) {
+        if (parse_mount_line(line, d, sizeof d, m, sizeof m, t, sizeof t) != 0) continue;
+        if (strcmp(m, cur) != 0) continue;
+        if (fs_type && ft_size) snprintf(fs_type, ft_size, "%s", t);
+        if (device && dev_size) snprintf(device, dev_size, "%s", d);
+        break;
+    }
+    fclose(f);
     return 0;
 }
 

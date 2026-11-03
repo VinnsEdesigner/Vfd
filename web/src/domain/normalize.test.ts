@@ -4,6 +4,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  nameFromUrl,
+  normalizeSystemStorage,
   normalizeCapabilities,
   normalizeDownload,
   normalizeDownloadList,
@@ -62,6 +64,52 @@ describe('normalizeMedia', () => {
   });
 });
 
+describe('nameFromUrl', () => {
+  it('takes the last path segment, ignoring query and fragment', () => {
+    expect(nameFromUrl('http://x/a/b/clip.mp4?sig=1')).toBe('clip.mp4');
+    expect(nameFromUrl('http://x/clip.mp4#t=3')).toBe('clip.mp4');
+    expect(nameFromUrl('http://x/clip.mp4')).toBe('clip.mp4');
+  });
+
+  it('falls back to "download" when there is no segment', () => {
+    expect(nameFromUrl('http://x/')).toBe('download');
+    expect(nameFromUrl('')).toBe('download');
+  });
+});
+
+describe('normalizeSystemStorage', () => {
+  const wire = {
+    work_dir: '/srv/library',
+    mount_point: '/srv',
+    fs_type: 'ext4',
+    fs_device: '/dev/nvme0n1p2',
+    filesystem: { total_bytes: 100, free_bytes: 40, avail_bytes: 30, used_bytes: 60 },
+    library: { bytes: 10, files: 2 },
+    downloads: { completed: 1, active: 0, failed: 0, bytes_transferred: 5 },
+  };
+
+  it('carries the volume identity through', () => {
+    const s = normalizeSystemStorage(wire);
+    expect(s.mountPoint).toBe('/srv');
+    expect(s.fsType).toBe('ext4');
+    expect(s.fsDevice).toBe('/dev/nvme0n1p2');
+  });
+
+  it('reports null rather than guessing when the server omits it', () => {
+    const s = normalizeSystemStorage({ ...wire, mount_point: null, fs_type: null, fs_device: null });
+    expect(s.mountPoint).toBeNull();
+    expect(s.fsType).toBeNull();
+  });
+
+  it('handles a server that predates the fields entirely', () => {
+    const { mount_point, fs_type, fs_device, ...old } = wire;
+    void mount_point; void fs_type; void fs_device;
+    const s = normalizeSystemStorage(old);
+    expect(s.mountPoint).toBeNull();
+    expect(s.workDir).toBe('/srv/library');
+  });
+});
+
 describe('normalizeDownload', () => {
   const wire: WireDownload = {
     id: 'abc',
@@ -86,6 +134,21 @@ describe('normalizeDownload', () => {
     expect(job.masterPlaylist).toBe('/tmp/hls/master.m3u8');
     expect(job.artifacts).toEqual(['https://cdn/a.m3u8']);
     expect(job.media?.isVideo).toBe(true);
+  });
+
+  it('uses the server-supplied name when there is one', () => {
+    const job = normalizeDownload({ ...wire, name: 'Renamed Clip.mp4' });
+    expect(job.name).toBe('Renamed Clip.mp4');
+  });
+
+  it('derives a name from the url when the server omits it', () => {
+    const job = normalizeDownload(wire);
+    expect(job.name).toBe('y.mp4');
+  });
+
+  it('treats a blank server name as absent', () => {
+    const job = normalizeDownload({ ...wire, name: '   ' });
+    expect(job.name).toBe('y.mp4');
   });
 
   it('survives a sparse record (the C writer emits nulls)', () => {

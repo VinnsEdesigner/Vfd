@@ -1,99 +1,234 @@
 /**
- * DownloadTable — the downloads list.
+ * DownloadTable — the downloads list, shared by Overview and Downloads.
  *
- * Composes DataTable + StatusBadge + ProgressBar. Takes `DownloadView[]` (from
- * hooks), so it never touches the domain layer.
+ * A download is a job, not a file, so each row leads with what the job produced
+ * (name + source host) rather than a database id, and carries the live numbers
+ * — progress, size, transfer rate — where the eye already is.
+ *
+ * The progress column shows a bar only while there is something to watch: a
+ * finished row would just be a full bar repeated nine times, which is noise. It
+ * reads "Done" instead, and the size column carries the real figure.
  */
 
-import { DataTable, type Column } from '../primitives/DataTable';
-import { ProgressBar } from '../primitives/ProgressBar';
+import type { ReactNode } from 'react';
 import { Tag } from '../primitives/Badge';
+import { Button } from '../primitives/Button';
 import { EmptyState } from '../primitives/EmptyState';
 import { StatusBadge } from './StatusBadge';
-import { formatBytes, formatRate, type DownloadView } from '../../hooks/view-models';
+import { OverflowMenu, type MenuAction } from '../menus/OverflowMenu';
+import {
+  IconFile,
+  IconImage,
+  IconMusic,
+  IconPlay,
+  IconTrash,
+  IconX,
+  IconExternal,
+} from '../primitives/Icons';
+import {
+  formatRate,
+  hostFromUrl,
+  type DownloadView,
+} from '../../hooks/view-models';
 
 export interface DownloadTableProps {
   downloads: ReadonlyArray<DownloadView>;
-  onSelect?: (id: string) => void;
+  /** Absolute URL of a finished item's bytes, for the row thumbnail. */
+  contentUrl?: (id: string) => string;
+  onOpen?: (id: string) => void;
+  /** Stops an in-flight transfer but keeps the record. */
+  onCancel?: (id: string) => void;
+  /** Removes the record and its files. Destructive; the parent confirms. */
+  onDelete?: (id: string) => void;
+  /** Id whose cancel is in flight, so its action can show it. */
+  cancellingId?: string | null;
   emptyTitle?: string;
   emptyDescription?: string;
 }
 
-const columns: ReadonlyArray<Column<DownloadView>> = [
-  {
-    key: 'id',
-    header: 'ID',
-    width: '84px',
-    // The full id is 32 chars; showing a prefix keeps the column readable and
-    // the full value is still available on hover and in the detail drawer.
-    render: (d) => (
-      <span className="cell-id" title={d.id}>
-        {d.id.slice(0, 8)}
-      </span>
-    ),
-  },
-  {
-    key: 'source',
-    header: 'Source',
-    render: (d) => (
-      <span className="cell-url" title={d.url}>
-        {d.url}
-      </span>
-    ),
-  },
-  {
-    key: 'status',
-    header: 'Status',
-    width: '120px',
-    render: (d) => <StatusBadge state={d.state} />,
-  },
-  {
-    key: 'progress',
-    header: 'Progress',
-    width: '150px',
-    render: (d) => (
-      <ProgressBar
-        fraction={d.fraction}
-        tone={d.state === 'done' ? 'done' : d.state === 'failed' ? 'failed' : 'running'}
-      />
-    ),
-  },
-  {
-    key: 'size',
-    header: 'Size',
-    width: '88px',
-    render: (d) => <span className="num">{d.bytesLabel}</span>,
-  },
-  {
-    key: 'speed',
-    header: 'Speed',
-    width: '96px',
-    render: (d) => <span className="num muted">{d.isActive ? formatRate(d.bytesPerSecond) : '—'}</span>,
-  },
-  {
-    key: 'format',
-    header: 'Format',
-    width: '88px',
-    render: (d) => <Tag>{d.kindLabel}</Tag>,
-  },
-];
+const THUMB_IMAGE = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'avif']);
+const THUMB_VIDEO = new Set(['mp4', 'm4v', 'webm', 'ogv']);
 
-export function DownloadTable({
-  downloads,
-  onSelect,
-  emptyTitle = 'No downloads yet',
-  emptyDescription = 'Start a download to see it appear here.',
-}: DownloadTableProps) {
+function glyphFor(d: DownloadView): ReactNode {
+  if (d.isImage) return <IconImage />;
+  if (d.isAudio) return <IconMusic />;
+  return <IconFile />;
+}
+
+/** The leading tile: a real thumbnail once the bytes exist, a glyph before. */
+function MediaTile({ d, contentUrl }: { d: DownloadView; contentUrl?: (id: string) => string }) {
+  const canImage = Boolean(contentUrl) && d.isImage && THUMB_IMAGE.has(d.extension) && d.state === 'done';
+  const canVideo = Boolean(contentUrl) && d.isVideo && THUMB_VIDEO.has(d.extension) && d.state === 'done';
   return (
-    <DataTable
-      columns={columns}
-      rows={downloads}
-      rowKey={(d) => d.id}
-      {...(onSelect ? { onRowClick: (d: DownloadView) => onSelect(d.id) } : {})}
-      empty={<EmptyState title={emptyTitle} description={emptyDescription} />}
-    />
+    <span className="dlrow__tile">
+      {canImage && <img src={contentUrl?.(d.id)} alt="" loading="lazy" draggable={false} />}
+      {canVideo && (
+        <>
+          <video src={contentUrl?.(d.id)} preload="metadata" muted playsInline />
+          <span className="dlrow__play">
+            <IconPlay />
+          </span>
+        </>
+      )}
+      {!canImage && !canVideo && <span className="dlrow__glyph">{glyphFor(d)}</span>}
+    </span>
   );
 }
 
-/** Kept next to the table so the two cannot drift. */
-export { formatBytes };
+/** Progress: a live bar while transferring, an honest label otherwise. */
+function ProgressCell({ d }: { d: DownloadView }) {
+  if (d.isActive) {
+    return (
+      <div className="dlrow__progress">
+        <div
+          className="dlrow__bar"
+          role="progressbar"
+          aria-valuenow={d.percent}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${d.name} progress`}
+        >
+          <span style={{ width: `${d.percent}%` }} />
+        </div>
+        <span className="dlrow__pct">{d.percent}%</span>
+      </div>
+    );
+  }
+  if (d.state === 'done') return <span className="dlrow__state muted">Done</span>;
+  if (d.state === 'failed') return <span className="dlrow__state dlrow__state--bad">Stopped</span>;
+  if (d.state === 'cancelled') return <span className="dlrow__state muted">Cancelled</span>;
+  return <span className="dlrow__state muted">Queued</span>;
+}
+
+export function DownloadTable({
+  downloads,
+  contentUrl,
+  onOpen,
+  onCancel,
+  onDelete,
+  cancellingId = null,
+  emptyTitle = 'No downloads yet',
+  emptyDescription = 'Start a download to see it appear here.',
+}: DownloadTableProps) {
+  if (downloads.length === 0) {
+    return <EmptyState title={emptyTitle} description={emptyDescription} />;
+  }
+
+  const actionsFor = (d: DownloadView): MenuAction[] => {
+    const actions: MenuAction[] = [];
+    if (onOpen && d.isOpenable) {
+      actions.push({
+        id: 'open',
+        label: d.isImage ? 'View' : 'Play',
+        icon: d.isImage ? <IconImage /> : <IconPlay />,
+        onSelect: () => onOpen(d.id),
+      });
+    }
+    if (onOpen) {
+      actions.push({
+        id: 'open-with',
+        label: 'Open with…',
+        icon: <IconExternal />,
+        onSelect: () => onOpen(d.id),
+      });
+    }
+    if (onCancel && d.isActive) {
+      actions.push({
+        id: 'cancel',
+        label: 'Cancel transfer',
+        icon: <IconX />,
+        onSelect: () => onCancel(d.id),
+      });
+    }
+    if (onDelete) {
+      actions.push({
+        id: 'delete',
+        label: 'Delete',
+        icon: <IconTrash />,
+        danger: true,
+        onSelect: () => onDelete(d.id),
+      });
+    }
+    return actions;
+  };
+
+  return (
+    <div className="dlrows" role="list">
+      {downloads.map((d) => {
+        const host = hostFromUrl(d.url);
+        const actions = actionsFor(d);
+        return (
+          <div
+            key={d.id}
+            className={d.isActive ? 'dlrow is-active' : 'dlrow'}
+            role="listitem"
+            tabIndex={0}
+            aria-label={d.name}
+            onClick={onOpen ? () => onOpen(d.id) : undefined}
+            onKeyDown={
+              onOpen
+                ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onOpen(d.id);
+                    }
+                  }
+                : undefined
+            }
+          >
+            <MediaTile d={d} {...(contentUrl ? { contentUrl } : {})} />
+
+            <span className="dlrow__main">
+              <span className="dlrow__name" title={d.name}>
+                {d.name}
+              </span>
+              <span className="dlrow__host" title={d.url}>
+                {host}
+              </span>
+            </span>
+
+            <span className="dlrow__status">
+              <StatusBadge state={d.state} />
+            </span>
+
+            <span className="dlrow__progress-cell">
+              <ProgressCell d={d} />
+            </span>
+
+            <span className="dlrow__speed num">
+              {d.isActive ? formatRate(d.bytesPerSecond) : '—'}
+            </span>
+
+            <span className="dlrow__size num">{d.bytesLabel}</span>
+
+            <span className="dlrow__format">
+              <Tag>{d.kindLabel}</Tag>
+            </span>
+
+            <span className="dlrow__actions" onClick={(e) => e.stopPropagation()}>
+              {onOpen && d.isOpenable && (
+                <Button size="sm" variant="ghost" onClick={() => onOpen(d.id)}>
+                  {d.isImage ? <IconImage /> : <IconPlay />}
+                  {d.isImage ? 'View' : 'Play'}
+                </Button>
+              )}
+              {onCancel && d.isActive && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  loading={cancellingId === d.id}
+                  onClick={() => onCancel(d.id)}
+                >
+                  <IconX /> Cancel
+                </Button>
+              )}
+              {actions.length > 0 && (
+                <OverflowMenu actions={actions} label={`Actions for ${d.name}`} />
+              )}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}

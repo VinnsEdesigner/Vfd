@@ -1,31 +1,75 @@
 /**
  * DownloadsPage — the full download list.
+ *
+ * The list is the shared `DownloadTable`, so this page and the Overview can
+ * never drift. Header actions are real: Refresh re-fetches, and New download is
+ * the primary path. (An Export button used to sit here and did nothing.)
  */
 
 import { Card } from '../primitives/Card';
 import { Button } from '../primitives/Button';
+import { IconRefresh, IconPlus } from '../primitives/Icons';
 import { DownloadTable } from '../downloads/DownloadTable';
 import type { DownloadView } from '../../hooks/view-models';
 
 export interface DownloadsPageProps {
   downloads: ReadonlyArray<DownloadView>;
-  onSelect: (id: string) => void;
+  /** Absolute URL of a finished item's bytes, for row thumbnails. */
+  contentUrl?: (id: string) => string;
+  onOpen: (id: string) => void;
+  onCancel?: (id: string) => void;
+  onDelete?: (id: string) => void;
+  cancellingId?: string | null;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+  onNewDownload?: () => void;
 }
 
-export function DownloadsPage({ downloads, onSelect }: DownloadsPageProps) {
+export function DownloadsPage({
+  downloads,
+  contentUrl,
+  onOpen,
+  onCancel,
+  onDelete,
+  cancellingId = null,
+  onRefresh,
+  refreshing = false,
+  onNewDownload,
+}: DownloadsPageProps) {
+  const active = downloads.filter((d) => d.isActive).length;
+  const subtitle =
+    active > 0
+      ? `${downloads.length} total · ${active} in flight`
+      : `${downloads.length} total`;
+
   return (
     <Card
       title="All downloads"
-      subtitle={`${downloads.length} total · polling every second`}
+      subtitle={subtitle}
       actions={
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Button size="sm">Filter</Button>
-          <Button size="sm">Export</Button>
-        </div>
+        <>
+          {onRefresh && (
+            <Button size="sm" variant="ghost" loading={refreshing} onClick={onRefresh}>
+              <IconRefresh /> Refresh
+            </Button>
+          )}
+          {onNewDownload && (
+            <Button size="sm" variant="primary" onClick={onNewDownload}>
+              <IconPlus /> New download
+            </Button>
+          )}
+        </>
       }
       flush
     >
-      <DownloadTable downloads={downloads} onSelect={onSelect} />
+      <DownloadTable
+        downloads={downloads}
+        {...(contentUrl ? { contentUrl } : {})}
+        onOpen={onOpen}
+        {...(onCancel ? { onCancel } : {})}
+        {...(onDelete ? { onDelete } : {})}
+        cancellingId={cancellingId}
+      />
     </Card>
   );
 }

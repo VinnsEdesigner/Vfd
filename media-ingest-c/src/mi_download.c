@@ -60,7 +60,20 @@ typedef struct {
     mi_progress *progress;
     pthread_mutex_t *lock;
     int64_t *shared_bytes;
+    /* Set when the server asks us to back off (429 / Retry-After). */
+    long retry_after_seconds;
 } file_writer;
+
+/* Read Retry-After (seconds form) off a response header block. */
+static size_t header_retry_after(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    file_writer *w = userdata;
+    size_t n = size * nmemb;
+    if (n > 12 && !strncasecmp(ptr, "Retry-After:", 12)) {
+        long v = strtol(ptr + 12, NULL, 10);
+        if (v > 0 && v < 3600) w->retry_after_seconds = v;
+    }
+    return n;
+}
 
 static size_t write_file(char *ptr, size_t size, size_t nmemb, void *userdata) {
     file_writer *w = userdata;
@@ -225,6 +238,8 @@ static int fetch_range_once(const mi_download_config *cfg, const char *url,
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, w);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_retry_after);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, w);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, cfg->timeout_seconds);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
@@ -237,6 +252,14 @@ static int fetch_range_once(const mi_download_config *cfg, const char *url,
     if (rc != CURLE_OK) return MI_ERR_NET;
     if (code != 200 && code != 206) return MI_ERR_NET;
     return MI_OK;
+}
+
+/* Honour Retry-After when the server rate-limits us, so the next attempt waits
+ * as long as we were asked to rather than hammering a short backoff. */
+static double retry_delay_for(const mi_download_config *cfg, int attempt,
+                              long retry_after) {
+    if (retry_after > 0) return (double)retry_after;
+    return cfg->backoff * (1 << attempt);
 }
 
 static void *range_worker(void *arg) {
@@ -254,7 +277,8 @@ static void *range_worker(void *arg) {
                          .user = job->user,
                          .progress = job->progress,
                          .lock = job->lock,
-                         .shared_bytes = job->shared_bytes};
+                         .shared_bytes = job->shared_bytes,
+                         .retry_after_seconds = 0};
         int rc = fetch_range_once(job->cfg, job->url, job->rng, &w);
         fclose(fp);
         if (rc == MI_OK) {
@@ -266,7 +290,7 @@ static void *range_worker(void *arg) {
             rc = MI_ERR_NET; /* short read -> retry */
         }
         if (attempt < job->cfg->retries) {
-            double sleep_s = job->cfg->backoff * (1 << attempt);
+            double sleep_s = retry_delay_for(job->cfg, attempt, w.retry_after_seconds);
             usleep((useconds_t)(sleep_s * 1e6));
         }
     }

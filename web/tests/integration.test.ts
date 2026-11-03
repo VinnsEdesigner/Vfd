@@ -101,6 +101,81 @@ describe('jobs resource', () => {
       api.downloads.create({ url: '', hls: false, upload: false, purge: false, connections: 1 }),
     ).rejects.toMatchObject({ status: 400 });
   });
+
+  it('names a download after its source, not its id', async () => {
+    const created = await api.downloads.create({
+      url: 'http://127.0.0.1:1/holiday-clip.mp4',
+      hls: false,
+      upload: false,
+      purge: false,
+      connections: 1,
+    });
+    expect(created.name).toBe('holiday-clip.mp4');
+    const fetched = await api.downloads.get(created.id);
+    expect(fetched.name).toBe('holiday-clip.mp4');
+  });
+
+  it('renames a download through the API', async () => {
+    const created = await api.downloads.create({
+      url: 'http://127.0.0.1:1/rename-me.mp4',
+      hls: false,
+      upload: false,
+      purge: false,
+      connections: 1,
+    });
+    const renamed = await api.downloads.rename(created.id, 'Better Name.mp4');
+    expect(renamed.name).toBe('Better Name.mp4');
+    await expect(api.downloads.get(created.id)).resolves.toMatchObject({
+      name: 'Better Name.mp4',
+    });
+  });
+
+  it('rejects a rename that sanitises away to nothing', async () => {
+    const created = await api.downloads.create({
+      url: 'http://127.0.0.1:1/traverse.mp4',
+      hls: false,
+      upload: false,
+      purge: false,
+      connections: 1,
+    });
+    // Only separators and dots: nothing usable survives, so it is a bad request
+    // rather than a silently mangled name.
+    await expect(api.downloads.rename(created.id, '../../')).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it('strips path separators from a rename instead of escaping the folder', async () => {
+    const created = await api.downloads.create({
+      url: 'http://127.0.0.1:1/escape.mp4',
+      hls: false,
+      upload: false,
+      purge: false,
+      connections: 1,
+    });
+    const renamed = await api.downloads.rename(created.id, '../../etc/passwd.mp4');
+    expect(renamed.name).toBe('etcpasswd.mp4');
+  });
+
+  it('moves a download into a library folder', async () => {
+    const created = await api.downloads.create({
+      url: 'http://127.0.0.1:1/move-me.mp4',
+      hls: false,
+      upload: false,
+      purge: false,
+      connections: 1,
+    });
+    // The record survives the move; the bytes live under the new folder.
+    const moved = await api.downloads.move(created.id, 'Archive');
+    expect(moved.id).toBe(created.id);
+    await expect(api.downloads.get(created.id)).resolves.toMatchObject({ id: created.id });
+  });
+
+  it('reports 404 when renaming an unknown download', async () => {
+    await expect(api.downloads.rename('deadbeef', 'x.mp4')).rejects.toMatchObject({
+      status: 404,
+    });
+  });
 });
 
 describe('auth', () => {

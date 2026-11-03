@@ -10,8 +10,6 @@ import { Tag } from '../primitives/Badge';
 import { AppIcon } from '../primitives/AppIcon';
 import { AppIconDownload, AppIconStorage } from '../primitives/AppIcons';
 import { DownloadTable } from '../downloads/DownloadTable';
-import { PipelineSteps } from '../downloads/PipelineSteps';
-import { StatusBadge } from '../downloads/StatusBadge';
 import type { DownloadView } from '../../hooks/view-models';
 
 export interface OverviewPageProps {
@@ -25,12 +23,10 @@ export interface OverviewPageProps {
   libraryFiles: number;
   /** Real volume figures; null when the engine could not read them. */
   disk: { freeLabel: string; usedPercent: number; summary: string } | null;
-  /** The download whose pipeline is shown. */
-  focus: DownloadView | null;
-  /** Current stage index for `focus`. */
-  focusStage: number;
   onViewAll: () => void;
   onSelect: (id: string) => void;
+  /** Absolute URL of a finished item's bytes, for row thumbnails. */
+  contentUrl?: (id: string) => string;
 }
 
 /** Grouped by media type so the list stays readable as it grows. */
@@ -49,10 +45,9 @@ export function OverviewPage({
   libraryLabel,
   libraryFiles,
   disk,
-  focus,
-  focusStage,
   onViewAll,
   onSelect,
+  contentUrl,
 }: OverviewPageProps) {
   const [libraryValue, libraryUnit] = splitValueUnit(libraryLabel);
 
@@ -103,20 +98,14 @@ export function OverviewPage({
           }
           flush
         >
-          <DownloadTable downloads={downloads.slice(0, 6)} onSelect={onSelect} />
+          <DownloadTable
+            downloads={downloads.slice(0, 6)}
+            onOpen={onSelect}
+            {...(contentUrl ? { contentUrl } : {})}
+          />
         </Card>
 
         <div className="stack">
-          {focus && (
-            <Card
-              title="Pipeline"
-              subtitle={`Download ${focus.id}`}
-              actions={<StatusBadge state={focus.state} />}
-            >
-              <PipelineSteps state={focus.state} stage={focusStage} />
-            </Card>
-          )}
-
           <Card
             icon={
               <AppIcon size="xl">

@@ -8,7 +8,6 @@
 
 import type { ReactNode } from 'react';
 import { Spinner } from './primitives/Spinner';
-import { IconLogo } from './primitives/Icons';
 
 export interface BootGateProps {
   ready: boolean;
@@ -22,9 +21,10 @@ export function BootGate({ ready, label = 'VYZORIX FILE DOWNLOADER', children }:
   return (
     <div className="boot" role="status" aria-live="polite">
       <div className="boot__inner">
-        <IconLogo className="boot__mark" />
+        {/* The app mark itself, so the splash and the browser tab agree. */}
+        <img className="boot__mark" src="/logo.svg" alt="" width={72} height={72} />
+        <span className="boot__title">{label}</span>
         <Spinner size="lg" />
-        <span className="boot__label">{label}</span>
       </div>
     </div>
   );

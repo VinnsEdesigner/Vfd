@@ -6,6 +6,7 @@
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
@@ -280,15 +281,108 @@ static void test_http_api(void) {
     CHECK(status == 404, "delete unknown download 404");
     free(resp);
 
+    /* the record carries a display name derived from the URL, not the id */
+    {
+        char path[128];
+        snprintf(path, sizeof path, "/api/v1/downloads/%s", idbuf);
+        resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+        CHECK(status == 200, "get download 200");
+        CHECK(strstr(body_of(resp), "\"name\":\"nope.mp4\"") != NULL,
+              "download name derived from url");
+        free(resp);
+    }
+
+    /* PATCH with neither field is a bad request */
+    {
+        char path[128];
+        snprintf(path, sizeof path, "/api/v1/downloads/%s", idbuf);
+        resp = http_call(port, "PATCH", path, "{}", "testtoken", &status);
+        CHECK(status == 400, "patch with no fields -> 400");
+        free(resp);
+    }
+
+    /* rename changes the reported name */
+    {
+        char path[128];
+        snprintf(path, sizeof path, "/api/v1/downloads/%s", idbuf);
+        resp = http_call(port, "PATCH", path, "{\"name\":\"holiday clip.mp4\"}",
+                         "testtoken", &status);
+        CHECK(status == 200, "rename 200");
+        CHECK(strstr(body_of(resp), "\"name\":\"holiday clip.mp4\"") != NULL,
+              "rename reflected in response");
+        free(resp);
+    }
+
+    /* a name that is only path separators is rejected, not silently mangled */
+    {
+        char path[128];
+        snprintf(path, sizeof path, "/api/v1/downloads/%s", idbuf);
+        resp = http_call(port, "PATCH", path, "{\"name\":\"../../\"}",
+                         "testtoken", &status);
+        CHECK(status == 400, "traversal-only name -> 400");
+        free(resp);
+    }
+
+    /* move relocates the item's directory inside the library */
+    {
+        char path[128];
+        snprintf(path, sizeof path, "/api/v1/downloads/%s", idbuf);
+        resp = http_call(port, "PATCH", path, "{\"move_to\":\"archive\"}",
+                         "testtoken", &status);
+        CHECK(status == 200, "move 200");
+        free(resp);
+        char moved[256];
+        snprintf(moved, sizeof moved, "%s/archive/%s", cfg.work_dir, idbuf);
+        CHECK(mi_path_is_dir(moved), "moved directory exists in the library");
+    }
+
+    /* PATCH on an unknown id is a 404 */
+    resp = http_call(port, "PATCH", "/api/v1/downloads/deadbeef",
+                     "{\"name\":\"x.mp4\"}", "testtoken", &status);
+    CHECK(status == 404, "patch unknown download 404");
+    free(resp);
+
     mi_server_stop(srv);
     pthread_join(th, NULL);
     mi_server_free(srv);
+}
+
+/* The volume holding a path must be identified from the mount table, not
+ * guessed from the path itself. */
+static void test_mount_info(void) {
+    char mp[PATH_MAX] = {0}, type[128] = {0}, dev[512] = {0};
+    CHECK(mi_mount_info("/tmp", mp, sizeof mp, type, sizeof type, dev, sizeof dev) == 0,
+          "mount info resolves /tmp");
+    CHECK(mp[0] == '/', "mount point is absolute");
+    /* /tmp is either its own mount or part of / — either way it is a real one. */
+    CHECK(!strcmp(mp, "/tmp") || !strcmp(mp, "/"), "mount point is /tmp or /");
+    CHECK(type[0] != '\0', "filesystem type reported");
+    CHECK(dev[0] != '\0', "backing device reported");
+
+    /* A path that does not exist yet still resolves to the volume it would be
+     * created on, by falling back to its nearest existing ancestor. */
+    char mp2[PATH_MAX] = {0};
+    CHECK(mi_mount_info("/tmp/mi-mount-info-check", mp2, sizeof mp2, NULL, 0, NULL, 0) == 0,
+          "not-yet-created path resolves via its parent");
+    CHECK(mp2[0] == '/', "its mount point is absolute too");
+
+    /* A fully non-existent tree resolves to / — the volume it would live on. */
+    char mp3[PATH_MAX] = {0};
+    CHECK(mi_mount_info("/no/such/path/here", mp3, sizeof mp3, NULL, 0, NULL, 0) == 0,
+          "a non-existent tree still resolves to a volume");
+    CHECK(!strcmp(mp3, "/"), "and that volume is /");
+
+    /* A relative path has no absolute anchor, so it cannot be resolved. */
+    char mp4[PATH_MAX];
+    CHECK(mi_mount_info("relative/path", mp4, sizeof mp4, NULL, 0, NULL, 0) != 0,
+          "a relative path fails");
 }
 
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
     mi_log_set_level(MI_LOG_ERROR);
 
+    test_mount_info();
     test_json_writer();
     test_json_parse_roundtrip();
     test_json_rejects_bad();

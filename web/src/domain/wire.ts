@@ -35,6 +35,8 @@ export interface WireDownloadProgress {
 
 export interface WireDownload {
   id: string;
+  /** Display name. Optional: older servers only sent the id and url. */
+  name?: string;
   url: string;
   state: string;
   progress: WireDownloadProgress;
@@ -87,6 +89,14 @@ export interface WireStorageConfig {
   configured: boolean;
 }
 
+export interface WireRenameRequest {
+  name: string;
+}
+
+export interface WireMoveRequest {
+  move_to: string;
+}
+
 export interface WireCreateDownloadRequest {
   url: string;
   hls?: boolean;
@@ -111,6 +121,9 @@ export interface WireFsStats {
 
 export interface WireSystemStorage {
   work_dir: string;
+  mount_point?: string | null;
+  fs_type?: string | null;
+  fs_device?: string | null;
   filesystem: WireFsStats | null;
   library: { bytes: number; files: number };
   downloads: { completed: number; active: number; failed: number; bytes_transferred: number };

@@ -64,6 +64,9 @@ export interface DownloadProgress {
 
 export interface Download {
   id: string;
+  /** What to call this item: the name it was renamed to, or the one derived
+   *  from the source URL. Never an id. */
+  name: string;
   url: string;
   state: DownloadState;
   progress: DownloadProgress;
@@ -162,6 +165,12 @@ export interface DownloadCounts {
 
 export interface SystemStorage {
   workDir: string;
+  /** The volume the work dir is on, as the kernel reports it. */
+  mountPoint: string | null;
+  /** Filesystem type, e.g. "ext4" / "overlay" / "apfs". */
+  fsType: string | null;
+  /** Backing device, e.g. "/dev/nvme0n1p2" or "overlay". */
+  fsDevice: string | null;
   filesystem: FsStats | null;
   library: LibraryUsage;
   downloads: DownloadCounts;

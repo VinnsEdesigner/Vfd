@@ -4,10 +4,10 @@
  * Presentation layer: imports nothing from the data layer.
  */
 
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { Spinner } from './Spinner';
 
-export type ButtonVariant = 'default' | 'primary' | 'ghost';
+export type ButtonVariant = 'default' | 'primary' | 'ghost' | 'danger';
 export type ButtonSize = 'md' | 'sm';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -27,12 +27,14 @@ function classes(variant: ButtonVariant, size: ButtonSize, icon: boolean): strin
   const parts = ['btn'];
   if (variant === 'primary') parts.push('btn--primary');
   if (variant === 'ghost') parts.push('btn--ghost');
+  if (variant === 'danger') parts.push('btn--danger');
   if (size === 'sm') parts.push('btn--sm');
   if (icon) parts.push('btn--icon');
   return parts.join(' ');
 }
 
-export function Button({
+/** Forwards its ref so a dialog can move focus to a specific button. */
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({
   variant = 'default',
   size = 'md',
   icon = false,
@@ -42,13 +44,14 @@ export function Button({
   disabled,
   children,
   ...rest
-}: ButtonProps) {
+}: ButtonProps, ref) {
   const cls = [classes(variant, size, icon), loading ? 'is-loading' : '', className]
     .filter(Boolean)
     .join(' ');
 
   return (
     <button
+      ref={ref}
       type={type}
       className={cls}
       disabled={disabled || loading}
@@ -59,4 +62,4 @@ export function Button({
       {children}
     </button>
   );
-}
+});

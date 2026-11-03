@@ -11,6 +11,8 @@ import type {
   WireDeleteResult,
   WireDownload,
   WireDownloadList,
+  WireMoveRequest,
+  WireRenameRequest,
 } from '../domain/wire';
 
 export interface DownloadsResource {
@@ -28,6 +30,10 @@ export interface DownloadsResource {
     removeFiles: boolean,
     signal?: AbortSignal,
   ): Promise<{ filesRemoved: boolean }>;
+  /** Rename an item. The bytes stay put; only the name changes. */
+  rename(id: string, name: string, signal?: AbortSignal): Promise<Download>;
+  /** Move an item into a named folder inside the library. */
+  move(id: string, folder: string, signal?: AbortSignal): Promise<Download>;
 }
 
 function toWireRequest(input: CreateDownloadInput): WireCreateDownloadRequest {
@@ -90,6 +96,26 @@ export function createDownloadsResource(client: ApiClient): DownloadsResource {
         ...(signal ? { signal } : {}),
       });
       return { filesRemoved: Boolean(wire?.files_removed) };
+    },
+
+    async rename(id, name, signal) {
+      const wire = await client.transport.request<WireDownload>({
+        method: 'PATCH',
+        path: `/api/v1/downloads/${encodeURIComponent(id)}`,
+        body: { name } satisfies WireRenameRequest,
+        ...(signal ? { signal } : {}),
+      });
+      return normalizeDownload(wire);
+    },
+
+    async move(id, folder, signal) {
+      const wire = await client.transport.request<WireDownload>({
+        method: 'PATCH',
+        path: `/api/v1/downloads/${encodeURIComponent(id)}`,
+        body: { move_to: folder } satisfies WireMoveRequest,
+        ...(signal ? { signal } : {}),
+      });
+      return normalizeDownload(wire);
     },
   };
 }

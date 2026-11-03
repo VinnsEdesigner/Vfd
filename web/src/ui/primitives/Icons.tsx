@@ -337,3 +337,55 @@ export function IconExitFullscreen(props: IconProps) {
     </svg>
   );
 }
+
+export function IconFilter(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <path d="M3 5h14l-5.4 6.2V16l-3.2-1.6V11.2z" {...stroke} strokeWidth={1.5} />
+    </svg>
+  );
+}
+
+export function IconSort(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <path d="M6 4v12M3 13l3 3 3-3M14 16V4M11 7l3-3 3 3" {...stroke} strokeWidth={1.5} />
+    </svg>
+  );
+}
+
+export function IconShare(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <circle cx="15" cy="5" r="2.2" {...stroke} strokeWidth={1.5} />
+      <circle cx="5" cy="10" r="2.2" {...stroke} strokeWidth={1.5} />
+      <circle cx="15" cy="15" r="2.2" {...stroke} strokeWidth={1.5} />
+      <path d="M7 9l6-3M7 11l6 3" {...stroke} strokeWidth={1.5} />
+    </svg>
+  );
+}
+
+export function IconMove(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h3l1.5 2h6A1.5 1.5 0 0 1 16.5 8.5v6A1.5 1.5 0 0 1 15 16H4.5A1.5 1.5 0 0 1 3 14.5z" {...stroke} strokeWidth={1.5} />
+      <path d="M10 9.5v4M8 11.5l2 2 2-2" {...stroke} strokeWidth={1.4} />
+    </svg>
+  );
+}
+
+export function IconChevronDown(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <path d="M6 8.5l4 4 4-4" {...stroke} strokeWidth={1.6} />
+    </svg>
+  );
+}
+
+export function IconMinus(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <path d="M5 10h10" {...stroke} strokeWidth={1.8} />
+    </svg>
+  );
+}

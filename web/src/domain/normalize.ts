@@ -38,6 +38,23 @@ const JOB_STATES: ReadonlySet<string> = new Set<DownloadState>([
   'cancelled',
 ]);
 
+/** Last path segment of a URL, query and fragment stripped. The domain's own
+ *  copy of the server's rule, so a server that omits `name` still yields a real
+ *  name. A URL that ends at a separator has no filename, so it says "download"
+ *  rather than falling back to the host. */
+export function nameFromUrl(url: string): string {
+  const withoutQuery = (url.split('?')[0] ?? url).split('#')[0] ?? url;
+  const end = withoutQuery.length;
+  if (end === 0 || withoutQuery[end - 1] === '/') return 'download';
+  const segment = withoutQuery.slice(withoutQuery.lastIndexOf('/') + 1);
+  if (!segment) return 'download';
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 export function toMediaKind(raw: string | null | undefined): MediaKind {
   if (raw && MEDIA_KINDS.has(raw)) return raw as MediaKind;
   return 'unknown';
@@ -73,6 +90,7 @@ export function normalizeMedia(w: WireMedia | null | undefined): Media | null {
 export function normalizeDownload(w: WireDownload): Download {
   return {
     id: w.id,
+    name: w.name && w.name.trim() ? w.name : nameFromUrl(w.url),
     url: w.url,
     state: toDownloadState(w.state),
     progress: {
@@ -128,6 +146,9 @@ export function normalizeSystemStorage(w: WireSystemStorage): SystemStorage {
   const fs = w.filesystem;
   return {
     workDir: w.work_dir ?? '',
+    mountPoint: w.mount_point ?? null,
+    fsType: w.fs_type ?? null,
+    fsDevice: w.fs_device ?? null,
     filesystem: fs
       ? {
           totalBytes: fs.total_bytes ?? 0,

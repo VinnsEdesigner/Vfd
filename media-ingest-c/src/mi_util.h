@@ -97,6 +97,12 @@ typedef struct {
 /* Fill in filesystem figures for the volume holding `path`. 0/-1. */
 int mi_fs_stats(const char *path, mi_fs_info *out);
 
+/* Identify the volume holding `path`: its mount point, filesystem type and
+ * backing device, read from the mount table. Any output may be NULL. Returns 0
+ * when the mount point was resolved (the type/device are best-effort). */
+int mi_mount_info(const char *path, char *mount_point, size_t mp_size,
+                  char *fs_type, size_t ft_size, char *device, size_t dev_size);
+
 /* Recursively total the regular files under `path`.
  * Returns 0 and writes the byte total and file count. */
 int mi_dir_usage(const char *path, int64_t *total_bytes, int64_t *file_count);

@@ -28,7 +28,6 @@ import {
   StoragePage,
   SettingsPage,
   type StorageTab,
-  type FileFilter,
   type SettingsTab,
   type IngestFormValue,
   type ProbeOutcome,
@@ -42,11 +41,13 @@ import {
 } from './pages';
 import {
   useDownloads,
-  useDownloadViews,
+  useDownloadViewsWithPipeline,
   useSystemStorage,
   useCreateDownload,
   useCancelDownload,
   useRemoveDownload,
+  useRenameDownload,
+  useMoveDownload,
   useProbe,
   useConnectionStore,
   useDownloadFormStore,
@@ -56,6 +57,8 @@ import {
   isNetworkError,
 } from '../hooks';
 import { useToast } from './feedback';
+import { ConfirmDialog } from './primitives/ConfirmDialog';
+import { shareItems, mimeForName } from './files';
 import { formatBytes, toQualityOptions, type DownloadView } from '../hooks/view-models';
 
 export type ViewId = 'overview' | 'downloads' | 'ingest' | 'storage' | 'settings';
@@ -74,6 +77,14 @@ const LOCATION_KEY = 'ingest.storage-location';
 const THEME_KEY = 'ingest.theme';
 
 export type Theme = 'light' | 'dark';
+
+/** A deletion awaiting confirmation. */
+interface PendingDelete {
+  ids: readonly string[];
+  title: string;
+  message: string;
+  details: string[];
+}
 
 /**
  * The theme is applied to <html> before React paints (see the inline script in
@@ -138,8 +149,9 @@ export function App({ initialView = 'overview' }: AppProps) {
   const [view, setView] = useState<ViewId>(initialView);
   const [storageTab, setStorageTab] = useState<StorageTab>('files');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('general');
-  const [filter, setFilter] = useState<FileFilter>('all');
   const [openFileId, setOpenFileId] = useState<string | null>(null);
+  const [inspectedId, setInspectedId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [probe, setProbe] = useState<ProbeOutcome>({ status: 'idle' });
   const [probing, setProbing] = useState(false);
   const [selectedQuality, setSelectedQuality] = useState<number | null>(null);
@@ -167,16 +179,21 @@ export function App({ initialView = 'overview' }: AppProps) {
   const cancelDownload = useCancelDownload();
   const probeUrl = useProbe();
   const removeDownload = useRemoveDownload();
+  const renameDownload = useRenameDownload();
+  const moveDownload = useMoveDownload();
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const systemStorage = systemStorageQuery.data ?? null;
-  const allViews = useDownloadViews(downloadsQuery.data ?? []);
+  const allViews = useDownloadViewsWithPipeline(downloadsQuery.data ?? [], {
+    hls: draft.hls,
+    upload: draft.upload,
+    purge: draft.purge,
+  });
 
   // First load only: a background refetch should not replace content with a
   // skeleton, so we key off `isPending` rather than `isFetching`.
   const isLoading = downloadsQuery.isPending;
 
   const ongoing = useMemo(() => allViews.filter((d) => d.isActive), [allViews]);
-  const focus = ongoing[0] ?? allViews[0] ?? null;
 
   const counts = useMemo(() => {
     const completed = allViews.filter((d) => d.state === 'done').length;
@@ -197,25 +214,20 @@ export function App({ initialView = 'overview' }: AppProps) {
   const disk = useMemo(() => {
     const fs = systemStorage?.filesystem;
     if (!fs || fs.totalBytes <= 0) return null;
+    // Name the volume the way the OS does: its mount point, plus the filesystem
+    // type when the kernel reported one. Falling back to the work dir would be
+    // a lie about what the figures describe.
+    const mount = systemStorage?.mountPoint;
+    const type = systemStorage?.fsType;
+    const volume = mount
+      ? `the ${mount} volume${type ? ` (${type})` : ''}`
+      : (systemStorage?.workDir ?? 'the library volume');
     return {
       freeLabel: formatBytes(fs.availBytes),
       usedPercent: fs.usedFraction,
-      summary: `${formatBytes(fs.usedBytes)} of ${formatBytes(fs.totalBytes)} used on the volume holding ${systemStorage?.workDir ?? 'the library'}.`,
+      summary: `${formatBytes(fs.usedBytes)} of ${formatBytes(fs.totalBytes)} used on ${volume}.`,
     };
   }, [systemStorage]);
-
-  const filteredFiles = useMemo(() => {
-    switch (filter) {
-      case 'ongoing':
-        return allViews.filter((d) => d.isActive);
-      case 'done':
-        return allViews.filter((d) => d.state === 'done');
-      case 'problem':
-        return allViews.filter((d) => d.state === 'failed' || d.state === 'cancelled');
-      default:
-        return allViews;
-    }
-  }, [allViews, filter]);
 
   const openFile = useMemo(
     () => (openFileId ? allViews.find((d) => d.id === openFileId) ?? null : null),
@@ -259,24 +271,134 @@ export function App({ initialView = 'overview' }: AppProps) {
   );
 
   /**
-   * Deleting removes files from disk, so it asks first. `window.confirm` is
-   * deliberate: a destructive, irreversible action deserves a blocking prompt
-   * rather than a toast you might miss.
+   * Deletion is irreversible, so it goes through an in-app confirmation rather
+   * than `window.confirm` — browser chrome cannot show which files are about to
+   * go, and it cannot be styled or trusted to appear on every platform.
    */
   const deleteFile = useCallback(
     (id: string) => {
       const file = allViews.find((d) => d.id === id);
-      const name = file?.name ?? id;
-      const ok = window.confirm(
-        `Delete ${name}?\n\nThis removes the record and deletes the downloaded files from disk. It cannot be undone.`,
-      );
-      if (!ok) return;
+      setPendingDelete({
+        ids: [id],
+        title: 'Delete this download?',
+        message: 'The record and its downloaded files will be removed from disk. This cannot be undone.',
+        details: [file?.name ?? id],
+      });
+    },
+    [allViews],
+  );
+
+  /**
+   * Bulk delete from the selection bar. One confirmation covers the whole
+   * selection: prompting per item would be unusable, and the count is the thing
+   * the user actually needs to check.
+   */
+  const deleteFiles = useCallback(
+    (ids: readonly string[]) => {
+      if (ids.length === 0) return;
+      const names = ids.map((id) => allViews.find((d) => d.id === id)?.name ?? id);
+      setPendingDelete({
+        ids,
+        title: `Delete ${ids.length} item${ids.length === 1 ? '' : 's'}?`,
+        message: 'Their records and files will be removed from disk. This cannot be undone.',
+        details: names.slice(0, 6).concat(names.length > 6 ? [`…and ${names.length - 6} more`] : []),
+      });
+    },
+    [allViews],
+  );
+
+  /** Runs the confirmation once the user accepts it. */
+  const confirmDelete = useCallback(() => {
+    if (!pendingDelete) return;
+    const { ids } = pendingDelete;
+    setPendingDelete(null);
+    if (ids.length === 1) {
+      const id = ids[0]!;
+      const name = allViews.find((d) => d.id === id)?.name ?? id;
       void removeDownload
         .mutateAsync({ id, removeFiles: true })
         .then(() => toast.success('Deleted', `${name} and its files were removed.`))
         .catch((e: unknown) => toast.error('Could not delete', describeError(e)));
+      return;
+    }
+    void runAction(
+      'file-action',
+      async () => {
+        for (const id of ids) {
+          await removeDownload.mutateAsync({ id, removeFiles: true });
+        }
+      },
+      {
+        success: `Deleted ${ids.length} items`,
+        failure: 'Could not delete everything',
+      },
+    );
+  }, [pendingDelete, allViews, removeDownload, runAction, toast]);
+
+  /**
+   * Share via the Web Share API, with a URL and then clipboard fallback. The
+   * outcome is reported truthfully: copying to the clipboard is not "shared",
+   * and a cancelled share sheet is not an error.
+   */
+  const shareFiles = useCallback(
+    (files: readonly DownloadView[]) => {
+      if (files.length === 0) return;
+      const targets = files.map((f) => ({
+        id: f.id,
+        name: f.name,
+        url: api.client.transport.resolve(
+          `/api/v1/downloads/${encodeURIComponent(f.id)}/content`,
+        ),
+        mime: mimeForName(f.name),
+      }));
+      void shareItems(targets)
+        .then((outcome) => {
+          if (outcome.method === 'cancelled') return;
+          if (outcome.method === 'clipboard') {
+            toast.info('Link copied', 'This browser cannot open a share sheet, so the link is on your clipboard.');
+            return;
+          }
+          toast.success(
+            'Shared',
+            outcome.count === 1 ? targets[0]?.name : `${outcome.count} items`,
+          );
+        })
+        .catch((e: unknown) => toast.error('Could not share', describeError(e)));
     },
-    [allViews, removeDownload, toast],
+    [api.client.transport, toast],
+  );
+
+  /** Move into a library folder. Reversible, so no confirmation. */
+  const moveFiles = useCallback(
+    (ids: readonly string[], folder: string) => {
+      if (ids.length === 0) return;
+      void runAction(
+        'file-action',
+        async () => {
+          for (const id of ids) {
+            await moveDownload.mutateAsync({ id, folder });
+          }
+        },
+        {
+          success: `Moved to ${folder}`,
+          failure: 'Could not move everything',
+        },
+      );
+    },
+    [moveDownload, runAction],
+  );
+
+  const renameFile = useCallback(
+    (id: string, name: string) => {
+      void runAction(
+        'file-action',
+        async () => {
+          await renameDownload.mutateAsync({ id, name });
+        },
+        { success: 'Renamed', failure: 'Could not rename' },
+      );
+    },
+    [renameDownload, runAction],
   );
 
   const toggleTheme = useCallback(() => {
@@ -367,6 +489,18 @@ export function App({ initialView = 'overview' }: AppProps) {
 
   return (
     <>
+      {pendingDelete && (
+        <ConfirmDialog
+          title={pendingDelete.title}
+          message={pendingDelete.message}
+          details={pendingDelete.details}
+          confirmLabel="Delete"
+          destructive
+          busy={busy === 'file-action'}
+          onConfirm={confirmDelete}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
       <AppShell
         navItems={navItems}
         activeView={view}
@@ -435,10 +569,11 @@ export function App({ initialView = 'overview' }: AppProps) {
             libraryLabel={libraryLabel}
             libraryFiles={systemStorage?.library.files ?? 0}
             disk={disk}
-            focus={focus}
-            focusStage={1}
             onViewAll={() => setView('downloads')}
             onSelect={setOpenFileId}
+            contentUrl={(id) =>
+              api.client.transport.resolve(`/api/v1/downloads/${encodeURIComponent(id)}/content`)
+            }
           />
         ))}
 
@@ -446,7 +581,27 @@ export function App({ initialView = 'overview' }: AppProps) {
           (isLoading ? (
             <DownloadsSkeleton />
           ) : (
-            <DownloadsPage downloads={allViews} onSelect={setOpenFileId} />
+            <DownloadsPage
+              downloads={allViews}
+              onOpen={setOpenFileId}
+              onCancel={cancelDownloadById}
+              onDelete={deleteFile}
+              cancellingId={cancellingId}
+              onRefresh={() =>
+                void runAction(
+                  'refresh-downloads',
+                  async () => {
+                    await downloadsQuery.refetch();
+                  },
+                  { success: 'Refreshed', failure: 'Could not refresh' },
+                )
+              }
+              refreshing={downloadsQuery.isFetching}
+              onNewDownload={() => setView('ingest')}
+              contentUrl={(id) =>
+                api.client.transport.resolve(`/api/v1/downloads/${encodeURIComponent(id)}/content`)
+              }
+            />
           ))}
 
         {view === 'ingest' &&
@@ -498,10 +653,8 @@ export function App({ initialView = 'overview' }: AppProps) {
           <StoragePage
             tab={storageTab}
             onTabChange={setStorageTab}
-            downloads={filteredFiles}
+            downloads={allViews}
             ongoing={ongoing}
-            filter={filter}
-            onFilterChange={setFilter}
             target={location.target}
             localPath={localPath}
             cloudPath={cloudPath}
@@ -525,6 +678,13 @@ export function App({ initialView = 'overview' }: AppProps) {
             onCancelDownload={cancelDownloadById}
             cancellingId={cancellingId}
             onDeleteFile={deleteFile}
+            onDeleteFiles={deleteFiles}
+            onShareFiles={shareFiles}
+            onMoveFiles={moveFiles}
+            onRenameFile={renameFile}
+            contentUrl={(id) =>
+              api.client.transport.resolve(`/api/v1/downloads/${encodeURIComponent(id)}/content`)
+            }
             onTestStorage={() =>
               void runAction(
                 'test-storage',
@@ -563,6 +723,9 @@ export function App({ initialView = 'overview' }: AppProps) {
             onVerifyChecksumsChange={() => {}}
             location={location}
             onLocationChange={setLocation}
+            downloads={allViews}
+            inspectedId={inspectedId}
+            onInspectChange={setInspectedId}
             onSaveConnection={() =>
               void runAction(
                 'save-connection',

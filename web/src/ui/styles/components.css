@@ -44,6 +44,15 @@
   background: var(--accent-hover);
   border-color: var(--accent-hover);
 }
+.btn--danger {
+  background: var(--state-fail-fg);
+  border-color: var(--state-fail-fg);
+  color: #fff;
+}
+.btn--danger:hover {
+  background: #991b1b;
+  border-color: #991b1b;
+}
 .btn--ghost {
   border-color: transparent;
   box-shadow: none;
@@ -689,6 +698,19 @@
 .step--fault .step__dot {
   background: var(--state-fail);
   color: var(--state-fail-fg);
+}
+/* A stage the job was not asked to run: present, but clearly not part of it. */
+.step--skipped {
+  opacity: 0.6;
+}
+.step--skipped .step__dot {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-3);
+}
+.step--skipped .step__name {
+  color: var(--text-3);
+  font-weight: 400;
 }
 .step__body {
   flex: 1;
@@ -1403,13 +1425,23 @@
   color: var(--text-3);
 }
 .boot__mark {
-  width: 34px;
-  height: 34px;
-  color: var(--accent);
+  width: 72px;
+  height: 72px;
+  border-radius: 22%;
+  box-shadow:
+    0 1px 1px rgba(16, 24, 40, 0.08),
+    0 6px 18px rgba(16, 24, 40, 0.14);
+}
+.boot__title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
 }
 .boot__label {
-  font-size: 13px;
-  letter-spacing: 0.02em;
+  font-size: 12.5px;
+  color: var(--text-3);
 }
 
 /* ------------------------------ Skeleton ------------------------------ */
@@ -1957,9 +1989,15 @@
     linear-gradient(-45deg, transparent 75%, var(--surface-3) 75%);
   background-size: 18px 18px;
   background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+  /* Required: without this the browser claims pan/zoom and the gesture never
+     reaches us. */
   touch-action: none;
+  cursor: grab;
 }
 .imgstage.is-dragging {
+  cursor: grabbing;
+}
+.imgstage.is-pinching {
   cursor: grabbing;
 }
 .imgstage__img {
@@ -2342,4 +2380,968 @@
 .viewerpage__actions .btn--icon {
   width: 34px;
   padding: 0;
+}
+
+/* ==========================================================================
+   File browser — toolbar, selection bar, grid, rows and dialogs.
+
+   The library is the one screen with real interaction (multi-select, filters,
+   two view modes), so it gets its own block rather than reusing DataTable.
+   ========================================================================== */
+
+.flibrary {
+  border-top: 1px solid var(--border);
+}
+
+.files__library {
+  margin-top: 8px;
+}
+
+/* ------------------------------ FileToolbar ------------------------------ */
+
+.ftoolbar,
+.selbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  min-height: 54px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.ftoolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ftoolbar__count {
+  font-size: 12.5px;
+  color: var(--text-3);
+  margin-left: 2px;
+}
+.ftoolbar__hint {
+  font-size: 12px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+/* The segmented list/grid switch. */
+.fviewtoggle {
+  display: inline-flex;
+  margin-left: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--surface);
+}
+.fviewtoggle__btn {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 32px;
+  color: var(--text-3);
+  transition: background 0.14s, color 0.14s;
+}
+.fviewtoggle__btn svg {
+  width: 16px;
+  height: 16px;
+}
+.fviewtoggle__btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.fviewtoggle__btn.is-active {
+  background: linear-gradient(180deg, var(--sel-from), var(--sel-to));
+  color: var(--sel-fg);
+}
+.fviewtoggle__btn + .fviewtoggle__btn {
+  border-left: 1px solid var(--border-strong);
+}
+
+/* ------------------------------ Popover menus ------------------------------ */
+
+.fpop {
+  position: relative;
+}
+.fpop__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  min-width: 190px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-lg);
+  padding: 5px;
+  z-index: 40;
+  animation: menu-in 0.12s ease;
+}
+.fpop__menu--left {
+  left: 0;
+}
+.fpop__label {
+  padding: 7px 9px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.fpop__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 9px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+}
+.fpop__item:hover {
+  background: var(--surface-2);
+}
+.fpop__tick {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.fpop__tick svg {
+  width: 14px;
+  height: 14px;
+}
+.fpop__dir {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.fpop__sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--border);
+}
+.fpop__count {
+  display: grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  margin-left: 2px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.24);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* ------------------------------ SelectionBar ------------------------------ */
+
+.selbar {
+  background: linear-gradient(180deg, var(--sel-from), var(--sel-to));
+  border-bottom-color: var(--sel-border);
+  color: var(--sel-fg);
+}
+.selbar__count {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--sel-fg);
+}
+.selbar__spacer {
+  flex: 1;
+}
+.selbar .btn {
+  background: var(--sel-chip);
+  border-color: var(--sel-border);
+  color: var(--sel-fg);
+}
+.selbar .btn:hover {
+  background: var(--surface);
+}
+
+/* ------------------------------ Grid ------------------------------ */
+
+.fgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 14px;
+  padding: 18px 20px 24px;
+}
+
+.fcard {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.14s, box-shadow 0.14s, transform 0.1s;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.fcard:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+}
+.fcard:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.fcard.is-selected {
+  border-color: var(--sel-border);
+  box-shadow: 0 0 0 1px var(--sel-border), var(--shadow-md);
+}
+.fcard.is-selected .fcard__thumb {
+  background: linear-gradient(180deg, var(--sel-from), var(--sel-to));
+}
+
+.fcard__thumb {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.fcard__thumb img,
+.fcard__thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.fcard__glyph {
+  color: var(--text-3);
+}
+.fcard__glyph svg {
+  width: 34px;
+  height: 34px;
+}
+.fcard__play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  pointer-events: none;
+}
+.fcard__play svg {
+  width: 34px;
+  height: 34px;
+  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.55));
+}
+.fcard__status {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
+}
+.fcard__check {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  display: grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  background: rgba(20, 20, 20, 0.32);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.14s, background 0.14s, border-color 0.14s;
+}
+.fcard:hover .fcard__check {
+  opacity: 1;
+}
+.fcard__check.is-on {
+  opacity: 1;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.fcard__check svg {
+  width: 13px;
+  height: 13px;
+}
+.fcard__menu {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  opacity: 0;
+  transition: opacity 0.14s;
+}
+.fcard:hover .fcard__menu,
+.fcard:focus-within .fcard__menu,
+.fcard__menu:focus-within {
+  opacity: 1;
+}
+.fcard__menu .btn {
+  height: 28px;
+  width: 28px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.9);
+}
+[data-theme='dark'] .fcard__menu .btn {
+  background: rgba(30, 30, 30, 0.9);
+}
+
+.fcard__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px 11px;
+  min-width: 0;
+}
+.fcard__name {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fcard__sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* ------------------------------ Rows ------------------------------ */
+
+.flist {
+  display: flex;
+  flex-direction: column;
+}
+
+.frow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.12s;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.frow:last-child {
+  border-bottom: none;
+}
+.frow:hover {
+  background: var(--surface-2);
+}
+.frow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.frow.is-selected {
+  background: linear-gradient(90deg, var(--sel-from), var(--sel-to));
+}
+.frow__check {
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  color: #fff;
+  transition: background 0.14s, border-color 0.14s;
+}
+.frow:hover .frow__check {
+  border-color: var(--text-3);
+}
+.frow__check.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.frow__check svg {
+  width: 12px;
+  height: 12px;
+}
+.frow__thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.frow__thumb img,
+.frow__thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.frow__glyph {
+  color: var(--text-3);
+}
+.frow__glyph svg {
+  width: 19px;
+  height: 19px;
+}
+.frow__play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  pointer-events: none;
+}
+.frow__play svg {
+  width: 17px;
+  height: 17px;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.55));
+}
+.frow__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.frow__name {
+  font-size: 13.5px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frow__sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.frow__loc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 190px;
+  flex-shrink: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  min-width: 0;
+}
+.frow__loc svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+.frow__loc-path {
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frow__status {
+  flex-shrink: 0;
+}
+.frow__menu {
+  flex-shrink: 0;
+}
+
+/* ------------------------------ FileDialog ------------------------------ */
+
+.fdialog__scrim {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(16, 16, 16, 0.42);
+  z-index: 80;
+  animation: menu-in 0.12s ease;
+}
+.fdialog {
+  width: min(420px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.fdialog__head {
+  padding: 16px 18px 0;
+}
+.fdialog__title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.fdialog__body {
+  padding: 12px 18px 4px;
+}
+.fdialog__label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.fdialog__input {
+  width: 100%;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13.5px;
+}
+.fdialog__input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.fdialog__hint {
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.fdialog__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.fdialog__chip {
+  padding: 5px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.fdialog__chip:hover {
+  background: var(--surface-2);
+}
+.fdialog__chip.is-on {
+  background: linear-gradient(180deg, var(--sel-from), var(--sel-to));
+  border-color: var(--sel-border);
+  color: var(--sel-fg);
+  font-weight: 500;
+}
+.fdialog__error {
+  margin-top: 9px;
+  font-size: 12.5px;
+  color: var(--state-fail-fg);
+}
+.fdialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 18px 16px;
+}
+
+@media (max-width: 720px) {
+  .fgrid {
+    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+    gap: 10px;
+    padding: 14px 14px 20px;
+  }
+  .frow__loc {
+    display: none;
+  }
+  .frow {
+    padding: 9px 14px;
+  }
+  .ftoolbar,
+  .selbar {
+    padding: 9px 14px;
+    flex-wrap: wrap;
+  }
+}
+
+/* ==========================================================================
+   Download rows — the shared downloads list (Overview + Downloads).
+
+   A job, not a file: the tile leads, the name and its source host explain what
+   it is, and the numbers line up in fixed columns so they can be compared down
+   the list.
+   ========================================================================== */
+
+.dlrows {
+  display: flex;
+  flex-direction: column;
+}
+
+.dlrow {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 104px 132px 82px 78px 64px auto;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.12s;
+}
+.dlrow:last-child {
+  border-bottom: none;
+}
+.dlrow:hover {
+  background: var(--surface-2);
+}
+.dlrow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* A running transfer gets a quiet accent edge so the eye finds it first. */
+.dlrow.is-active {
+  background: var(--accent-soft);
+}
+.dlrow.is-active:hover {
+  background: var(--accent-soft);
+}
+
+.dlrow__tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.dlrow__tile img,
+.dlrow__tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.dlrow__glyph {
+  color: var(--text-3);
+}
+.dlrow__glyph svg {
+  width: 19px;
+  height: 19px;
+}
+.dlrow__play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  pointer-events: none;
+}
+.dlrow__play svg {
+  width: 16px;
+  height: 16px;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.55));
+}
+
+.dlrow__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dlrow__name {
+  font-size: 13.5px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dlrow__host {
+  font-size: 12px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dlrow__status {
+  min-width: 0;
+}
+
+.dlrow__progress {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.dlrow__bar {
+  flex: 1;
+  height: 6px;
+  min-width: 40px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.dlrow__bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.dlrow__pct {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  min-width: 34px;
+  text-align: right;
+}
+.dlrow__state {
+  font-size: 12.5px;
+}
+.dlrow__state--bad {
+  color: var(--state-fail-fg);
+}
+
+.dlrow__speed,
+.dlrow__size {
+  color: var(--text-2);
+}
+.dlrow__size {
+  color: var(--text);
+}
+.dlrow__format {
+  display: flex;
+}
+.dlrow__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+@media (max-width: 1080px) {
+  .dlrow {
+    grid-template-columns: 40px minmax(0, 1fr) 104px 120px 78px auto;
+  }
+  .dlrow__speed,
+  .dlrow__format {
+    display: none;
+  }
+}
+@media (max-width: 720px) {
+  .dlrow {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 10px 14px;
+  }
+  .dlrow__status,
+  .dlrow__progress-cell,
+  .dlrow__size {
+    display: none;
+  }
+  .dlrow__tile {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+/* ==========================================================================
+   Select, ConfirmDialog and range sliders.
+
+   These exist so the app never falls back to browser chrome: a native <select>,
+   `window.confirm` and an unstyled <input type=range> each render in the OS's
+   own style, ignore the theme, and look nothing like the rest of the console.
+   ========================================================================== */
+
+/* ------------------------------ Select ------------------------------ */
+
+.select__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13.5px;
+  text-align: left;
+  transition: border-color 0.14s, box-shadow 0.14s;
+}
+.select__trigger:hover:not(:disabled) {
+  border-color: var(--text-3);
+}
+.select__trigger:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.select__trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.select__trigger svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+.select__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select__value.is-placeholder {
+  color: var(--text-3);
+}
+.select__menu {
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-lg);
+  padding: 5px;
+  z-index: 70;
+  animation: menu-in 0.12s ease;
+}
+.select__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 9px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+}
+.select__option.is-active {
+  background: var(--surface-2);
+}
+.select__tick {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.select__tick svg {
+  width: 14px;
+  height: 14px;
+}
+.select__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.select__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select__detail {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* ------------------------------ ConfirmDialog ------------------------------ */
+
+.cdialog__scrim {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(16, 16, 16, 0.42);
+  z-index: 90;
+  animation: menu-in 0.12s ease;
+}
+.cdialog {
+  width: min(440px, 100%);
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+.cdialog__title {
+  font-size: 15.5px;
+  font-weight: 600;
+}
+.cdialog__message {
+  margin-top: 8px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.cdialog__details {
+  margin-top: 12px;
+  padding: 10px 12px;
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-2);
+  list-style: none;
+}
+.cdialog__details li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cdialog__details li + li {
+  margin-top: 3px;
+}
+.cdialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+/* ------------------------------ Range sliders ------------------------------ */
+
+/* A native range renders in the OS style. These rules give it the app's look:
+   a thin track and a round accent thumb, in both engines. */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+input[type='range']::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+input[type='range']:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 999px;
 }

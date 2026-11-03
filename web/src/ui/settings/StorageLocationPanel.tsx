@@ -12,7 +12,7 @@ import { SwitchRow } from '../primitives/SwitchRow';
 import { Button } from '../primitives/Button';
 import { AppIcon } from '../primitives/AppIcon';
 import { AppIconDevice, AppIconCloud } from '../primitives/AppIcons';
-import type { StorageTarget } from '../files/FileTable';
+import type { StorageTarget } from '../files';
 
 export interface StorageLocationValue {
   target: StorageTarget;

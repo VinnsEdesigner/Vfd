@@ -9,6 +9,7 @@
  *   POST   /api/v1/downloads               {url, hls?, upload?, ...}
  *   GET    /api/v1/downloads
  *   GET    /api/v1/downloads/{id}
+ *   PATCH  /api/v1/downloads/{id}       {name?, move_to?}
  *   DELETE /api/v1/downloads/{id}
  *   POST   /api/v1/detect             (multipart or octet-stream sniff)
  *   GET    /api/v1/storage/config

@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <limits.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -60,6 +61,11 @@ typedef struct {
 
     char *media_kind;
     char *container;
+    char *source_path; /* the file as written, extension included */
+    /* What the item is called in the UI and on disk. NULL means "derive it from
+     * the URL", which keeps the record honest for records created before
+     * renaming existed. */
+    char *display_name;
     int media_is_video;
     int media_is_image;
     int media_is_audio;
@@ -317,7 +323,7 @@ static void send_response(int fd, int status, const char *status_text,
                      "\r\n",
                      status, status_text, content_type, body_len,
                      cors ? "Access-Control-Allow-Origin: *\r\n"
-                            "Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS\r\n"
+                            "Access-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n"
                             "Access-Control-Allow-Headers: Content-Type,Authorization\r\n"
                           : "");
     send_all(fd, header, (size_t)n);
@@ -366,6 +372,8 @@ static void download_free(mi_download_rec *j) {
     free(j->prefix);
     free(j->media_kind);
     free(j->container);
+    free(j->source_path);
+    free(j->display_name);
     free(j->sha256);
     free(j->master_playlist);
     free(j->error);
@@ -374,11 +382,35 @@ static void download_free(mi_download_rec *j) {
     free(j);
 }
 
+/* The last path segment of a URL, query and fragment stripped. Falls back to
+ * the whole string when it has no path, and to "download" when that is empty. */
+static char *basename_from_url(const char *url) {
+    if (!url) return mi_strdup("download");
+    const char *q = strpbrk(url, "?#");
+    size_t len = q ? (size_t)(q - url) : strlen(url);
+    const char *end = url + len;
+    const char *start = end;
+    while (start > url && start[-1] != '/') start--;
+    if (start == end) return mi_strdup("download");
+    return mi_strndup(start, (size_t)(end - start));
+}
+
+/* The name an item is shown under. A renamed record keeps its name; everything
+ * else is named after its source URL, so the list never shows a raw id. */
+static char *download_display_name(const mi_download_rec *j) {
+    return j->display_name ? mi_strdup(j->display_name) : basename_from_url(j->url);
+}
+
 /* Serialise one download to JSON. Caller holds the server lock. */
 static void download_to_json(const mi_download_rec *j, mi_json_buf *b) {
     mi_json_raw(b, "{");
     mi_json_key(b, "id");
     mi_json_string(b, j->id);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "name");
+    char *name = download_display_name(j);
+    mi_json_string(b, name);
+    free(name);
     mi_json_raw(b, ",");
     mi_json_key(b, "url");
     mi_json_string(b, j->url);
@@ -484,11 +516,159 @@ static void media_to_json(const mi_media_info *m, mi_json_buf *b) {
 
 static mi_download_rec *find_download(mi_server *srv, const char *id);
 
+/* File extension for a detected kind. A downloaded file with no extension is
+ * useless to the OS — nothing can associate a player with it. */
+static const char *extension_for_kind(const char *kind) {
+    if (!kind) return "bin";
+    if (!strcmp(kind, "mp4")) return "mp4";
+    if (!strcmp(kind, "matroska")) return "mkv";
+    if (!strcmp(kind, "avi")) return "avi";
+    if (!strcmp(kind, "flv")) return "flv";
+    if (!strcmp(kind, "ogg")) return "ogv";
+    if (!strcmp(kind, "asf")) return "wmv";
+    if (!strcmp(kind, "mpeg-ts")) return "ts";
+    if (!strcmp(kind, "mpeg-ps")) return "mpg";
+    if (!strcmp(kind, "hls")) return "m3u8";
+    if (!strcmp(kind, "dash")) return "mpd";
+    if (!strcmp(kind, "jpeg")) return "jpg";
+    if (!strcmp(kind, "png")) return "png";
+    if (!strcmp(kind, "gif")) return "gif";
+    if (!strcmp(kind, "webp")) return "webp";
+    if (!strcmp(kind, "bmp")) return "bmp";
+    if (!strcmp(kind, "tiff")) return "tiff";
+    if (!strcmp(kind, "avif")) return "avif";
+    if (!strcmp(kind, "heic")) return "heic";
+    if (!strcmp(kind, "mp3")) return "mp3";
+    if (!strcmp(kind, "aac")) return "aac";
+    if (!strcmp(kind, "flac")) return "flac";
+    if (!strcmp(kind, "wav")) return "wav";
+    if (!strcmp(kind, "ogg-audio")) return "ogg";
+    return "bin";
+}
+
+/* A filesystem-safe single path component. Separators and control characters
+ * are dropped, leading dots/spaces are trimmed (so a name cannot escape its
+ * directory or silently become a hidden file), and the result is bounded. */
+static char *sanitize_component(const char *in) {
+    if (!in) return NULL;
+    size_t n = strlen(in);
+    char *buf = mi_malloc(n + 1);
+    if (!buf) return NULL;
+    size_t o = 0;
+    for (size_t i = 0; i < n && o < 200; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (c == '/' || c == '\\' || c < 0x20 || c == 0x7f) continue;
+        buf[o++] = (char)c;
+    }
+    size_t start = 0;
+    while (start < o && (buf[start] == '.' || buf[start] == ' ')) start++;
+    if (start == o) {
+        free(buf);
+        return NULL;
+    }
+    char *out = mi_strndup(buf + start, o - start);
+    free(buf);
+    return out;
+}
+
+/* The on-disk filename for a download: the display name when one is set, else
+ * "source", always carrying the detected extension so the OS can still
+ * associate a player with it. */
+static char *source_filename(const mi_download_rec *j) {
+    char *base = j->display_name ? sanitize_component(j->display_name) : NULL;
+    if (!base) base = mi_strdup("source");
+    if (!base) return NULL;
+    if (strrchr(base, '.')) return base;
+    char *with_ext = mi_asprintf("%s.%s", base, extension_for_kind(j->media_kind));
+    free(base);
+    return with_ext;
+}
+
+/* Directory part of a path, allocated. "." when there is no separator. */
+static char *path_dirname(const char *path) {
+    char *dir = mi_strdup(path);
+    if (!dir) return NULL;
+    char *slash = strrchr(dir, '/');
+    if (slash) *slash = '\0';
+    return dir;
+}
+
+/* Rename an item. The display name is always updated; when the bytes are on
+ * disk the file is renamed too, keeping the detected extension. */
+static int apply_rename(mi_download_rec *j, const char *new_name) {
+    char *safe = sanitize_component(new_name);
+    if (!safe) return MI_ERR_ARG;
+    free(j->display_name);
+    j->display_name = safe;
+
+    if (j->source_path) {
+        char *dir = path_dirname(j->source_path);
+        char *fname = source_filename(j);
+        char *dest = (dir && fname) ? mi_path_join(dir, fname) : NULL;
+        free(dir);
+        free(fname);
+        if (!dest) return MI_ERR_NOMEM;
+        if (strcmp(dest, j->source_path) != 0 && rename(j->source_path, dest) == 0) {
+            free(j->source_path);
+            j->source_path = dest;
+        } else {
+            free(dest);
+        }
+    }
+    return MI_OK;
+}
+
+/* Relocate an item's directory into a named folder inside the library. The
+ * directory keeps its id name, so two items moved to the same folder cannot
+ * collide, and the move can never escape the work dir. */
+static int apply_move(mi_server *srv, mi_download_rec *j, const char *folder) {
+    char *safe = sanitize_component(folder);
+    if (!safe) return MI_ERR_ARG;
+    char *new_dir = mi_asprintf("%s/%s/%s", srv->cfg.work_dir, safe, j->id);
+    free(safe);
+    if (!new_dir) return MI_ERR_NOMEM;
+    char *old_dir = j->out_dir ? mi_strdup(j->out_dir)
+                               : mi_asprintf("%s/%s", srv->cfg.work_dir, j->id);
+    if (!old_dir) {
+        free(new_dir);
+        return MI_ERR_NOMEM;
+    }
+
+    int rc = MI_OK;
+    if (strcmp(old_dir, new_dir) != 0) {
+        /* Create only the parent: rename(2) then moves the item's directory in
+         * one step, so a failure leaves the bytes where they were. */
+        char *parent = path_dirname(new_dir);
+        if (parent) mi_mkdir_p(parent);
+        free(parent);
+        if (mi_path_exists(old_dir) && rename(old_dir, new_dir) != 0) rc = MI_ERR_IO;
+        if (rc == MI_OK) {
+            size_t olen = strlen(old_dir);
+            if (j->source_path && !strncmp(j->source_path, old_dir, olen)) {
+                const char *rel = j->source_path + olen;
+                while (*rel == '/') rel++;
+                char *moved = mi_path_join(new_dir, rel);
+                if (moved) {
+                    free(j->source_path);
+                    j->source_path = moved;
+                }
+            }
+            free(j->out_dir);
+            j->out_dir = mi_strdup(new_dir);
+            free(j->hls_dir);
+            j->hls_dir = mi_asprintf("%s/hls", new_dir);
+        }
+    }
+    free(old_dir);
+    free(new_dir);
+    return rc;
+}
+
 /* Content-Type for serving a downloaded file back to a browser. */
 static const char *content_type_for_kind(const char *kind) {
     if (!kind) return "application/octet-stream";
     if (!strcmp(kind, "mp4")) return "video/mp4";
-    if (!strcmp(kind, "matroska")) return "video/webm";
+    if (!strcmp(kind, "matroska")) return "video/x-matroska";
     if (!strcmp(kind, "mpeg-ts")) return "video/mp2t";
     if (!strcmp(kind, "hls")) return "application/vnd.apple.mpegurl";
     if (!strcmp(kind, "dash")) return "application/dash+xml";
@@ -517,16 +697,24 @@ static void serve_download_content(int fd, const http_request *req,
     mi_download_rec *j = find_download(srv, id);
     char *path = NULL;
     char *kind = NULL;
+    char *filename = NULL;
     if (j && j->state == DOWNLOAD_DONE) {
-        char *dir = j->out_dir ? mi_strdup(j->out_dir)
-                               : mi_asprintf("%s/%s", srv->cfg.work_dir, j->id);
-        path = mi_path_join(dir, "source.bin");
+        if (j->source_path) {
+            path = mi_strdup(j->source_path);
+        } else {
+            /* Older records predate the extension rename. */
+            char *dir = j->out_dir ? mi_strdup(j->out_dir)
+                                   : mi_asprintf("%s/%s", srv->cfg.work_dir, j->id);
+            path = mi_path_join(dir, "source.bin");
+            free(dir);
+        }
         kind = mi_strdup(j->media_kind);
-        free(dir);
+        filename = source_filename(j);
     }
     pthread_mutex_unlock(&srv->lock);
 
     if (!path) {
+        free(filename);
         send_error(fd, 404, "Not Found", "no completed download with that id", cors);
         return;
     }
@@ -536,6 +724,7 @@ static void serve_download_content(int fd, const http_request *req,
         send_error(fd, 404, "Not Found", "file is no longer on disk", cors);
         free(path);
         free(kind);
+        free(filename);
         return;
     }
     fseek(f, 0, SEEK_END);
@@ -557,6 +746,7 @@ static void serve_download_content(int fd, const http_request *req,
                 fclose(f);
                 free(path);
                 free(kind);
+                free(filename);
                 send_error(fd, 416, "Range Not Satisfiable", "bad range", cors);
                 return;
             }
@@ -567,38 +757,51 @@ static void serve_download_content(int fd, const http_request *req,
 
     long len = end - start + 1;
     const char *ctype = content_type_for_kind(kind);
-    char header[512];
-    int hn = snprintf(header, sizeof header,
-                      "HTTP/1.1 %d %s\r\n"
-                      "Content-Type: %s\r\n"
-                      "Content-Length: %ld\r\n"
-                      "Accept-Ranges: bytes\r\n"
-                      "%s"
-                      "Cache-Control: no-store\r\n"
-                      "%s"
-                      "Connection: close\r\n\r\n",
-                      is_range ? 206 : 200, is_range ? "Partial Content" : "OK",
-                      ctype, len,
-                      is_range ? "" : "",
-                      cors ? "Access-Control-Allow-Origin: *\r\n"
-                             "Access-Control-Expose-Headers: Content-Length,Content-Range\r\n"
-                           : "");
-    if (is_range) {
-        hn = snprintf(header, sizeof header,
-                      "HTTP/1.1 206 Partial Content\r\n"
-                      "Content-Type: %s\r\n"
-                      "Content-Length: %ld\r\n"
-                      "Content-Range: bytes %ld-%ld/%ld\r\n"
-                      "Accept-Ranges: bytes\r\n"
-                      "Cache-Control: no-store\r\n"
-                      "%s"
-                      "Connection: close\r\n\r\n",
-                      ctype, len, start, end, total,
-                      cors ? "Access-Control-Allow-Origin: *\r\n"
-                             "Access-Control-Expose-Headers: Content-Length,Content-Range\r\n"
-                           : "");
+    /* The download name travels in Content-Disposition so a shared or saved
+     * file keeps a real name instead of the id-based path. */
+    char header[1024];
+    char disposition[300];
+    disposition[0] = '\0';
+    if (filename) {
+        char *safe = sanitize_component(filename);
+        if (safe) {
+            snprintf(disposition, sizeof disposition,
+                     "Content-Disposition: inline; filename=\"%s\"\r\n", safe);
+            free(safe);
+        }
     }
-    send_all(fd, header, (size_t)hn);
+    if (is_range) {
+        int hn = snprintf(header, sizeof header,
+                          "HTTP/1.1 206 Partial Content\r\n"
+                          "Content-Type: %s\r\n"
+                          "Content-Length: %ld\r\n"
+                          "Content-Range: bytes %ld-%ld/%ld\r\n"
+                          "Accept-Ranges: bytes\r\n"
+                          "%s"
+                          "Cache-Control: no-store\r\n"
+                          "%s"
+                          "Connection: close\r\n\r\n",
+                          ctype, len, start, end, total, disposition,
+                          cors ? "Access-Control-Allow-Origin: *\r\n"
+                                 "Access-Control-Expose-Headers: Content-Length,Content-Range,Content-Disposition\r\n"
+                               : "");
+        send_all(fd, header, (size_t)hn);
+    } else {
+        int hn = snprintf(header, sizeof header,
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: %s\r\n"
+                          "Content-Length: %ld\r\n"
+                          "Accept-Ranges: bytes\r\n"
+                          "%s"
+                          "Cache-Control: no-store\r\n"
+                          "%s"
+                          "Connection: close\r\n\r\n",
+                          ctype, len, disposition,
+                          cors ? "Access-Control-Allow-Origin: *\r\n"
+                                 "Access-Control-Expose-Headers: Content-Length,Content-Range,Content-Disposition\r\n"
+                               : "");
+        send_all(fd, header, (size_t)hn);
+    }
 
     if (strcmp(req->method, "HEAD") != 0) {
         fseek(f, start, SEEK_SET);
@@ -615,6 +818,7 @@ static void serve_download_content(int fd, const http_request *req,
     fclose(f);
     free(path);
     free(kind);
+    free(filename);
 }
 
 static storage_snapshot *snapshot_from_headers(const http_request *req) {
@@ -865,6 +1069,19 @@ static void *download_worker(void *arg) {
     j->total_bytes = res.bytes_written;
     j->media_kind = mi_strdup(mi_kind_name(res.media.kind));
     j->container = mi_strdup(res.media.container);
+    /* Rename source.bin to a real extension so the OS can associate a player
+     * with it when the user picks "Open with", and to the item's own name so
+     * the library on disk reads like the library in the app. */
+    char *fname = source_filename(j);
+    char *renamed = fname ? mi_path_join(out_dir, fname) : NULL;
+    free(fname);
+    if (renamed) {
+        if (rename(dest, renamed) == 0) {
+            j->source_path = renamed;
+        } else {
+            free(renamed);
+        }
+    }
     j->media_is_video = res.media.is_video;
     j->media_is_image = res.media.is_image;
     j->media_is_audio = res.media.is_audio;
@@ -1157,7 +1374,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         }
     }
 
-    /* GET|DELETE /api/v1/downloads/{id} */
+    /* GET|PATCH|DELETE /api/v1/downloads/{id} */
     /* Derive the offset from the literal so renaming the route cannot leave a
      * stale length behind (this exact bug shipped once with a hardcoded 13). */
     static const char kDownloadsPrefix[] = "/api/v1/downloads/";
@@ -1177,6 +1394,44 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             pthread_mutex_unlock(&srv->lock);
             send_json(fd, 200, "OK", &b, cors);
             mi_json_free(&b);
+            return;
+        }
+        if (!strcmp(req->method, "PATCH")) {
+            /* Rename and/or move. Both are metadata edits that keep the bytes,
+             * so they are reversible and need no confirmation. */
+            mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+            const char *name = mi_json_get_string(in, "name", NULL);
+            const char *move_to = mi_json_get_string(in, "move_to", NULL);
+            if (!name && !move_to) {
+                pthread_mutex_unlock(&srv->lock);
+                send_error(fd, 400, "Bad Request",
+                           "provide 'name' and/or 'move_to'", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            int rc = MI_OK;
+            if (name && apply_rename(j, name) != MI_OK) rc = MI_ERR_ARG;
+            if (rc == MI_OK && move_to && apply_move(srv, j, move_to) != MI_OK) rc = MI_ERR_IO;
+            mi_json_buf b;
+            mi_json_init(&b);
+            if (rc == MI_OK) {
+                download_to_json(j, &b);
+            } else {
+                mi_json_raw(&b, "{\"error\":");
+                mi_json_string(&b, "could not apply the change");
+                mi_json_raw(&b, ",\"status\":");
+                mi_json_int(&b, rc == MI_ERR_ARG ? 400 : 500);
+                mi_json_raw(&b, "}");
+            }
+            pthread_mutex_unlock(&srv->lock);
+            if (rc == MI_OK) {
+                send_json(fd, 200, "OK", &b, cors);
+            } else {
+                send_json(fd, rc == MI_ERR_ARG ? 400 : 500,
+                          rc == MI_ERR_ARG ? "Bad Request" : "Internal Server Error", &b, cors);
+            }
+            mi_json_free(&b);
+            mi_json_value_free(in);
             return;
         }
         if (!strcmp(req->method, "DELETE")) {
@@ -1264,10 +1519,28 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         }
         pthread_mutex_unlock(&srv->lock);
 
+        /* Which volume the library is actually on, so the UI can name it
+         * rather than guess. */
+        char mount_point[PATH_MAX] = {0};
+        char fs_type[128] = {0};
+        char fs_device[512] = {0};
+        int have_mount = mi_mount_info(work_dir, mount_point, sizeof mount_point,
+                                       fs_type, sizeof fs_type,
+                                       fs_device, sizeof fs_device) == 0;
+
         mi_json_buf b;
         mi_json_init(&b);
         mi_json_raw(&b, "{\"work_dir\":");
         mi_json_string(&b, work_dir);
+        mi_json_raw(&b, ",\"mount_point\":");
+        if (have_mount && mount_point[0]) mi_json_string(&b, mount_point);
+        else mi_json_null(&b);
+        mi_json_raw(&b, ",\"fs_type\":");
+        if (have_mount && fs_type[0]) mi_json_string(&b, fs_type);
+        else mi_json_null(&b);
+        mi_json_raw(&b, ",\"fs_device\":");
+        if (have_mount && fs_device[0]) mi_json_string(&b, fs_device);
+        else mi_json_null(&b);
         mi_json_raw(&b, ",\"filesystem\":");
         if (have_fs) {
             mi_json_raw(&b, "{");

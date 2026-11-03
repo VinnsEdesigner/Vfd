@@ -80,3 +80,39 @@ export function useCancelDownload() {
     },
   });
 }
+
+export interface RenameDownloadVariables {
+  id: string;
+  name: string;
+}
+
+/** Rename keeps the bytes; it only changes what the item is called. */
+export function useRenameDownload() {
+  const { api } = useMediaApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: RenameDownloadVariables) => api.downloads.rename(id, name),
+    onSuccess: (download) => {
+      queryClient.setQueryData(queryKeys.download(download.id), download);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.downloadList() });
+    },
+  });
+}
+
+export interface MoveDownloadVariables {
+  id: string;
+  folder: string;
+}
+
+/** Move relocates the item's directory inside the library. */
+export function useMoveDownload() {
+  const { api } = useMediaApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, folder }: MoveDownloadVariables) => api.downloads.move(id, folder),
+    onSuccess: (download) => {
+      queryClient.setQueryData(queryKeys.download(download.id), download);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.downloadList() });
+    },
+  });
+}

@@ -9,7 +9,7 @@
 import { ApiError, NetworkError } from './errors';
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'DELETE' | 'PUT' | 'OPTIONS';
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT' | 'OPTIONS';
   path: string;
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
