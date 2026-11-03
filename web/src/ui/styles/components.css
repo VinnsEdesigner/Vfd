@@ -2153,6 +2153,71 @@
 .vplayer.is-landscape .vplayer__bar > * {
   pointer-events: auto;
 }
+/*
+ * The level indicator turns with the picture.
+ *
+ * It is drawn in the player's own box, which is NOT rotated, so in landscape it
+ * would sit upright against the glass while the picture and the controls are on
+ * their side — the bar in the wrong place, pointing the wrong way. Rotating it
+ * by the same quarter turn puts it back on the picture's edge, reading the right
+ * way up for someone holding the device turned. Sized from the viewport and
+ * centred, exactly as the bar is, because in landscape the frame is the screen.
+ */
+.vplayer.is-landscape .vplayer__hud {
+  top: 50%;
+  left: 50%;
+  width: 100vh;
+  height: 100vw;
+  flex-direction: row;
+  justify-content: flex-start;
+  align-items: center;
+  border-radius: 0;
+  background: none;
+  backdrop-filter: none;
+  padding: 0;
+  gap: 0;
+  transform: translate(-50%, -50%) rotate(90deg);
+  animation: none;
+}
+/* After the quarter turn the picture's left edge is the screen's top, so the
+   two levels sit against the screen's top and bottom. */
+.vplayer.is-landscape .vplayer__hud--brightness {
+  left: 50%;
+  top: 50%;
+  align-items: flex-start;
+  padding-top: 18px;
+}
+.vplayer.is-landscape .vplayer__hud--volume {
+  right: auto;
+  left: 50%;
+  top: 50%;
+  align-items: flex-end;
+  padding-bottom: 18px;
+}
+/* The readout becomes a horizontal bar running across the picture. */
+.vplayer.is-landscape .vplayer__hud-track {
+  width: 140px;
+  height: 8px;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+.vplayer.is-landscape .vplayer__hud-fill {
+  width: calc(var(--level, 0) * 100%);
+  height: 100%;
+}
+/* The icon and the number go beside the bar rather than under it. */
+.vplayer.is-landscape .vplayer__hud-icon,
+.vplayer.is-landscape .vplayer__hud-value {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.vplayer.is-landscape .vplayer__hud-icon {
+  top: 46px;
+}
+.vplayer.is-landscape .vplayer__hud-value {
+  bottom: 46px;
+}
 .vplayer__el {
   flex: 1;
   width: 100%;
@@ -2217,10 +2282,11 @@
 }
 .vplayer__hud-fill {
   width: 100%;
+  height: calc(var(--level, 0) * 100%);
   border-radius: 999px;
   background: #fff;
   /* The fill grows from the bottom, so up always means more. */
-  transition: height 0.06s linear;
+  transition: height 0.06s linear, width 0.06s linear;
 }
 .vplayer__hud-icon {
   display: grid;

@@ -484,9 +484,12 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
               )}%`}
             >
               <div className="vplayer__hud-track">
+                {/* The level travels as a variable: the track is vertical in
+                    portrait and horizontal in landscape, and the stylesheet
+                    decides which dimension that drives. */}
                 <div
                   className="vplayer__hud-fill"
-                  style={{ height: `${Math.round(hud.value * 100)}%` }}
+                  style={{ '--level': String(hud.value) } as React.CSSProperties}
                 />
               </div>
               <span className="vplayer__hud-icon">

@@ -367,6 +367,20 @@ describe('VideoPlayer brightness and volume swipe', () => {
     expect(filterFactor(video)).toBeCloseTo(1, 5); // unchanged: still the source
   });
 
+  it('drives the fill from the level, so one markup serves both layouts', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    act(() => {
+      swipe(videoEl(container), 60, 250, 60);
+    });
+    // The track is vertical in portrait and horizontal in landscape, so the
+    // level is a variable the stylesheet maps onto the right dimension; the
+    // markup itself does not change with orientation.
+    const fill = container.querySelector('.vplayer__hud-fill') as HTMLElement;
+    expect(fill.style.getPropertyValue('--level')).toBeTruthy();
+    expect(Number(fill.style.getPropertyValue('--level'))).toBeGreaterThan(0.5);
+  });
+
   it('hides the indicator again after a moment', () => {
     vi.useFakeTimers();
     const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
