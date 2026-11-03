@@ -20,6 +20,18 @@ function videoEl(container: HTMLElement): HTMLVideoElement {
   return container.querySelector('video') as HTMLVideoElement;
 }
 
+/** The physical filter factor on the picture: 1 is the source, untouched. */
+function filterFactor(video: HTMLVideoElement): number {
+  const m = /brightness\(([\d.]+)\)/.exec(video.style.filter);
+  return m ? Number(m[1]) : 1;
+}
+
+/** The level the UI reports, 0..1, as read off the indicator. */
+function hudLevel(container: HTMLElement): number | null {
+  const el = container.querySelector('.vplayer__hud-value');
+  return el ? Number(el.textContent!.replace('%', '')) / 100 : null;
+}
+
 /**
  * Make the picture usable in jsdom: a real box (jsdom has no layout, so the
  * frame would report zero and the gesture's side and span would both be
@@ -242,29 +254,62 @@ describe('VideoPlayer brightness and volume swipe', () => {
     vi.useRealTimers();
   });
 
-  it('raises brightness on a left-half swipe up, and shows the level', () => {
+  it('opens at the source, with the level at the midpoint', () => {
     const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
     withFrameBox(container);
-    const video = videoEl(container);
-    // Left half, dragged up: 120px of a 300px frame over a 1.4x range.
-    act(() => {
-      swipe(video, 60, 250, 130);
-    });
-    const m = /brightness\(([\d.]+)\)/.exec(video.style.filter);
-    expect(m).toBeTruthy();
-    expect(Number(m![1])).toBeGreaterThan(1);
-    expect(screen.getByLabelText(/^Brightness \d+%$/)).toBeTruthy();
+    // 50% is the untouched source, which is what leaves headroom to lift.
+    expect(filterFactor(videoEl(container))).toBeCloseTo(1, 5);
   });
 
-  it('lowers brightness on a left-half swipe down', () => {
+  it('dims the picture on a left-half swipe down, and shows the level', () => {
     const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
     withFrameBox(container);
     const video = videoEl(container);
+    // Left half, dragged down: 160px of a 300px frame over a 1.4x range.
     act(() => {
       swipe(video, 60, 100, 260);
     });
-    const m = /brightness\(([\d.]+)\)/.exec(video.style.filter);
-    expect(Number(m![1])).toBeLessThan(1);
+    expect(filterFactor(video)).toBeLessThan(1);
+    expect(hudLevel(container)).toBeLessThan(0.5);
+    expect(screen.getByLabelText(/^Brightness \d+%$/)).toBeTruthy();
+  });
+
+  it('lifts the picture above the source on a swipe up, so a dim screen glows', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    act(() => {
+      swipe(video, 60, 260, 60);
+    });
+    // Past the source: this is the "boost" that a screen-brightness API would
+    // have given, done to the picture instead.
+    expect(filterFactor(video)).toBeGreaterThan(1);
+  });
+
+  it('never reports a level above 100%', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    // Far more than a full-height swipe, several times over.
+    for (let i = 0; i < 4; i++) {
+      act(() => {
+        swipe(video, 60, 290, 10);
+      });
+    }
+    expect(hudLevel(container)).toBeLessThanOrEqual(1);
+    expect(screen.getByLabelText('Brightness 100%')).toBeTruthy();
+  });
+
+  it('never reports a level below 0%', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    for (let i = 0; i < 4; i++) {
+      act(() => {
+        swipe(video, 60, 10, 290);
+      });
+    }
+    expect(hudLevel(container)).toBeGreaterThanOrEqual(0);
   });
 
   it('sets volume on a right-half swipe, and leaves brightness alone', () => {
@@ -281,7 +326,7 @@ describe('VideoPlayer brightness and volume swipe', () => {
     });
     expect(video.volume).toBeGreaterThan(quiet);
     // The right half must never touch the picture's brightness.
-    expect(video.style.filter).toBe('');
+    expect(filterFactor(video)).toBeCloseTo(1, 5); // unchanged: still the source
     expect(screen.getByLabelText(/^Volume \d+%$/)).toBeTruthy();
   });
 
@@ -306,7 +351,7 @@ describe('VideoPlayer brightness and volume swipe', () => {
     act(() => {
       tap(video, 60, 150);
     });
-    expect(video.style.filter).toBe('');
+    expect(filterFactor(video)).toBeCloseTo(1, 5); // unchanged: still the source
     expect(container.querySelector('.vplayer__hud')).toBeNull();
   });
 
@@ -319,7 +364,7 @@ describe('VideoPlayer brightness and volume swipe', () => {
       video.dispatchEvent(pointer('pointermove', 60, 145));
       video.dispatchEvent(pointer('pointerup', 60, 145));
     });
-    expect(video.style.filter).toBe('');
+    expect(filterFactor(video)).toBeCloseTo(1, 5); // unchanged: still the source
   });
 
   it('hides the indicator again after a moment', () => {

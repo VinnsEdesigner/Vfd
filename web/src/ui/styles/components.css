@@ -2143,6 +2143,15 @@
   justify-content: flex-end;
   transform: translate(-50%, -50%) rotate(90deg);
   background: none;
+  /* The bar is the size of the whole screen here, so it must not intercept
+     pointer events meant for the picture — in portrait it only covers its own
+     strip, but in landscape it would otherwise sit over every swipe and the
+     brightness and volume gestures would never fire. Its children opt back in
+     below, so the controls stay clickable. */
+  pointer-events: none;
+}
+.vplayer.is-landscape .vplayer__bar > * {
+  pointer-events: auto;
 }
 .vplayer__el {
   flex: 1;

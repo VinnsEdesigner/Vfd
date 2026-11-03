@@ -21,9 +21,28 @@ import { formatClock } from './format';
 const SWIPE_RANGE = 1.4;
 /** Movement before a press becomes a swipe rather than a tap. */
 const SWIPE_THRESHOLD_PX = 12;
-/** Brightness range: down to a fifth, up to double, 1 being the source. */
+/**
+ * Picture brightness, as a level from 0 to 1 shown as 0–100%.
+ *
+ * The web has no API for the screen's own backlight — only a native app can
+ * change that — so the brightness control works on the picture instead, and it
+ * is scoped to it: leave the video and the screen is back to its device
+ * setting. Within that, the level *lifts* as well as dims, so a video on a dim
+ * screen can be made to glow.
+ *
+ * The source sits at the midpoint rather than at 100%, which is what gives the
+ * headroom to lift at all, and it is why the readout never needs to show more
+ * than 100%: 100% is the brightest the app can make the picture.
+ */
 const BRIGHTNESS_MIN = 0.2;
-const BRIGHTNESS_MAX = 2;
+const BRIGHTNESS_MAX = 1.8;
+/** The source, untouched — the level a video opens at. */
+const BRIGHTNESS_DEFAULT = 0.5;
+
+/** The CSS filter factor for a 0..1 level. */
+function brightnessFilter(level: number): number {
+  return BRIGHTNESS_MIN + level * (BRIGHTNESS_MAX - BRIGHTNESS_MIN);
+}
 /** How long the level indicator stays up after the last movement. */
 const HUD_HIDE_MS = 900;
 
@@ -102,10 +121,10 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
   const [pipSupport, setPipSupport] = useState<PipSupport>('none');
   const [inPip, setInPip] = useState(false);
   /**
-   * Picture brightness, 1 being the source. Held in a filter rather than on the
+   * Picture brightness as a 0..1 level. Held in a filter rather than on the
    * element so it applies to the picture only, not to the controls drawn over it.
    */
-  const [brightness, setBrightness] = useState(1);
+  const [brightness, setBrightness] = useState(BRIGHTNESS_DEFAULT);
   const brightnessRef = useRef(brightness);
   brightnessRef.current = brightness;
 
@@ -295,6 +314,7 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
    */
   const swipe = useRef<{
     side: 'brightness' | 'volume';
+    startX: number;
     startY: number;
     startValue: number;
     active: boolean;
@@ -319,24 +339,46 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
     [clearHudTimer],
   );
 
-  const clampBrightness = (v: number) =>
-    Math.min(BRIGHTNESS_MAX, Math.max(BRIGHTNESS_MIN, v));
+  /** Keep a level within 0..1. */
+  const clampBrightness = (v: number) => Math.min(1, Math.max(0, v));
 
   /**
    * A press on the picture. Which half decides what it will control; the
    * gesture only takes effect once it moves, so a tap still plays or pauses.
    */
+  /**
+   * Which edge of the *picture* a screen point is nearest, and how far along the
+   * picture's own vertical axis it has moved.
+   *
+   * In landscape the picture is turned a quarter turn, so the glass and the
+   * picture disagree: dragging the finger up the glass runs *along* the picture,
+   * not across it. Everything is therefore expressed in the picture's frame —
+   * the side is the picture's left/right, and the distance is measured along the
+   * picture's vertical — so the gesture means the same thing however the device
+   * is held.
+   */
+  const pictureGeometry = useCallback(() => {
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (!r) return null;
+    // In landscape the rotated picture spans the frame's height as its width.
+    const pictureWidth = orientation === 'landscape' ? r.height : r.width;
+    const pictureHeight = orientation === 'landscape' ? r.width : r.height;
+    return { rect: r, pictureWidth, pictureHeight };
+  }, [orientation]);
+
   const onGestureDown = useCallback(
     (e: React.PointerEvent) => {
-      // Measured against the frame, not the video: in landscape the video is
-      // rotated, so its own box is the window's transpose and would put the
-      // sides and the span in the wrong places.
-      const r = wrapRef.current?.getBoundingClientRect();
-      if (!r) return;
-      const onLeft = e.clientX - r.left < r.width / 2;
-      const side = onLeft ? 'brightness' : 'volume';
+      const geo = pictureGeometry();
+      if (!geo) return;
+      const { rect } = geo;
+      // The picture's horizontal position, in the picture's own frame. In
+      // landscape that axis runs down the glass, so the finger's y decides it.
+      const across =
+        orientation === 'landscape' ? e.clientY - rect.top : e.clientX - rect.left;
+      const side = across < geo.pictureWidth / 2 ? 'brightness' : 'volume';
       swipe.current = {
         side,
+        startX: e.clientX,
         startY: e.clientY,
         startValue: side === 'brightness' ? brightnessRef.current : state.muted ? 0 : state.volume,
         active: false,
@@ -347,22 +389,27 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
         /* no active pointer; the gesture still ends on release */
       }
     },
-    [state.muted, state.volume],
+    [orientation, pictureGeometry, state.muted, state.volume],
   );
 
   const onGestureMove = useCallback(
     (e: React.PointerEvent) => {
       const g = swipe.current;
       if (!g) return;
-      // Up increases, which is the direction everyone expects; a swipe is
-      // measured against the height of the picture so it scales with the window.
-      const dy = g.startY - e.clientY;
-      if (!g.active && Math.abs(dy) < SWIPE_THRESHOLD_PX) return;
+      const geo = pictureGeometry();
+      if (!geo) return;
+
+      // The picture's vertical axis: up the glass in portrait, but *along* the
+      // glass in landscape, because the picture is turned. Getting this wrong
+      // is why a landscape swipe moved nothing.
+      const along =
+        orientation === 'landscape' ? e.clientX - g.startX : g.startY - e.clientY;
+
+      if (!g.active && Math.abs(along) < SWIPE_THRESHOLD_PX) return;
       g.active = true;
 
-      const box = wrapRef.current?.getBoundingClientRect();
-      const span = Math.max(1, box?.height ?? window.innerHeight) * SWIPE_RANGE;
-      const delta = dy / span;
+      const span = Math.max(1, geo.pictureHeight) * SWIPE_RANGE;
+      const delta = along / span;
 
       if (g.side === 'brightness') {
         const next = clampBrightness(g.startValue + delta);
@@ -374,7 +421,7 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
         showHud('volume', next);
       }
     },
-    [controls, showHud],
+    [controls, orientation, pictureGeometry, showHud],
   );
 
   const onGestureUp = useCallback(
@@ -416,7 +463,9 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
             src={src}
             poster={poster}
             playsInline
-            style={brightness !== 1 ? { filter: `brightness(${brightness})` } : undefined}
+            // The filter is always applied, because the source level is not 1 —
+            // the picture is deliberately lifted or dimmed relative to it.
+            style={{ filter: `brightness(${brightnessFilter(brightness)})` }}
             // A vertical swipe sets brightness on the left half and volume on
             // the right. A press that does not move is still a tap, so the
             // pointer handlers replace the click rather than adding to it.
