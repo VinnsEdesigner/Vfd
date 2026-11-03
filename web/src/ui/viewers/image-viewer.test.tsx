@@ -160,13 +160,28 @@ describe('ImageViewer zoom controls', () => {
     expect(screen.getByText('100%')).toBeTruthy();
   });
 
-  it('resets rotation and scale together', () => {
+  it('rotates by a quarter turn on each click', () => {
+    const { container } = render(<ImageViewer src="http://x/a.png" alt="a" />);
+    const rotate = screen.getByRole('button', { name: /rotate/i });
+    fireEvent.click(rotate);
+    expect(img(container).style.transform).toContain('rotate(90deg)');
+    fireEvent.click(rotate);
+    expect(img(container).style.transform).toContain('rotate(180deg)');
+    fireEvent.click(rotate);
+    fireEvent.click(rotate);
+    // A full turn comes back to upright rather than accumulating.
+    expect(img(container).style.transform).toContain('rotate(0deg)');
+  });
+
+  it('fits scale and rotation together, and there is one such control', () => {
     const { container } = render(<ImageViewer src="http://x/a.png" alt="a" />);
     fireEvent.click(screen.getByRole('button', { name: /zoom in/i }));
     fireEvent.click(screen.getByRole('button', { name: /rotate/i }));
-    fireEvent.click(screen.getByRole('button', { name: /reset view/i }));
+    fireEvent.click(screen.getByRole('button', { name: /fit to screen/i }));
     expect(scaleOf(container)).toBe(1);
     expect(img(container).style.transform).toContain('rotate(0deg)');
+    // Only one fit control: a second, identically-behaving button reads as broken.
+    expect(screen.getAllByRole('button', { name: /fit to screen/i })).toHaveLength(1);
   });
 
   it('offers full screen, and fits the picture when it is entered', () => {

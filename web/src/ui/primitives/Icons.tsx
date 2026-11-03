@@ -317,10 +317,14 @@ export function IconRotate(props: IconProps) {
   );
 }
 
+/* Fit: the picture sitting inside the frame that holds it. Deliberately not the
+ * four corner brackets — that shape is the full-screen control, and two buttons
+ * with the same glyph in one toolbar read as the same button. */
 export function IconFit(props: IconProps) {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
-      <path d="M4 7.5V4h3.5M16 7.5V4h-3.5M4 12.5V16h3.5M16 12.5V16h-3.5" {...stroke} strokeWidth={1.6} />
+      <rect x="3" y="4" width="14" height="12" rx="1.8" {...stroke} strokeWidth={1.5} />
+      <rect x="6.6" y="7.2" width="6.8" height="5.6" rx="0.9" {...stroke} strokeWidth={1.5} />
     </svg>
   );
 }

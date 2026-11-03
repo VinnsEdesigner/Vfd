@@ -18,7 +18,9 @@ import boundaries from 'eslint-plugin-boundaries';
 export default tseslint.config(
   // The mock is a standalone, build-free browser script: excluded from the
   // typed app's lint so its DOM globals don't trip no-undef.
-  { ignores: ['dist', 'node_modules', 'coverage', 'mock/**'] },
+  // `scripts/` holds build tooling (Node scripts, not app source), so it is not
+  // subject to the app's layer rules or its browser globals.
+  { ignores: ['dist', 'node_modules', 'coverage', 'mock/**', 'scripts/**'] },
   {
     // The service worker runs in a worker global scope, not a window, so its
     // globals (self, caches, fetch) are not the browser ones ESLint knows.

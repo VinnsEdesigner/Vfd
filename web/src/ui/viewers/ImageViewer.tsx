@@ -27,7 +27,6 @@ import {
   IconZoomOut,
   IconRotate,
   IconFit,
-  IconReset,
   IconFullscreen,
   IconExitFullscreen,
 } from '../primitives/Icons';
@@ -115,15 +114,14 @@ export function ImageViewer({ src, alt, onDimensions }: ImageViewerProps) {
     });
   }, []);
 
-  const reset = useCallback(() => {
+  /** Back to a fitted, upright view. There is one "fit" action, not a fit and a
+   *  reset that happen to do the same thing — two buttons for one behaviour
+   *  just makes one of them look broken. */
+  const fit = useCallback(() => {
     setScale(1);
     setRotation(0);
     setOffset({ x: 0, y: 0 });
   }, []);
-
-  const fit = useCallback(() => {
-    reset();
-  }, [reset]);
 
   /**
    * Toggle full screen on the whole viewer. Entering also fits the picture: a
@@ -308,9 +306,6 @@ export function ImageViewer({ src, alt, onDimensions }: ImageViewerProps) {
         </Button>
         <Button size="sm" variant="ghost" onClick={fit} aria-label="Fit to screen">
           <IconFit />
-        </Button>
-        <Button size="sm" variant="ghost" onClick={reset} aria-label="Reset view">
-          <IconReset />
         </Button>
         <span className="imgbar__sep" />
         <Button
