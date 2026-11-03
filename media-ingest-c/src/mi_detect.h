@@ -59,6 +59,11 @@ typedef struct {
     int is_video;
     int is_image;
     int is_audio;
+    /* Frame size, when the container states it in the bytes we sniffed.
+     * 0 means unknown — a single-file source has no rendition list, so this is
+     * the only resolution there is to report. */
+    int width;
+    int height;
     char **manifest_urls; /* segment/representation URLs for HLS/DASH */
     size_t manifest_count;
     mi_quality *qualities; /* HLS/DASH variants, when parseable */

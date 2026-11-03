@@ -75,6 +75,8 @@ export function normalizeMedia(w: WireMedia | null | undefined): Media | null {
     isVideo: Boolean(w.is_video),
     isImage: Boolean(w.is_image),
     isAudio: Boolean(w.is_audio),
+    width: w.width ?? 0,
+    height: w.height ?? 0,
     qualities: Array.isArray(w.qualities)
       ? w.qualities.map((q) => ({
           width: q.width ?? 0,

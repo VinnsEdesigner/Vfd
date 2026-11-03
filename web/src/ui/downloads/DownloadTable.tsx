@@ -18,6 +18,7 @@ import { StatusBadge } from './StatusBadge';
 import { OverflowMenu, type MenuAction } from '../menus/OverflowMenu';
 import {
   IconFile,
+  IconFolder,
   IconImage,
   IconInfo,
   IconMusic,
@@ -45,6 +46,14 @@ export interface DownloadTableProps {
   cancellingId?: string | null;
   /** Opens the live detail panel for a download. */
   onInfo?: (id: string) => void;
+  /** Saves a finished download onto this device. */
+  onSaveLocally?: (id: string) => void;
+  /** Play the locally-stored copy of a download. */
+  onPlayLocal?: (id: string) => void;
+  /** Ids already stored on this device. */
+  storedIds?: ReadonlySet<string>;
+  /** Ids currently being written to this device. */
+  savingIds?: ReadonlySet<string>;
   emptyTitle?: string;
   emptyDescription?: string;
 }
@@ -116,6 +125,10 @@ export function DownloadTable({
   onDelete,
   cancellingId = null,
   onInfo,
+  onSaveLocally,
+  onPlayLocal,
+  storedIds,
+  savingIds,
   emptyTitle = 'No downloads yet',
   emptyDescription = 'Start a download to see it appear here.',
 }: DownloadTableProps) {
@@ -132,6 +145,23 @@ export function DownloadTable({
         label: 'Download info',
         icon: <IconInfo />,
         onSelect: () => onInfo(d.id),
+      });
+    }
+    if (d.isOpenable && storedIds?.has(d.id) && onPlayLocal) {
+      actions.push({
+        id: 'play-local',
+        label: 'Play offline',
+        icon: <IconPlay />,
+        onSelect: () => onPlayLocal(d.id),
+      });
+    }
+    if (d.isOpenable && !storedIds?.has(d.id) && onSaveLocally) {
+      actions.push({
+        id: 'save-local',
+        label: savingIds?.has(d.id) ? 'Saving to this device…' : 'Save to device',
+        icon: <IconFolder />,
+        disabled: savingIds?.has(d.id),
+        onSelect: () => onSaveLocally(d.id),
       });
     }
     if (onOpen && d.isOpenable) {

@@ -16,6 +16,8 @@ export {
   useResumeDownload,
 } from './use-downloads';
 export { useProbe, useDetectBytes } from './use-media';
+export { useLocalMedia } from './use-local-media';
+export type { LocalMediaState } from './use-local-media';
 export type { ProbeVariables } from './use-media';
 export { useDownloadViews, useDownloadViewsWithPipeline } from './use-download-views';
 export type { DownloadPipelineOptions } from './use-download-views';
@@ -61,6 +63,8 @@ export type {
 // Re-exported from stores so the UI has exactly one import surface (`../hooks`).
 export { useConnectionStore, connectionSettings, DEFAULT_CONNECTION } from '../stores/connection-store';
 export type { ConnectionSettings } from '../stores/connection-store';
+export { useLocalStorageStore } from '../stores/local-storage-store';
+export type { LocalStorageChoice, LocalStorageState } from '../stores/local-storage-store';
 export { useStorageStore, effectiveCredentials } from '../stores/storage-store';
 export type { StorageState } from '../stores/storage-store';
 export { useDownloadFormStore, DEFAULT_DOWNLOAD_DRAFT } from '../stores/download-form-store';

@@ -23,6 +23,9 @@ export interface WireMedia {
   is_video: boolean;
   is_image?: boolean;
   is_audio?: boolean;
+  /** Frame size, when the container states it. 0 when unknown. */
+  width?: number;
+  height?: number;
   qualities?: WireQuality[];
 }
 

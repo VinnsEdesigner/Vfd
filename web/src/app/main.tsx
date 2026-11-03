@@ -9,12 +9,22 @@ import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MediaApiProvider, useHealth } from '../hooks';
 import { App, BootGate, ToastProvider } from '../ui';
+import { registerServiceWorker } from '../platform/service-worker';
 
 import '../ui/styles/tokens.css';
 import '../ui/styles/base.css';
 import '../ui/styles/components.css';
 
 document.body.classList.add('app-shell');
+
+// Registered before the first paint so the installed app is offline-capable from
+// the start. Failures are not fatal — the app works without a worker, it just
+// cannot open without a network.
+void registerServiceWorker().then((state) => {
+  if (state.status === 'failed') {
+    console.warn('service worker registration failed:', state.detail);
+  }
+});
 
 /**
  * Holds the splash until the engine answers its health check, so the shell

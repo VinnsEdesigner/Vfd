@@ -8,6 +8,11 @@ export type { StorageState } from './storage-store';
 export { useDownloadFormStore, DEFAULT_DOWNLOAD_DRAFT } from './download-form-store';
 export type { DownloadFormState } from './download-form-store';
 export {
+  useLocalStorageStore,
+  type LocalStorageChoice,
+  type LocalStorageState,
+} from './local-storage-store';
+export {
   useFileBrowserStore,
   loadFileBrowserPreferences,
   DEFAULT_FILE_BROWSER,

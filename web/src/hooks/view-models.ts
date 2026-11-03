@@ -311,6 +311,8 @@ export interface DownloadView {
    *  formatted date. */
   createdAt: number;
   kindLabel: string;
+  /** Frame size from the container, e.g. "640×360". Null when not stated. */
+  resolutionLabel: string | null;
   /** Lowercase file extension from the name, e.g. "mp4" / "png". Used to decide
    *  whether the grid can show a real thumbnail. */
   extension: string;
@@ -364,6 +366,10 @@ export function toDownloadView(d: Download): DownloadView {
     createdAtLabel: formatTimestamp(d.createdAt),
     createdAt: d.createdAt,
     kindLabel: d.media ? formatKind(d.media.kind) : '—',
+    resolutionLabel:
+      d.media && d.media.width > 0 && d.media.height > 0
+        ? `${d.media.width}\u00d7${d.media.height}`
+        : null,
     extension: extensionOf(d.name),
     isActive: isActiveState(d.state),
     isResumable: isResumableState(d.state),

@@ -51,6 +51,10 @@ export interface Media {
   isVideo: boolean;
   isImage: boolean;
   isAudio: boolean;
+  /** Frame size from the container, or 0 when it did not state one. A
+   *  single-file source has no rendition list, so this is its only resolution. */
+  width: number;
+  height: number;
   /** Present for HLS/DASH sources; empty otherwise. */
   qualities: Quality[];
 }

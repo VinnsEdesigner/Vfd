@@ -39,6 +39,18 @@ export interface DownloadInfoProps {
   onReveal?: () => void;
   onDelete: () => void;
   onClose: () => void;
+  /** Save the bytes onto this device. Absent when no tier is usable. */
+  onSaveLocally?: () => void;
+  /** Play the locally-stored copy. Absent until it is saved. */
+  onPlayLocal?: () => void;
+  /** True while the bytes are being written to this device. */
+  saving?: boolean;
+  /** 0..1 while saving. */
+  saveProgress?: number;
+  /** Already on this device. */
+  savedLocally?: boolean;
+  /** Why saving is not possible, when it is not. */
+  localUnavailableReason?: string;
 }
 
 /** Seconds left at the current rate, or null when that cannot be known. */
@@ -68,6 +80,12 @@ export function DownloadInfo({
   onReveal,
   onDelete,
   onClose,
+  onSaveLocally,
+  onPlayLocal,
+  saving = false,
+  saveProgress,
+  savedLocally = false,
+  localUnavailableReason,
 }: DownloadInfoProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
@@ -139,17 +157,40 @@ export function DownloadInfo({
           <Row label="Format">
             {d.requestedQuality ? <Tag>{d.requestedQuality}</Tag> : <Tag>{d.kindLabel}</Tag>}
           </Row>
-          <Row label="Container">{d.kindLabel}</Row>
+          <Row label="Container">
+            {d.resolutionLabel ? `${d.kindLabel} · ${d.resolutionLabel}` : d.kindLabel}
+          </Row>
           <Row label="Connections">
             {d.connections > 0 ? String(d.connections) : <span className="muted">—</span>}
           </Row>
           <Row label="Added">{d.createdAtLabel}</Row>
         </div>
 
+        {saving && (
+          <div className="dinfo__saving">
+            <div className="dinfo__saving-bar">
+              <span style={{ width: `${Math.round((saveProgress ?? 0) * 100)}%` }} />
+            </div>
+            <span className="dinfo__saving-label">
+              Saving to this device… {Math.round((saveProgress ?? 0) * 100)}%
+            </span>
+          </div>
+        )}
+
         {d.error !== null && <p className="dinfo__error">{d.error}</p>}
 
         <div className="dinfo__actions">
           <div className="dinfo__actions-left">
+            {savedLocally && onPlayLocal && (
+              <Button size="sm" variant="primary" onClick={onPlayLocal}>
+                <IconPlay /> Play offline
+              </Button>
+            )}
+            {!savedLocally && onSaveLocally && d.isOpenable && (
+              <Button size="sm" loading={saving} onClick={onSaveLocally}>
+                <IconFolder /> Save to device
+              </Button>
+            )}
             {onOpen && d.isOpenable && (
               <Button size="sm" variant="ghost" onClick={onOpen}>
                 <IconPlay /> Open
@@ -185,6 +226,9 @@ export function DownloadInfo({
             </Button>
           </div>
         </div>
+        {localUnavailableReason !== undefined && !savedLocally && (
+          <p className="dinfo__hint">{localUnavailableReason}</p>
+        )}
       </div>
     </div>,
     document.body,

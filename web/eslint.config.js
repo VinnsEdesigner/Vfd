@@ -19,6 +19,20 @@ export default tseslint.config(
   // The mock is a standalone, build-free browser script: excluded from the
   // typed app's lint so its DOM globals don't trip no-undef.
   { ignores: ['dist', 'node_modules', 'coverage', 'mock/**'] },
+  {
+    // The service worker runs in a worker global scope, not a window, so its
+    // globals (self, caches, fetch) are not the browser ones ESLint knows.
+    files: ['public/sw.js'],
+    languageOptions: {
+      globals: {
+        self: 'readonly',
+        caches: 'readonly',
+        fetch: 'readonly',
+        URL: 'readonly',
+        Response: 'readonly',
+      },
+    },
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

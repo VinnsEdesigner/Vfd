@@ -21,6 +21,10 @@ export interface DownloadsPageProps {
   onDelete?: (id: string) => void;
   /** Opens the live detail panel for a download. */
   onInfo?: (id: string) => void;
+  onSaveLocally?: (id: string) => void;
+  onPlayLocal?: (id: string) => void;
+  storedIds?: ReadonlySet<string>;
+  savingIds?: ReadonlySet<string>;
   cancellingId?: string | null;
   onRefresh?: () => void;
   refreshing?: boolean;
@@ -34,6 +38,10 @@ export function DownloadsPage({
   onCancel,
   onDelete,
   onInfo,
+  onSaveLocally,
+  onPlayLocal,
+  storedIds,
+  savingIds,
   cancellingId = null,
   onRefresh,
   refreshing = false,
@@ -72,6 +80,10 @@ export function DownloadsPage({
         {...(onCancel ? { onCancel } : {})}
         {...(onDelete ? { onDelete } : {})}
         {...(onInfo ? { onInfo } : {})}
+        {...(onSaveLocally ? { onSaveLocally } : {})}
+        {...(onPlayLocal ? { onPlayLocal } : {})}
+        {...(storedIds ? { storedIds } : {})}
+        {...(savingIds ? { savingIds } : {})}
         cancellingId={cancellingId}
       />
     </Card>

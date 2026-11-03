@@ -534,10 +534,15 @@ static int download_ranged(const mi_download_config *cfg, const char *url,
         out->bytes_written = mi_file_size(dest);
         out->resumed = resumed;
         out->elapsed_seconds = mi_now() - progress.started_at;
-        if (media && media->kind != MI_KIND_UNKNOWN)
+        /* Detect from the file we actually wrote. A sniff of the first bytes
+         * over the network can miss a track header that sits further in, so the
+         * local file is the authoritative source for things like frame size. */
+        mi_detect_file(dest, MI_HEADER_SNIFF, &out->media);
+        if (out->media.kind == MI_KIND_UNKNOWN && media && media->kind != MI_KIND_UNKNOWN) {
+            mi_media_info_free(&out->media);
+            memset(&out->media, 0, sizeof out->media);
             mi_media_info_copy(&out->media, media);
-        else
-            mi_detect_file(dest, MI_HEADER_SNIFF, &out->media);
+        }
     }
 
     free(jobs);
@@ -601,10 +606,12 @@ static int download_stream(const mi_download_config *cfg, const char *url,
     out->bytes_written = mi_file_size(dest);
     out->resumed = 0;
     out->elapsed_seconds = mi_now() - progress.started_at;
-    if (media && media->kind != MI_KIND_UNKNOWN)
+    mi_detect_file(dest, MI_HEADER_SNIFF, &out->media);
+    if (out->media.kind == MI_KIND_UNKNOWN && media && media->kind != MI_KIND_UNKNOWN) {
+        mi_media_info_free(&out->media);
+        memset(&out->media, 0, sizeof out->media);
         mi_media_info_copy(&out->media, media);
-    else
-        mi_detect_file(dest, MI_HEADER_SNIFF, &out->media);
+    }
     return MI_OK;
 }
 

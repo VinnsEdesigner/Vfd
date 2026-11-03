@@ -7,7 +7,7 @@
  * construction.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell, type NavItem } from './layout';
 import {
   IconGrid,
@@ -50,6 +50,8 @@ import {
   useMoveDownload,
   usePauseDownload,
   useResumeDownload,
+  useLocalStorageStore,
+  useLocalMedia,
   useProbe,
   useConnectionStore,
   useDownloadFormStore,
@@ -60,9 +62,12 @@ import {
 } from '../hooks';
 import { useToast } from './feedback';
 import { ConfirmDialog } from './primitives/ConfirmDialog';
+import type { StorageTierId } from '../platform/storage-capabilities';
 import { FormatChooser, formatsFromQualities, formatFromFile } from './downloads/FormatChooser';
 import type { FormatChoice } from './downloads/FormatChooser';
 import { DownloadInfo } from './downloads/DownloadInfo';
+import { StorageChooser } from './storage/StorageChooser';
+import { StoragePanel } from './storage/StoragePanel';
 import { shareItems, mimeForName } from './files';
 import {
   formatBytes,
@@ -169,6 +174,9 @@ export function App({ initialView = 'overview' }: AppProps) {
   const [infoId, setInfoId] = useState<string | null>(null);
   /** Which transfer action is in flight, for its button. */
   const [transferBusy, setTransferBusy] = useState<string | null>(null);
+  /** First-run storage prompt; dismissed once a choice is made. */
+  const [storagePromptDone, setStoragePromptDone] = useState(false);
+  const [offlineStatus, setOfflineStatus] = useState('checking…');
   const [probe, setProbe] = useState<ProbeOutcome>({ status: 'idle' });
   const [probing, setProbing] = useState(false);
   const [selectedQuality, setSelectedQuality] = useState<number | null>(null);
@@ -185,6 +193,8 @@ export function App({ initialView = 'overview' }: AppProps) {
   const draft = useDownloadFormStore();
   const setDraftField = useDownloadFormStore((s) => s.setField);
 
+  const localStore = useLocalStorageStore();
+  const localMedia = useLocalMedia();
   const credentials = useStorageStore();
   const setCredential = useStorageStore((s) => s.setField);
 
@@ -502,6 +512,10 @@ export function App({ initialView = 'overview' }: AppProps) {
         const outcome: ProbeOutcome = {
           status: 'done',
           container: result.media ? result.media.container : '—',
+          resolution:
+            result.media && result.media.width > 0 && result.media.height > 0
+              ? `${result.media.width}\u00d7${result.media.height}`
+              : undefined,
           rangeSupport: result.acceptRanges ? 'Accepted (parallel download available)' : 'Not supported',
           size: formatBytes(result.totalBytes > 0 ? result.totalBytes : 0),
           confidence: result.media ? result.media.confidence.toFixed(3) : '—',
@@ -543,7 +557,7 @@ export function App({ initialView = 'overview' }: AppProps) {
     const formats =
       outcome.qualities && outcome.qualities.length > 0
         ? formatsFromQualities(outcome.qualities)
-        : formatFromFile(outcome.container ?? '', outcome.size ?? 'unknown');
+        : formatFromFile(outcome.container ?? '', outcome.size ?? 'unknown', outcome.resolution);
     setChoosingFormats(formats);
   }, [draft.url, runProbe, toast]);
 
@@ -599,10 +613,116 @@ export function App({ initialView = 'overview' }: AppProps) {
     [pauseDownload, resumeDownload, cancelDownload, toast],
   );
 
+  /**
+   * Detection runs once on mount: it is read-only, so it is safe to do without a
+   * gesture. The stored list is refreshed whenever the chosen tier changes.
+   */
+  const refreshLocal = useCallback(async () => {
+    await localStore.refresh();
+  }, [localStore]);
+
+  // Runs once: detection is read-only and does not depend on anything that
+  // changes, so re-running it on every render would be pure waste.
+  const detectedOnce = useRef(false);
+  useEffect(() => {
+    if (detectedOnce.current) return;
+    detectedOnce.current = true;
+    void refreshLocal();
+  }, [refreshLocal]);
+
+  const activeTier = localStore.effectiveTier();
+
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      setOfflineStatus('not supported');
+      return;
+    }
+    if (!navigator.serviceWorker.controller) {
+      setOfflineStatus('registered, not yet controlling this page');
+      return;
+    }
+    setOfflineStatus('active');
+  }, []);
+
+  /** Records the choice; the folder tier also stores the granted handle. */
+  const chooseStorage = useCallback(
+    (tier: StorageTierId, directory?: FileSystemDirectoryHandle) => {
+      localStore.choose(tier, directory);
+      setStoragePromptDone(true);
+    },
+    [localStore],
+  );
+
+  const storedIdSet = useMemo(
+    () => new Set(localMedia.items.map((i) => i.id)),
+    [localMedia.items],
+  );
+
+  /** Opens the locally-stored copy in a player. */
+  const playLocal = useCallback(
+    async (id: string) => {
+      try {
+        const url = await localMedia.urlFor(id);
+        if (!url) {
+          toast.error('Cannot play', 'That file is no longer on this device.');
+          return;
+        }
+        window.open(url, '_blank', 'noopener');
+      } catch (e) {
+        toast.error('Cannot play', describeError(e));
+      }
+    },
+    [localMedia, toast],
+  );
+
+  const removeLocal = useCallback(
+    async (id: string) => {
+      try {
+        await localMedia.remove(id);
+        toast.success('Removed from this device');
+      } catch (e) {
+        toast.error('Could not remove', describeError(e));
+      }
+    },
+    [localMedia, toast],
+  );
+
+  /** Streams a finished download onto this device. */
+  const saveLocally = useCallback(
+    async (id: string) => {
+      const file = allViews.find((d) => d.id === id);
+      if (!file) return;
+      try {
+        await localMedia.save(file);
+        toast.success('Saved to this device', file.name);
+      } catch (e) {
+        toast.error('Could not save to this device', describeError(e));
+      }
+    },
+    [allViews, localMedia, toast],
+  );
+
   const [title, subtitle] = VIEW_TITLES[view];
 
   return (
     <>
+      {!storagePromptDone && localStore.environment && !localStore.choice && (
+        <div className="cdialog__scrim">
+          <div className="storchooser__modal">
+            <StorageChooser
+              environment={localStore.environment}
+              selected={activeTier}
+              directoryName={null}
+              busy={localStore.detecting}
+              error={localStore.error}
+              onChoose={chooseStorage}
+              onRequestPersistence={() => void localStore.requestPersistence()}
+              onRefresh={() => void refreshLocal()}
+            />
+          </div>
+        </div>
+      )}
+
       {choosingFormats && (
         <FormatChooser
           source={fileNameFromUrl(draft.url)}
@@ -639,6 +759,14 @@ export function App({ initialView = 'overview' }: AppProps) {
             deleteFile(infoDownload.id);
           }}
           onClose={() => setInfoId(null)}
+          onSaveLocally={() => void saveLocally(infoDownload.id)}
+          onPlayLocal={() => void playLocal(infoDownload.id)}
+          saving={localMedia.saving.has(infoDownload.id)}
+          saveProgress={localMedia.progress.get(infoDownload.id) ?? 0}
+          savedLocally={localMedia.has(infoDownload.id)}
+          {...(localMedia.error
+            ? { localUnavailableReason: `Local storage is unavailable: ${localMedia.error}` }
+            : {})}
         />
       )}
 
@@ -740,6 +868,10 @@ export function App({ initialView = 'overview' }: AppProps) {
               onCancel={cancelDownloadById}
               onDelete={deleteFile}
               onInfo={setInfoId}
+              onSaveLocally={(id) => void saveLocally(id)}
+              onPlayLocal={(id) => void playLocal(id)}
+              storedIds={storedIdSet}
+              savingIds={localMedia.saving}
               cancellingId={cancellingId}
               onRefresh={() =>
                 void runAction(
@@ -861,6 +993,24 @@ export function App({ initialView = 'overview' }: AppProps) {
             downloads={allViews}
             inspectedId={inspectedId}
             onInspectChange={setInspectedId}
+            storageSection={
+              <StoragePanel
+                environment={localStore.environment}
+                detecting={localStore.detecting}
+                selected={activeTier}
+                directoryName={localStore.choice?.directoryName ?? null}
+                error={localStore.error}
+                items={localMedia.items}
+                usage={localMedia.usage}
+                offlineStatus={offlineStatus}
+                busy={busy === 'storage'}
+                onChoose={chooseStorage}
+                onRequestPersistence={() => void localStore.requestPersistence()}
+                onRefresh={() => void refreshLocal()}
+                onRemove={(id) => void removeLocal(id)}
+                onPlay={(id) => void playLocal(id)}
+              />
+            }
             onSaveConnection={() =>
               void runAction(
                 'save-connection',

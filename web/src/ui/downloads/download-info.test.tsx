@@ -236,3 +236,31 @@ describe('DownloadInfo', () => {
     expect(onClose).toHaveBeenCalled();
   });
 });
+
+describe('single-file resolution', () => {
+  it('labels the one format with the container resolution, not the filename', () => {
+    // The real file is named "...720p..." and is actually 640x360.
+    const formats = formatFromFile('mp4', '59 MB', '640×360');
+    expect(formats[0]?.label).toBe('640×360');
+    expect(formats[0]?.detail).toBe('mp4');
+    expect(formats[0]?.sizeIsReal).toBe(true);
+  });
+
+  it('falls back to "Source" when the container did not state a size', () => {
+    expect(formatFromFile('mp4', '59 MB', null)[0]?.label).toBe('Source');
+  });
+
+  it('shows the resolution in the info panel', () => {
+    render(
+      <DownloadInfo
+        download={view({ resolutionLabel: '640×360', isOpenable: true, state: 'done', tone: 'done', isActive: false })}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onCancel={vi.fn()}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('MP4 · 640×360')).toBeTruthy();
+  });
+});

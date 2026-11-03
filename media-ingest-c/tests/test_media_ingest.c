@@ -833,10 +833,63 @@ static void test_dash_renditions(void) {
 /* main                                                              */
 /* ---------------------------------------------------------------- */
 
+/* A real MP4 header: the tkhd box carries the frame size, and the filename
+ * cannot be trusted (this file is named "720p" and is 640x360). */
+static void test_mp4_dimensions(void) {
+    /* ftyp, then a moov containing tkhd. Built by hand so the offsets are exact. */
+    unsigned char buf[512];
+    memset(buf, 0, sizeof buf);
+    /* ftyp box, 24 bytes: size, 'ftyp', brand 'isom', minor, compat 'isom' */
+    unsigned char ftyp[24] = {0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm',
+                              0, 0, 2, 0, 'i', 's', 'o', 'm', 'm', 'p', '4', '1'};
+    memcpy(buf, ftyp, sizeof ftyp);
+    /* moov box header at 24, then tkhd inside it at 32. */
+    unsigned char moov_hdr[8] = {0, 0, 0, 0, 'm', 'o', 'o', 'v'};
+    memcpy(buf + 24, moov_hdr, 8);
+    size_t tkhd_at = 32;
+    unsigned char tkhd[100];
+    memset(tkhd, 0, sizeof tkhd);
+    size_t tkhd_size = sizeof tkhd;
+    tkhd[0] = (unsigned char)(tkhd_size >> 24);
+    tkhd[1] = (unsigned char)(tkhd_size >> 16);
+    tkhd[2] = (unsigned char)(tkhd_size >> 8);
+    tkhd[3] = (unsigned char)tkhd_size;
+    memcpy(tkhd + 4, "tkhd", 4);
+    /* 640 x 360 as 16.16 fixed point in the last 8 bytes. */
+    uint32_t w = 640u << 16, h = 360u << 16;
+    tkhd[92] = (unsigned char)(w >> 24); tkhd[93] = (unsigned char)(w >> 16);
+    tkhd[94] = (unsigned char)(w >> 8);  tkhd[95] = (unsigned char)w;
+    tkhd[96] = (unsigned char)(h >> 24); tkhd[97] = (unsigned char)(h >> 16);
+    tkhd[98] = (unsigned char)(h >> 8);  tkhd[99] = (unsigned char)h;
+    memcpy(buf + tkhd_at, tkhd, sizeof tkhd);
+    size_t moov_size = 8 + sizeof tkhd;
+    buf[24] = (unsigned char)(moov_size >> 24);
+    buf[25] = (unsigned char)(moov_size >> 16);
+    buf[26] = (unsigned char)(moov_size >> 8);
+    buf[27] = (unsigned char)moov_size;
+
+    mi_media_info info;
+    memset(&info, 0, sizeof info);
+    mi_detect(buf, sizeof buf, &info);
+    CHECK(info.kind == MI_KIND_MP4, "mp4 still detected");
+    CHECK(info.width == 640, "width read from tkhd");
+    CHECK(info.height == 360, "height read from tkhd");
+    mi_media_info_free(&info);
+
+    /* An MP4 with no tkhd must not invent a size. */
+    mi_media_info bare;
+    memset(&bare, 0, sizeof bare);
+    mi_detect(ftyp, sizeof ftyp, &bare);
+    CHECK(bare.kind == MI_KIND_MP4, "bare mp4 detected");
+    CHECK(bare.width == 0 && bare.height == 0, "no size invented without a tkhd");
+    mi_media_info_free(&bare);
+}
+
 int main(void) {
     mi_log_set_level(MI_LOG_ERROR); /* keep test output clean */
     signal(SIGPIPE, SIG_IGN);
 
+    test_mp4_dimensions();
     test_detect_mp4();
     test_detect_webm();
     test_detect_html_not_video();

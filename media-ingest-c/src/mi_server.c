@@ -75,6 +75,8 @@ typedef struct {
     int media_is_video;
     int media_is_image;
     int media_is_audio;
+    int media_width;
+    int media_height;
     /* Set by a pause request; read by the running worker's control callback. */
     volatile int pause_requested;
     /* 1 while a worker owns the record, so the server never starts a second. */
@@ -459,6 +461,12 @@ static void download_to_json(const mi_download_rec *j, mi_json_buf *b) {
         mi_json_raw(b, ",");
         mi_json_key(b, "is_audio");
         mi_json_bool(b, j->media_is_audio);
+        mi_json_raw(b, ",");
+        mi_json_key(b, "width");
+        mi_json_int(b, j->media_width);
+        mi_json_raw(b, ",");
+        mi_json_key(b, "height");
+        mi_json_int(b, j->media_height);
         mi_json_raw(b, "}");
     } else {
         mi_json_null(b);
@@ -522,6 +530,10 @@ static void media_to_json(const mi_media_info *m, mi_json_buf *b) {
     mi_json_bool(b, m->is_image);
     mi_json_raw(b, ",\"is_audio\":");
     mi_json_bool(b, m->is_audio);
+    mi_json_raw(b, ",\"width\":");
+    mi_json_int(b, m->width);
+    mi_json_raw(b, ",\"height\":");
+    mi_json_int(b, m->height);
     mi_json_raw(b, ",\"qualities\":[");
     for (size_t i = 0; i < m->quality_count; i++) {
         const mi_quality *q = &m->qualities[i];
@@ -1149,6 +1161,8 @@ static void *download_worker(void *arg) {
     j->media_is_video = res.media.is_video;
     j->media_is_image = res.media.is_image;
     j->media_is_audio = res.media.is_audio;
+    j->media_width = res.media.width;
+    j->media_height = res.media.height;
     j->sha256 = sha;
     j->master_playlist = master;
     j->artifact_urls = urls;

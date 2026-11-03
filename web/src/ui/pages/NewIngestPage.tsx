@@ -28,6 +28,8 @@ export interface IngestFormValue {
 export interface ProbeOutcome {
   status: 'idle' | 'probing' | 'done' | 'error';
   container?: string;
+  /** Frame size from the container, e.g. "640×360". */
+  resolution?: string;
   rangeSupport?: string;
   size?: string;
   confidence?: string;

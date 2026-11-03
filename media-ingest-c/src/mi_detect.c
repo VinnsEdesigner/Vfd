@@ -61,6 +61,38 @@ static int add_manifest_url(mi_media_info *info, const char *url, size_t len) {
 /* Individual detectors                                                */
 /* ------------------------------------------------------------------ */
 
+/* The tkhd box ends with two 16.16 fixed-point dimensions. Reading it costs
+ * nothing: it sits near the front of the moov, inside the bytes we already
+ * sniffed. Only the video track has non-zero dimensions, so the first tkhd with
+ * a width is the video one. */
+static void parse_tkhd_dimensions(const unsigned char *buf, size_t len,
+                                  int *width, int *height) {
+    for (size_t i = 4; i + 8 <= len; i += 4) {
+        if (memcmp(buf + i, "tkhd", 4) != 0) continue;
+        /* The box size sits in the four bytes before the type. */
+        if (i < 4) continue;
+        uint32_t box_size = ((uint32_t)buf[i - 4] << 24) | ((uint32_t)buf[i - 3] << 16) |
+                            ((uint32_t)buf[i - 2] << 8) | (uint32_t)buf[i - 1];
+        /* 8 header + 4 version/flags + 8 creation + 8 modification + 4 track id
+         * + 4 reserved + 8 duration + 8 reserved + 8 layer/group/volume/reserved
+         * + 36 matrix = 92 for v0, and 8 more for v1. */
+        size_t end = (size_t)(i - 4) + box_size;
+        if (end < 8 || end > len) continue;
+        const unsigned char *p = buf + end - 8;
+        uint32_t w = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                     ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+        uint32_t h = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) |
+                     ((uint32_t)p[6] << 8) | (uint32_t)p[7];
+        int wi = (int)(w >> 16);
+        int hi = (int)(h >> 16);
+        if (wi > 0 && hi > 0) {
+            *width = wi;
+            *height = hi;
+            return;
+        }
+    }
+}
+
 static int detect_iso_bmff(const unsigned char *buf, size_t len,
                            mi_media_info *out) {
     static const char *brands[] = {
@@ -85,6 +117,7 @@ static int detect_iso_bmff(const unsigned char *buf, size_t len,
         } else {
             set_info(out, MI_KIND_MP4, 0.70, "mp4", 1);
         }
+        parse_tkhd_dimensions(buf, len, &out->width, &out->height);
         return 1;
     }
     return 0;

@@ -22,7 +22,7 @@ import {
 } from '../settings/StorageLocationPanel';
 import type { DownloadView } from '../../hooks/view-models';
 
-export type SettingsTab = 'general' | 'location' | 'engine' | 'more';
+export type SettingsTab = 'general' | 'location' | 'engine' | 'storage' | 'more';
 
 export interface EngineFacts {
   engineVersion: string;
@@ -52,6 +52,8 @@ export interface SettingsPageProps {
   onSaveConnection: () => void;
   onSaveLocation: () => void;
   onTestLocation: () => void;
+  /** The local-storage section, rendered on its own tab. */
+  storageSection?: React.ReactNode;
   /** Downloads selectable in the pipeline inspector ("More" tab). */
   downloads: ReadonlyArray<DownloadView>;
   /** Which download the inspector shows. */
@@ -76,6 +78,7 @@ export function SettingsPage(props: SettingsPageProps) {
           { id: 'general', label: 'Connection' },
           { id: 'location', label: 'Storage location' },
           { id: 'engine', label: 'Engine' },
+          { id: 'storage', label: 'Local storage' },
           { id: 'more', label: 'More' },
         ]}
       />
@@ -181,6 +184,8 @@ export function SettingsPage(props: SettingsPageProps) {
           </div>
         </Card>
       )}
+
+      {tab === 'storage' && props.storageSection}
 
       {tab === 'more' && (
         <PipelineInspector

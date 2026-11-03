@@ -163,12 +163,20 @@ export function formatsFromQualities(qualities: ReadonlyArray<QualityOption>): F
   }));
 }
 
-/** The single format a non-manifest source has. */
-export function formatFromFile(container: string, sizeLabel: string): FormatChoice[] {
+/** The single format a non-manifest source has.
+ *
+ * `resolution` comes from the container's own track header, so it is a measured
+ * fact rather than a guess from the filename — this file is called
+ * "720p_surround" and is actually 640x360. */
+export function formatFromFile(
+  container: string,
+  sizeLabel: string,
+  resolution?: string | null,
+): FormatChoice[] {
   return [
     {
       id: 'source',
-      label: 'Source',
+      label: resolution ?? 'Source',
       detail: container || 'file',
       sizeLabel,
       sizeIsReal: true,

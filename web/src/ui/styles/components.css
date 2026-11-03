@@ -3662,3 +3662,208 @@ input[type='range']:focus-visible {
   outline-offset: 3px;
   border-radius: var(--r-sm);
 }
+
+/* ==========================================================================
+   Storage chooser — what this device can do, and which option to use.
+   ========================================================================== */
+
+.storchooser__modal {
+  width: min(640px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.storchooser {
+  padding: 20px;
+}
+.storchooser__head {
+  margin-bottom: 14px;
+}
+.storchooser__title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.storchooser__sub {
+  margin-top: 5px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.storchooser__usage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.storchooser__link {
+  font-size: 12.5px;
+  color: var(--accent);
+  text-decoration: underline;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.storchooser__ok {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ok);
+}
+
+.storchooser__list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.storchoice {
+  display: flex;
+  gap: 13px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface);
+  transition: border-color 0.14s, background 0.14s;
+}
+.storchoice.is-active {
+  border-color: var(--sel-border);
+  background: linear-gradient(180deg, var(--sel-from), var(--sel-to));
+  color: var(--sel-fg);
+}
+.storchoice.is-unavailable {
+  opacity: 0.66;
+  background: var(--surface-2);
+}
+.storchoice__icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.storchoice.is-active .storchoice__icon {
+  background: var(--sel-chip);
+}
+.storchoice__icon svg {
+  width: 17px;
+  height: 17px;
+}
+.storchoice__body {
+  min-width: 0;
+  flex: 1;
+}
+.storchoice__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.storchoice__label {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.storchoice__badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.storchoice__chosen {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ok);
+}
+.storchoice__chosen svg {
+  width: 13px;
+  height: 13px;
+}
+.storchoice__summary {
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.storchoice.is-active .storchoice__summary {
+  color: var(--text);
+}
+.storchoice__traits {
+  margin-top: 5px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.storchoice__reason {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--warning);
+}
+.storchoice__caveats {
+  margin-top: 7px;
+  padding-left: 16px;
+  list-style: disc;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+.storchoice__action {
+  margin-top: 10px;
+}
+
+/* Saving to this device: its own progress, because it is a second transfer that
+   happens after the download itself is finished. */
+.dinfo__saving {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.dinfo__saving-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.dinfo__saving-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+.dinfo__saving-label {
+  display: block;
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.dinfo__hint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--warning);
+}

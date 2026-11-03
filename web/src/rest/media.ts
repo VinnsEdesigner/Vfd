@@ -47,6 +47,8 @@ export function createMediaResource(client: ApiClient): MediaResource {
           isVideo: false,
           isImage: false,
           isAudio: false,
+          width: 0,
+          height: 0,
           qualities: [],
         }
       );
