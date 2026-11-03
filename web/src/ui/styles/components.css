@@ -2098,14 +2098,26 @@
   height: 100vw;
   transform: translate(-50%, -50%) rotate(90deg);
 }
-/* The bar stays horizontal at the bottom of the screen, over the picture. */
+/* The bar stays horizontal at the bottom of the screen, over the picture.
+   The bar itself is turned the same quarter turn as the picture, so the controls
+   read the right way up for someone who has physically turned the device — the
+   same thing every phone player does. It is sized from the viewport because in
+   landscape the frame is the whole screen. */
 .vplayer.is-landscape .vplayer__bar {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
   z-index: 2;
-  padding: 8px 14px 10px;
+  top: 50%;
+  left: 50%;
+  width: 100vh;
+  height: 100vw;
+  display: flex;
+  /* Reversed so the seek line lands on the screen edge with the buttons beside
+     it, instead of the buttons sitting in the padding with the line floating
+     inside them. */
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+  transform: translate(-50%, -50%) rotate(90deg);
+  background: none;
 }
 .vplayer__el {
   flex: 1;
@@ -2193,19 +2205,32 @@
 .vplayer__row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 6px;
+  gap: 8px;
+  margin-top: 8px;
 }
+/* The player's controls are the one place a bigger target is unambiguously
+   better: they are tapped, on glass, over moving video. */
 .vplayer__row .btn {
   color: #fff;
+  height: 40px;
+  padding: 0 12px;
+}
+.vplayer__row .btn svg {
+  width: 22px;
+  height: 22px;
+}
+/* Icon-only controls become square targets rather than a wide pill. */
+.vplayer__row .btn[aria-label] {
+  min-width: 40px;
+  justify-content: center;
 }
 .vplayer__row .btn:hover {
   background: rgba(255, 255, 255, 0.14);
 }
 .vplayer__time {
   font-family: var(--mono);
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
   font-variant-numeric: tabular-nums;
   margin-left: 6px;
 }

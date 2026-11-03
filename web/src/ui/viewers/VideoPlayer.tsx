@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../primitives/Button';
 import {
   IconPlay, IconPause, IconVolume, IconVolumeOff, IconSkipBack, IconSkipForward,
-  IconPip, IconFullscreen, IconExitFullscreen, IconRotate, IconFit,
+  IconPip, IconFullscreen, IconExitFullscreen, IconRotate,
 } from '../primitives/Icons';
 import { useMediaElement, RATES } from './useMediaElement';
 import { formatClock } from './format';
@@ -290,7 +290,10 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
                 aria-pressed={landscape}
                 title={landscape ? 'Upright' : 'Sideways — like a desktop screen'}
               >
-                {landscape ? <IconFit /> : <IconRotate />}
+                {/* Always the rotate glyph. The fullscreen icon is the same
+                    four-corner shape, so swapping to it read as a duplicate
+                    control rather than a state. */}
+                <IconRotate />
               </Button>
               <Button variant="ghost" size="sm" onClick={() => void togglePip()} aria-label="Picture in picture">
                 <IconPip />
