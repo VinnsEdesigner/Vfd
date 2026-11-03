@@ -74,6 +74,7 @@ import type { EngineStorageFacts } from './storage/EngineStorageNotice';
 import { shareItems, openWithItem, mimeForName } from './files';
 import {
   formatBytes,
+  toDeviceView,
   toQualityOptions,
   hostFromUrl,
   fileNameFromUrl,
@@ -219,6 +220,29 @@ export function App({ initialView = 'overview' }: AppProps) {
     purge: draft.purge,
   });
 
+  /**
+   * The library the file manager shows: engine records plus the files saved on
+   * this device. A device copy is a first-class entry, so it can be played,
+   * shared and opened like any other file rather than only played by handing a
+   * URL to a new tab.
+   *
+   * A file saved from a download appears once, as the device copy: the local
+   * bytes are what the user asked to keep, and showing both would double it.
+   */
+  const libraryViews = useMemo<DownloadView[]>(() => {
+    const deviceViews = localMedia.items.map((item) =>
+      toDeviceView({
+        id: item.id,
+        name: item.name,
+        type: item.type,
+        size: item.size,
+        url: localMedia.urls.get(item.id) ?? '',
+      }),
+    );
+    const localIds = new Set(deviceViews.map((v) => v.id));
+    return [...deviceViews, ...allViews.filter((v) => !localIds.has(v.id))];
+  }, [localMedia.items, localMedia.urls, allViews]);
+
   // First load only: a background refetch should not replace content with a
   // skeleton, so we key off `isPending` rather than `isFetching`.
   const isLoading = downloadsQuery.isPending;
@@ -265,8 +289,17 @@ export function App({ initialView = 'overview' }: AppProps) {
   );
 
   const openFile = useMemo(
-    () => (openFileId ? allViews.find((d) => d.id === openFileId) ?? null : null),
-    [openFileId, allViews],
+    () => (openFileId ? libraryViews.find((d) => d.id === openFileId) ?? null : null),
+    [openFileId, libraryViews],
+  );
+
+  /** The bytes to play: the device copy when there is one, else the engine. */
+  const contentUrlFor = useCallback(
+    (view: DownloadView) =>
+      view.localUrl && view.localUrl !== ''
+        ? view.localUrl
+        : api.client.transport.resolve(`/api/v1/downloads/${encodeURIComponent(view.id)}/content`),
+    [api.client.transport],
   );
 
   /**
@@ -310,17 +343,46 @@ export function App({ initialView = 'overview' }: AppProps) {
    * than `window.confirm` — browser chrome cannot show which files are about to
    * go, and it cannot be styled or trusted to appear on every platform.
    */
+  /**
+   * Which of these ids live on the engine, on this device, or both.
+   *
+   * The file manager shows one entry per item, but the two stores are separate:
+   * deleting a device copy must not delete the engine's record, and deleting an
+   * engine record must not silently leave an orphaned local copy.
+   */
+  const partitionIds = useCallback(
+    (ids: readonly string[]) => {
+      const engine = new Set(allViews.map((v) => v.id));
+      const device = new Set(localMedia.items.map((i) => i.id));
+      return {
+        engineIds: ids.filter((id) => engine.has(id)),
+        deviceIds: ids.filter((id) => device.has(id)),
+        // Engine-only: nothing local to remove.
+        engineOnly: ids.filter((id) => engine.has(id) && !device.has(id)),
+        deviceOnly: ids.filter((id) => device.has(id) && !engine.has(id)),
+      };
+    },
+    [allViews, localMedia.items],
+  );
+
   const deleteFile = useCallback(
     (id: string) => {
-      const file = allViews.find((d) => d.id === id);
+      const file = libraryViews.find((d) => d.id === id);
+      const { engineIds, deviceIds } = partitionIds([id]);
+      const onDevice = deviceIds.length > 0;
       setPendingDelete({
         ids: [id],
-        title: 'Delete this download?',
-        message: 'The record and its downloaded files will be removed from disk. This cannot be undone.',
+        title: 'Delete this item?',
+        message:
+          engineIds.length > 0 && onDevice
+            ? 'The engine record and this device’s copy will both be removed. This cannot be undone.'
+            : engineIds.length > 0
+              ? 'The record and its downloaded files will be removed from disk. This cannot be undone.'
+              : 'This copy will be removed from this device. This cannot be undone.',
         details: [file?.name ?? id],
       });
     },
-    [allViews],
+    [libraryViews, partitionIds],
   );
 
   /**
@@ -331,7 +393,7 @@ export function App({ initialView = 'overview' }: AppProps) {
   const deleteFiles = useCallback(
     (ids: readonly string[]) => {
       if (ids.length === 0) return;
-      const names = ids.map((id) => allViews.find((d) => d.id === id)?.name ?? id);
+      const names = ids.map((id) => libraryViews.find((d) => d.id === id)?.name ?? id);
       setPendingDelete({
         ids,
         title: `Delete ${ids.length} item${ids.length === 1 ? '' : 's'}?`,
@@ -339,7 +401,7 @@ export function App({ initialView = 'overview' }: AppProps) {
         details: names.slice(0, 6).concat(names.length > 6 ? [`…and ${names.length - 6} more`] : []),
       });
     },
-    [allViews],
+    [libraryViews],
   );
 
   /** Runs the confirmation once the user accepts it. */
@@ -347,28 +409,46 @@ export function App({ initialView = 'overview' }: AppProps) {
     if (!pendingDelete) return;
     const { ids } = pendingDelete;
     setPendingDelete(null);
-    if (ids.length === 1) {
-      const id = ids[0]!;
-      const name = allViews.find((d) => d.id === id)?.name ?? id;
-      void removeDownload
-        .mutateAsync({ id, removeFiles: true })
-        .then(() => toast.success('Deleted', `${name} and its files were removed.`))
-        .catch((e: unknown) => toast.error('Could not delete', describeError(e)));
-      return;
-    }
-    void runAction(
-      'file-action',
-      async () => {
-        for (const id of ids) {
-          await removeDownload.mutateAsync({ id, removeFiles: true });
-        }
-      },
-      {
-        success: `Deleted ${ids.length} items`,
-        failure: 'Could not delete everything',
-      },
-    );
-  }, [pendingDelete, allViews, removeDownload, runAction, toast]);
+    const { engineIds, deviceIds } = partitionIds(ids);
+    const nameOf = (id: string) => libraryViews.find((d) => d.id === id)?.name ?? id;
+
+    // Remove the device copies first: a failed engine delete must not leave the
+    // user believing a local file went with it.
+    void (async () => {
+      for (const id of deviceIds) {
+        await localMedia.remove(id).catch(() => undefined);
+      }
+      if (engineIds.length === 0) {
+        toast.success(
+          'Deleted',
+          ids.length === 1
+            ? `${nameOf(ids[0]!)} was removed from this device.`
+            : `${deviceIds.length} copies were removed from this device.`,
+        );
+        return;
+      }
+      if (engineIds.length === 1) {
+        const id = engineIds[0]!;
+        await removeDownload
+          .mutateAsync({ id, removeFiles: true })
+          .then(() => toast.success('Deleted', `${nameOf(id)} and its files were removed.`))
+          .catch((e: unknown) => toast.error('Could not delete', describeError(e)));
+        return;
+      }
+      await runAction(
+        'file-action',
+        async () => {
+          for (const id of engineIds) {
+            await removeDownload.mutateAsync({ id, removeFiles: true });
+          }
+        },
+        {
+          success: `Deleted ${engineIds.length} items`,
+          failure: 'Could not delete everything',
+        },
+      );
+    })();
+  }, [pendingDelete, partitionIds, libraryViews, localMedia, removeDownload, runAction, toast]);
 
   /**
    * Share via the Web Share API, with a URL and then clipboard fallback. The
@@ -381,9 +461,9 @@ export function App({ initialView = 'overview' }: AppProps) {
       const targets = files.map((f) => ({
         id: f.id,
         name: f.name,
-        url: api.client.transport.resolve(
-          `/api/v1/downloads/${encodeURIComponent(f.id)}/content`,
-        ),
+        // A device file is shared from its own bytes; an engine item from the
+        // endpoint that serves them.
+        url: contentUrlFor(f),
         mime: mimeForName(f.name),
       }));
       void shareItems(targets)
@@ -400,7 +480,7 @@ export function App({ initialView = 'overview' }: AppProps) {
         })
         .catch((e: unknown) => toast.error('Could not share', describeError(e)));
     },
-    [api.client.transport, toast],
+    [contentUrlFor, toast],
   );
 
   /**
@@ -414,9 +494,9 @@ export function App({ initialView = 'overview' }: AppProps) {
       const target = {
         id: file.id,
         name: file.name,
-        url: api.client.transport.resolve(
-          `/api/v1/downloads/${encodeURIComponent(file.id)}/content`,
-        ),
+        // The bytes themselves: a device copy is already here, an engine item is
+        // fetched from the endpoint that serves it.
+        url: contentUrlFor(file),
         mime: mimeForName(file.name),
       };
       void openWithItem(target)
@@ -426,23 +506,23 @@ export function App({ initialView = 'overview' }: AppProps) {
         })
         .catch((e: unknown) => toast.error('Could not open', describeError(e)));
     },
-    [api.client.transport, toast],
+    [contentUrlFor, toast],
   );
 
   /** Row-menu variants of the viewer's open/share actions, keyed by id. */
   const openWithById = useCallback(
     (id: string) => {
-      const file = allViews.find((d) => d.id === id);
+      const file = libraryViews.find((d) => d.id === id);
       if (file) openWithFile(file);
     },
-    [allViews, openWithFile],
+    [libraryViews, openWithFile],
   );
   const shareById = useCallback(
     (id: string) => {
-      const file = allViews.find((d) => d.id === id);
+      const file = libraryViews.find((d) => d.id === id);
       if (file) shareFiles([file]);
     },
-    [allViews, shareFiles],
+    [libraryViews, shareFiles],
   );
 
   /** Move into a library folder. Reversible, so no confirmation. */
@@ -706,21 +786,21 @@ export function App({ initialView = 'overview' }: AppProps) {
     [localMedia.items],
   );
 
-  /** Opens the locally-stored copy in a player. */
+  /**
+   * Opens a device file in the in-app viewer.
+   *
+   * It used to hand the blob URL to a new tab, which loses the app's player and
+   * its controls. The file manager now plays it in place, like any other entry.
+   */
   const playLocal = useCallback(
-    async (id: string) => {
-      try {
-        const url = await localMedia.urlFor(id);
-        if (!url) {
-          toast.error('Cannot play', 'That file is no longer on this device.');
-          return;
-        }
-        window.open(url, '_blank', 'noopener');
-      } catch (e) {
-        toast.error('Cannot play', describeError(e));
+    (id: string) => {
+      if (!localMedia.urls.has(id)) {
+        toast.error('Cannot play', 'That file is no longer on this device.');
+        return;
       }
+      setOpenFileId(id);
     },
-    [localMedia, toast],
+    [localMedia.urls, toast],
   );
 
   const removeLocal = useCallback(
@@ -889,13 +969,9 @@ export function App({ initialView = 'overview' }: AppProps) {
         {openFile ? (
           <FileViewer
             file={openFile}
-            src={api.client.transport.resolve(
-              `/api/v1/downloads/${encodeURIComponent(openFile.id)}/content`,
-            )}
-            downloadUrl={api.client.transport.resolve(
-              `/api/v1/downloads/${encodeURIComponent(openFile.id)}/content`,
-            )}
-            location={location.target === 'local' ? localPath : cloudPath}
+            src={contentUrlFor(openFile)}
+            downloadUrl={contentUrlFor(openFile)}
+            location={openFile.source === 'device' ? 'On this device' : location.target === 'local' ? localPath : cloudPath}
             onClose={() => setOpenFileId(null)}
             onOpenWith={() => void openWithFile(openFile)}
             onShare={() => shareFiles([openFile])}
@@ -920,9 +996,10 @@ export function App({ initialView = 'overview' }: AppProps) {
             onSelect={setOpenFileId}
             onOpenWith={openWithById}
             onShare={shareById}
-            contentUrl={(id) =>
-              api.client.transport.resolve(`/api/v1/downloads/${encodeURIComponent(id)}/content`)
-            }
+            contentUrl={(id) => {
+              const view = libraryViews.find((v) => v.id === id);
+              return view ? contentUrlFor(view) : '';
+            }}
           />
         ))}
 
@@ -990,7 +1067,7 @@ export function App({ initialView = 'overview' }: AppProps) {
           <StoragePage
             tab={storageTab}
             onTabChange={setStorageTab}
-            downloads={allViews}
+            downloads={libraryViews}
             ongoing={ongoing}
             target={location.target}
             localPath={localPath}
@@ -1019,9 +1096,13 @@ export function App({ initialView = 'overview' }: AppProps) {
             onShareFiles={shareFiles}
             onMoveFiles={moveFiles}
             onRenameFile={renameFile}
-            contentUrl={(id) =>
-              api.client.transport.resolve(`/api/v1/downloads/${encodeURIComponent(id)}/content`)
-            }
+            onSaveLocally={(id) => void saveLocally(id)}
+            storedIds={storedIdSet}
+            savingIds={localMedia.saving}
+            contentUrl={(id) => {
+              const view = libraryViews.find((v) => v.id === id);
+              return view ? contentUrlFor(view) : '';
+            }}
             onTestStorage={() =>
               void runAction(
                 'test-storage',

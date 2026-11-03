@@ -56,6 +56,11 @@ export interface StoragePageProps {
   onMoveFiles?: (ids: readonly string[], folder: string) => void;
   /** Rename an item in place. */
   onRenameFile?: (id: string, name: string) => void;
+  /** Save an engine item onto this device. */
+  onSaveLocally?: (id: string) => void;
+  /** Ids already stored on this device. */
+  storedIds?: ReadonlySet<string>;
+  savingIds?: ReadonlySet<string>;
   /** Absolute URL of an item's bytes, for sharing and thumbnails. */
   contentUrl: (id: string) => string;
   /** Which action is in flight, so its button can spin. */
@@ -84,6 +89,9 @@ export function StoragePage(props: StoragePageProps) {
     onShareFiles,
     onMoveFiles,
     onRenameFile,
+    onSaveLocally,
+    storedIds,
+    savingIds,
     contentUrl,
     busy = null,
   } = props;
@@ -156,6 +164,9 @@ export function StoragePage(props: StoragePageProps) {
               onDelete={deleteSelected}
               onMove={(ids, folder) => onMoveFiles?.(ids, folder)}
               {...(onRenameFile ? { onRename: onRenameFile } : {})}
+              {...(onSaveLocally ? { onSaveLocally } : {})}
+              {...(storedIds ? { storedIds } : {})}
+              {...(savingIds ? { savingIds } : {})}
               busy={busy === 'file-action'}
             />
           </div>

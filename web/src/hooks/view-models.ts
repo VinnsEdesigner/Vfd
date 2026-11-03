@@ -333,6 +333,14 @@ export interface DownloadView {
   name: string;
   state: DownloadState;
   tone: StatusTone;
+  /**
+   * Where the bytes live: the engine's library, or this device. A device copy is
+   * a first-class entry in the file manager (playable, shareable, openable), not
+   * only a note on an engine record.
+   */
+  source: 'engine' | 'device';
+  /** The playback URL for a device copy; null for an engine item. */
+  localUrl: string | null;
   /** 0..1 */
   fraction: number;
   percent: number;
@@ -393,6 +401,8 @@ export function toDownloadView(d: Download): DownloadView {
     // The server now names an item, and a rename changes it. Fall back to the
     // URL segment so a record from an older server still reads sensibly.
     name: d.name && d.name.trim() ? d.name : fileNameFromUrl(d.url),
+    source: 'engine',
+    localUrl: null,
     state: d.state,
     tone: statusTone(d.state),
     fraction,
@@ -441,4 +451,111 @@ export function withPipeline(
 
 export function toDownloadViews(list: Download[]): DownloadView[] {
   return list.map(toDownloadView);
+}
+
+/** A stored file on this device, as the file manager needs to see it. */
+export interface DeviceFileInfo {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  /** A URL the browser can play. */
+  url: string;
+}
+
+/**
+ * A device-stored file as a first-class library entry.
+ *
+ * It carries everything the file manager acts on — kind, extension, a playable
+ * URL — so a device file is played in place instead of being handed to a new
+ * tab. The engine knows nothing about these; they are the user's own copies.
+ */
+export function toDeviceView(f: DeviceFileInfo): DownloadView {
+  const kind = kindFromMime(f.type, f.name);
+  const ext = extensionOf(f.name);
+  const isVideo = VIDEO_KINDS.has(kind);
+  const isImage = IMAGE_KINDS.has(kind);
+  const isAudio = AUDIO_KINDS.has(kind);
+  return {
+    id: f.id,
+    // No source URL: the bytes are here, not on a server.
+    url: '',
+    name: f.name,
+    source: 'device',
+    localUrl: f.url,
+    // A stored file is complete by definition — there is nothing left to fetch.
+    state: 'done',
+    tone: 'done',
+    fraction: 1,
+    percent: 100,
+    bytes: f.size,
+    bytesLabel: formatBytes(f.size),
+    downloadedLabel: formatBytes(f.size),
+    bytesPerSecond: 0,
+    sha256: null,
+    masterPlaylist: null,
+    artifacts: [],
+    error: null,
+    createdAtLabel: '\u2014',
+    createdAt: 0,
+    kindLabel: formatKind(kind),
+    filename: f.name,
+    resolutionLabel: null,
+    extension: ext,
+    isActive: false,
+    isResumable: false,
+    isSettled: true,
+    isOpenable: true,
+    isVideo,
+    isImage,
+    isAudio,
+    qualities: [],
+    pipeline: [],
+    requestedQuality: null,
+    connections: 0,
+    hls: false,
+    upload: false,
+    purge: false,
+  };
+}
+
+const VIDEO_KINDS = new Set<MediaKind>(['mp4', 'matroska', 'avi', 'flv', 'ogg', 'asf', 'mpeg-ts', 'mpeg-ps', 'hls', 'dash']);
+const IMAGE_KINDS = new Set<MediaKind>(['jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'avif', 'heic']);
+const AUDIO_KINDS = new Set<MediaKind>(['mp3', 'aac', 'flac', 'wav', 'ogg-audio']);
+
+/** The container a device file holds, from its MIME type and, failing that, its
+ *  extension. A file the OS could not type is not assumed to be anything. */
+export function kindFromMime(mime: string, name: string): MediaKind {
+  if (mime.startsWith('video/')) {
+    const sub = mime.slice('video/'.length).split(';')[0] ?? '';
+    if (sub === 'webm') return 'matroska';
+    if (sub === 'x-msvideo') return 'avi';
+    if (sub === 'x-matroska') return 'matroska';
+    if (sub === 'quicktime') return 'mp4';
+    return 'mp4';
+  }
+  if (mime.startsWith('audio/')) {
+    const sub = mime.slice('audio/'.length).split(';')[0] ?? '';
+    if (sub === 'wav' || sub === 'x-wav') return 'wav';
+    if (sub === 'flac' || sub === 'x-flac') return 'flac';
+    if (sub === 'aac') return 'aac';
+    if (sub === 'ogg') return 'ogg-audio';
+    return 'mp3';
+  }
+  if (mime.startsWith('image/')) {
+    const sub = mime.slice('image/'.length).split(';')[0] ?? '';
+    if (sub === 'png' || sub === 'gif' || sub === 'webp' || sub === 'bmp' || sub === 'avif') {
+      return sub as MediaKind;
+    }
+    if (sub === 'tiff') return 'tiff';
+    return 'jpeg';
+  }
+  // A file whose type the OS did not know still has an extension worth reading.
+  const ext = extensionOf(name);
+  if (['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'flv', 'ts', 'mpg'].includes(ext)) return 'mp4';
+  if (['mp3', 'm4a', 'wav', 'flac', 'aac', 'ogg', 'oga'].includes(ext)) return 'mp3';
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'avif', 'heic'].includes(ext)) {
+    return 'jpeg';
+  }
+  return 'unknown';
 }

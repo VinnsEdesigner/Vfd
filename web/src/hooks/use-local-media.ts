@@ -27,6 +27,12 @@ export interface LocalMediaState {
   saving: ReadonlySet<string>;
   /** 0..1 per id while saving. */
   progress: ReadonlyMap<string, number>;
+  /**
+   * A playable URL per stored file, resolved as the list loads so the file
+   * manager can show and play a device file without a second, click-time fetch.
+   * A blob URL for the object tiers; the sandbox path for a real folder.
+   */
+  urls: ReadonlyMap<string, string>;
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -47,6 +53,7 @@ export function useLocalMedia(): LocalMediaState {
   const [usage, setUsage] = useState(0);
   const [saving, setSaving] = useState<ReadonlySet<string>>(new Set());
   const [progress, setProgress] = useState<ReadonlyMap<string, number>>(new Map());
+  const [urls, setUrls] = useState<ReadonlyMap<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,12 +75,34 @@ export function useLocalMedia(): LocalMediaState {
       setItems(list);
       setUsage(used);
       setError(null);
+      // Resolve a playable URL per file up front, so the library can render and
+      // play a device file directly. A failure for one file must not sink the
+      // list: it simply has no URL.
+      const next = new Map<string, string>();
+      await Promise.all(
+        list.map(async (item) => {
+          try {
+            const url = await s.urlFor(item.id);
+            if (url) next.set(item.id, url);
+          } catch {
+            /* unreadable file: leave it without a URL */
+          }
+        }),
+      );
+      setUrls((prev) => {
+        // Release URLs for files that are gone, or a long session leaks blobs.
+        for (const [id, url] of prev) {
+          if (!next.has(id)) s.release(url);
+        }
+        return next;
+      });
     } catch (e) {
       // A tier that cannot be opened is reported, never hidden behind an empty
       // list, because an empty list looks like "nothing saved" and would be a lie.
       setError(e instanceof Error ? e.message : 'Local storage could not be read.');
       setItems([]);
       setUsage(0);
+      setUrls(new Map());
     } finally {
       setLoading(false);
     }
@@ -177,6 +206,7 @@ export function useLocalMedia(): LocalMediaState {
     usage,
     saving,
     progress,
+    urls,
     loading,
     error,
     refresh,

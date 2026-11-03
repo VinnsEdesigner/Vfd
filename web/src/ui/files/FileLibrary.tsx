@@ -31,6 +31,11 @@ export interface FileLibraryProps {
   onDelete: (ids: readonly string[]) => void;
   onMove: (ids: readonly string[], folder: string) => void;
   onRename?: (id: string, name: string) => void;
+  /** Save an engine file onto this device. Absent when no tier can take it. */
+  onSaveLocally?: (id: string) => void;
+  /** Ids already stored on this device. */
+  storedIds?: ReadonlySet<string>;
+  savingIds?: ReadonlySet<string>;
   /** A rename or move is in flight; the dialog's confirm button spins. */
   busy?: boolean;
   /** Folder names offered as one-tap choices when moving. */
@@ -50,6 +55,9 @@ export function FileLibrary({
   onDelete,
   onMove,
   onRename,
+  onSaveLocally,
+  storedIds,
+  savingIds,
   busy = false,
   moveFolders = DEFAULT_MOVE_FOLDERS,
 }: FileLibraryProps) {
@@ -78,6 +86,16 @@ export function FileLibrary({
     const actions: MenuAction[] = [];
     if (file.isOpenable) {
       actions.push({ id: 'open', label: verb, onSelect: () => onOpen(file.id) });
+    }
+    // Saving is only meaningful for an engine file that is not here yet: a
+    // device copy already is the local copy.
+    if (file.source === 'engine' && onSaveLocally && !storedIds?.has(file.id)) {
+      actions.push({
+        id: 'save-local',
+        label: savingIds?.has(file.id) ? 'Saving to this device…' : 'Save to device',
+        disabled: savingIds?.has(file.id),
+        onSelect: () => onSaveLocally(file.id),
+      });
     }
     actions.push({
       id: 'select',

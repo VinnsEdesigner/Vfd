@@ -145,6 +145,16 @@ export function IconList(props: IconProps) {
   );
 }
 
+/** A device: the copy saved on this phone/computer, not on the engine. */
+export function IconDevice(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <rect x="5" y="2.5" width="10" height="15" rx="1.8" {...stroke} strokeWidth={1.5} />
+      <path d="M8.5 15h3" {...stroke} strokeWidth={1.5} />
+    </svg>
+  );
+}
+
 export function IconDatabase(props: IconProps) {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>

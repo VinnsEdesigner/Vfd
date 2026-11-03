@@ -8,7 +8,16 @@
  * not change how you work.
  */
 
-import { IconFile, IconImage, IconMusic, IconPlay, IconFolder, IconCloud, IconCheck } from '../primitives/Icons';
+import {
+  IconFile,
+  IconImage,
+  IconMusic,
+  IconPlay,
+  IconFolder,
+  IconCloud,
+  IconCheck,
+  IconDevice,
+} from '../primitives/Icons';
 import { StatusBadge } from '../downloads/StatusBadge';
 import { OverflowMenu, type MenuAction } from '../menus/OverflowMenu';
 import { useLongPress } from './useLongPress';
@@ -148,9 +157,14 @@ function FileRow({
         </span>
       </span>
 
-      <span className="frow__loc" title={path}>
-        {isLocal ? <IconFolder /> : <IconCloud />}
-        <span className="frow__loc-path">{path}</span>
+      <span
+        className="frow__loc"
+        title={file.source === 'device' ? 'Saved on this device' : path}
+      >
+        {file.source === 'device' ? <IconDevice /> : isLocal ? <IconFolder /> : <IconCloud />}
+        <span className="frow__loc-path">
+          {file.source === 'device' ? 'On this device' : path}
+        </span>
       </span>
 
       <span className="frow__status">
