@@ -16,6 +16,47 @@ function bar(container: HTMLElement): HTMLElement {
   return container.querySelector('.vplayer__bar') as HTMLElement;
 }
 
+function videoEl(container: HTMLElement): HTMLVideoElement {
+  return container.querySelector('video') as HTMLVideoElement;
+}
+
+/**
+ * Make the picture usable in jsdom: a real box (jsdom has no layout, so the
+ * frame would report zero and the gesture's side and span would both be
+ * degenerate) and a `play()` that returns a promise, which jsdom's does not.
+ */
+function withFrameBox(container: HTMLElement, width = 400, height = 300) {
+  const frame = container.querySelector('.vplayer__frame') as HTMLElement;
+  frame.getBoundingClientRect = () =>
+    ({ left: 0, top: 0, width, height, right: width, bottom: height, x: 0, y: 0 }) as DOMRect;
+  const video = videoEl(container);
+  video.play = vi.fn().mockResolvedValue(undefined);
+  video.pause = vi.fn();
+}
+
+function pointer(type: string, x: number, y: number) {
+  return new PointerEvent(type, { pointerId: 1, pointerType: 'touch', clientX: x, clientY: y, bubbles: true });
+}
+
+/** A press and release with no movement: a tap. */
+function tap(el: HTMLElement, x = 200, y = 150) {
+  el.dispatchEvent(pointer('pointerdown', x, y));
+  el.dispatchEvent(pointer('pointerup', x, y));
+}
+
+/**
+ * A vertical swipe. `from` and `to` are y positions; x picks the half of the
+ * picture, which decides whether it is brightness or volume.
+ */
+function swipe(el: HTMLElement, x: number, fromY: number, toY: number) {
+  el.dispatchEvent(pointer('pointerdown', x, fromY));
+  const steps = 5;
+  for (let i = 1; i <= steps; i++) {
+    el.dispatchEvent(pointer('pointermove', x, fromY + ((toY - fromY) * i) / steps));
+  }
+  el.dispatchEvent(pointer('pointerup', x, toY));
+}
+
 describe('detectPipSupport', () => {
   afterEach(() => {
     // `pictureInPictureEnabled` is read-only, so restore it explicitly.
@@ -134,9 +175,10 @@ describe('VideoPlayer controls visibility', () => {
     expect(bar(container).className).toContain('is-hidden');
 
     // A tap on the picture reveals them; it must not also toggle playback, or
-    // reaching for the pause button would pause on the way.
+    // reaching for the pause button would pause on the way. The tap is a press
+    // and release with no movement, which is what a finger actually does.
     act(() => {
-      fireEvent.click(video);
+      tap(video);
     });
     expect(bar(container).className).not.toContain('is-hidden');
   });
@@ -192,5 +234,120 @@ describe('VideoPlayer orientation', () => {
     expect(
       screen.getByRole('button', { name: /upright/i }).getAttribute('aria-pressed'),
     ).toBe('true');
+  });
+});
+
+describe('VideoPlayer brightness and volume swipe', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('raises brightness on a left-half swipe up, and shows the level', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    // Left half, dragged up: 120px of a 300px frame over a 1.4x range.
+    act(() => {
+      swipe(video, 60, 250, 130);
+    });
+    const m = /brightness\(([\d.]+)\)/.exec(video.style.filter);
+    expect(m).toBeTruthy();
+    expect(Number(m![1])).toBeGreaterThan(1);
+    expect(screen.getByLabelText(/^Brightness \d+%$/)).toBeTruthy();
+  });
+
+  it('lowers brightness on a left-half swipe down', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    act(() => {
+      swipe(video, 60, 100, 260);
+    });
+    const m = /brightness\(([\d.]+)\)/.exec(video.style.filter);
+    expect(Number(m![1])).toBeLessThan(1);
+  });
+
+  it('sets volume on a right-half swipe, and leaves brightness alone', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    // Down first, so "up" has somewhere to go from a known volume.
+    act(() => {
+      swipe(video, 340, 150, 250);
+    });
+    const quiet = video.volume;
+    act(() => {
+      swipe(video, 340, 250, 60);
+    });
+    expect(video.volume).toBeGreaterThan(quiet);
+    // The right half must never touch the picture's brightness.
+    expect(video.style.filter).toBe('');
+    expect(screen.getByLabelText(/^Volume \d+%$/)).toBeTruthy();
+  });
+
+  it('keeps the volume within 0..1 however far the swipe goes', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    act(() => {
+      swipe(video, 340, 290, 10);
+    });
+    expect(video.volume).toBeLessThanOrEqual(1);
+    act(() => {
+      swipe(video, 340, 10, 290);
+    });
+    expect(video.volume).toBeGreaterThanOrEqual(0);
+  });
+
+  it('treats a press with no movement as a tap, not a level change', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    act(() => {
+      tap(video, 60, 150);
+    });
+    expect(video.style.filter).toBe('');
+    expect(container.querySelector('.vplayer__hud')).toBeNull();
+  });
+
+  it('ignores a movement too small to be a swipe', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    act(() => {
+      video.dispatchEvent(pointer('pointerdown', 60, 150));
+      video.dispatchEvent(pointer('pointermove', 60, 145));
+      video.dispatchEvent(pointer('pointerup', 60, 145));
+    });
+    expect(video.style.filter).toBe('');
+  });
+
+  it('hides the indicator again after a moment', () => {
+    vi.useFakeTimers();
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    act(() => {
+      swipe(video, 60, 250, 120);
+    });
+    expect(container.querySelector('.vplayer__hud')).not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(1_500);
+    });
+    expect(container.querySelector('.vplayer__hud')).toBeNull();
+  });
+
+  it('puts the brightness indicator on the left and volume on the right', () => {
+    const { container } = render(<VideoPlayer src="http://x/a.mp4" />);
+    withFrameBox(container);
+    const video = videoEl(container);
+    act(() => {
+      swipe(video, 60, 250, 130);
+    });
+    expect(container.querySelector('.vplayer__hud--brightness')).toBeTruthy();
+    act(() => {
+      swipe(video, 340, 150, 250);
+    });
+    expect(container.querySelector('.vplayer__hud--volume')).toBeTruthy();
   });
 });

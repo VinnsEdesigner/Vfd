@@ -2151,6 +2151,80 @@
   object-fit: contain;
   background: #000;
   cursor: pointer;
+  /* The picture owns the vertical swipe, so the browser must not claim it for
+     scrolling — without this a brightness drag scrolls the page instead. */
+  touch-action: none;
+}
+
+/* ------------------------------ Level HUD ------------------------------ */
+
+/* The brightness/volume indicator a swipe raises. It sits against the edge the
+   gesture belongs to — brightness on the left, volume on the right — so the
+   bar is under the finger that is moving it. Absolutely positioned over the
+   picture, so it never changes the picture's size. */
+.vplayer__hud {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 12px;
+  border-radius: var(--r-lg);
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  pointer-events: none;
+  /* It appears on movement and leaves on a timer, so it fades rather than
+     blinking in and out. */
+  animation: vplayer-hud-in 0.14s ease-out;
+}
+.vplayer__hud--brightness {
+  left: 18px;
+}
+.vplayer__hud--volume {
+  right: 18px;
+}
+@keyframes vplayer-hud-in {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+}
+.vplayer__hud-track {
+  width: 8px;
+  height: 140px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+}
+.vplayer__hud-fill {
+  width: 100%;
+  border-radius: 999px;
+  background: #fff;
+  /* The fill grows from the bottom, so up always means more. */
+  transition: height 0.06s linear;
+}
+.vplayer__hud-icon {
+  display: grid;
+  place-items: center;
+}
+.vplayer__hud-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.vplayer__hud-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 .vplayer__error {
   position: absolute;

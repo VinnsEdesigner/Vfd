@@ -11,10 +11,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../primitives/Button';
 import {
   IconPlay, IconPause, IconVolume, IconVolumeOff, IconSkipBack, IconSkipForward,
-  IconPip, IconFullscreen, IconExitFullscreen, IconRotate,
+  IconPip, IconFullscreen, IconExitFullscreen, IconRotate, IconSun,
 } from '../primitives/Icons';
 import { useMediaElement, RATES } from './useMediaElement';
 import { formatClock } from './format';
+
+/** How far a full-height drag moves the value. A little over 1 so the whole
+ *  range is reachable without a perfect edge-to-edge swipe. */
+const SWIPE_RANGE = 1.4;
+/** Movement before a press becomes a swipe rather than a tap. */
+const SWIPE_THRESHOLD_PX = 12;
+/** Brightness range: down to a fifth, up to double, 1 being the source. */
+const BRIGHTNESS_MIN = 0.2;
+const BRIGHTNESS_MAX = 2;
+/** How long the level indicator stays up after the last movement. */
+const HUD_HIDE_MS = 900;
 
 export interface VideoPlayerProps {
   src: string;
@@ -90,6 +101,13 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
   /** Which PiP API this browser has, and whether we are currently in it. */
   const [pipSupport, setPipSupport] = useState<PipSupport>('none');
   const [inPip, setInPip] = useState(false);
+  /**
+   * Picture brightness, 1 being the source. Held in a filter rather than on the
+   * element so it applies to the picture only, not to the controls drawn over it.
+   */
+  const [brightness, setBrightness] = useState(1);
+  const brightnessRef = useRef(brightness);
+  brightnessRef.current = brightness;
 
   // Detect PiP once the element exists: the capability lives on the element and
   // on `document`, not on the component.
@@ -261,6 +279,119 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
     };
   }, [pipSupport]);
 
+  /**
+   * The level indicator for a swipe gesture.
+   *
+   * `side` is which half of the picture the swipe started on — the left sets
+   * brightness, the right sets volume — and it is null when no indicator is
+   * showing. It hides itself a moment after the last movement, so it behaves
+   * like the control bar rather than a permanent overlay.
+   */
+  const [hud, setHud] = useState<{ side: 'brightness' | 'volume'; value: number } | null>(null);
+  const hudTimer = useRef<number | null>(null);
+  /**
+   * The gesture in progress. A press only becomes a swipe once it has moved
+   * past the threshold, so a tap still toggles playback.
+   */
+  const swipe = useRef<{
+    side: 'brightness' | 'volume';
+    startY: number;
+    startValue: number;
+    active: boolean;
+  } | null>(null);
+
+  const clearHudTimer = useCallback(() => {
+    if (hudTimer.current !== null) {
+      window.clearTimeout(hudTimer.current);
+      hudTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearHudTimer, [clearHudTimer]);
+
+  /** Show the indicator and schedule it to fade, restarting the clock each time. */
+  const showHud = useCallback(
+    (side: 'brightness' | 'volume', value: number) => {
+      setHud({ side, value });
+      clearHudTimer();
+      hudTimer.current = window.setTimeout(() => setHud(null), HUD_HIDE_MS);
+    },
+    [clearHudTimer],
+  );
+
+  const clampBrightness = (v: number) =>
+    Math.min(BRIGHTNESS_MAX, Math.max(BRIGHTNESS_MIN, v));
+
+  /**
+   * A press on the picture. Which half decides what it will control; the
+   * gesture only takes effect once it moves, so a tap still plays or pauses.
+   */
+  const onGestureDown = useCallback(
+    (e: React.PointerEvent) => {
+      // Measured against the frame, not the video: in landscape the video is
+      // rotated, so its own box is the window's transpose and would put the
+      // sides and the span in the wrong places.
+      const r = wrapRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const onLeft = e.clientX - r.left < r.width / 2;
+      const side = onLeft ? 'brightness' : 'volume';
+      swipe.current = {
+        side,
+        startY: e.clientY,
+        startValue: side === 'brightness' ? brightnessRef.current : state.muted ? 0 : state.volume,
+        active: false,
+      };
+      try {
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      } catch {
+        /* no active pointer; the gesture still ends on release */
+      }
+    },
+    [state.muted, state.volume],
+  );
+
+  const onGestureMove = useCallback(
+    (e: React.PointerEvent) => {
+      const g = swipe.current;
+      if (!g) return;
+      // Up increases, which is the direction everyone expects; a swipe is
+      // measured against the height of the picture so it scales with the window.
+      const dy = g.startY - e.clientY;
+      if (!g.active && Math.abs(dy) < SWIPE_THRESHOLD_PX) return;
+      g.active = true;
+
+      const box = wrapRef.current?.getBoundingClientRect();
+      const span = Math.max(1, box?.height ?? window.innerHeight) * SWIPE_RANGE;
+      const delta = dy / span;
+
+      if (g.side === 'brightness') {
+        const next = clampBrightness(g.startValue + delta);
+        setBrightness(next);
+        showHud('brightness', next);
+      } else {
+        const next = Math.min(1, Math.max(0, g.startValue + delta));
+        controls.setVolume(next);
+        showHud('volume', next);
+      }
+    },
+    [controls, showHud],
+  );
+
+  const onGestureUp = useCallback(
+    (e: React.PointerEvent) => {
+      try {
+        (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+      } catch {
+        /* already released */
+      }
+      const g = swipe.current;
+      swipe.current = null;
+      // A press that never moved is a tap: play or pause, as before.
+      if (g && !g.active) togglePlayback();
+    },
+    [togglePlayback],
+  );
+
   const pct = state.duration > 0 ? (state.currentTime / state.duration) * 100 : 0;
   const bufPct = state.duration > 0 ? (state.buffered / state.duration) * 100 : 0;
   const landscape = orientation === 'landscape';
@@ -285,8 +416,42 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
             src={src}
             poster={poster}
             playsInline
-            onClick={togglePlayback}
+            style={brightness !== 1 ? { filter: `brightness(${brightness})` } : undefined}
+            // A vertical swipe sets brightness on the left half and volume on
+            // the right. A press that does not move is still a tap, so the
+            // pointer handlers replace the click rather than adding to it.
+            onPointerDown={onGestureDown}
+            onPointerMove={onGestureMove}
+            onPointerUp={onGestureUp}
+            onPointerCancel={onGestureUp}
           />
+
+          {hud && (
+            <div
+              className={`vplayer__hud vplayer__hud--${hud.side}`}
+              role="status"
+              aria-label={`${hud.side === 'brightness' ? 'Brightness' : 'Volume'} ${Math.round(
+                hud.value * 100,
+              )}%`}
+            >
+              <div className="vplayer__hud-track">
+                <div
+                  className="vplayer__hud-fill"
+                  style={{ height: `${Math.round(hud.value * 100)}%` }}
+                />
+              </div>
+              <span className="vplayer__hud-icon">
+                {hud.side === 'brightness' ? (
+                  <IconSun />
+                ) : hud.value === 0 ? (
+                  <IconVolumeOff />
+                ) : (
+                  <IconVolume />
+                )}
+              </span>
+              <span className="vplayer__hud-value">{Math.round(hud.value * 100)}%</span>
+            </div>
+          )}
 
           {state.error && (
             <div className="vplayer__error">
