@@ -478,14 +478,14 @@ static void on_signal(int sig) {
 }
 
 static int cmd_serve(const char *host, int port, const char *work_dir,
-                     const char *auth_token, int cors) {
+                     const char *auth_token, const char *allow_origins) {
     mi_server_config cfg;
     mi_server_config_init(&cfg);
     if (host) cfg.host = host;
     if (port >= 0) cfg.port = port;
     if (work_dir) cfg.work_dir = work_dir;
     cfg.auth_token = (auth_token && *auth_token) ? auth_token : NULL;
-    cfg.cors_origin = cors;
+    cfg.allow_origins = (allow_origins && *allow_origins) ? allow_origins : NULL;
 
     mi_mkdir_p(cfg.work_dir);
 
@@ -555,7 +555,8 @@ static void usage(void) {
             "                          [--allow-non-video] [--max-bytes N] [-q] [-H 'K: V']...\n"
             "  media-ingest hls <input> -o <dir> [--renditions 1080,720,480] [--segment-seconds N]\n"
             "  media-ingest ingest <url> -o <dir> [--hls <dir>] [--upload] [-c N] [-q] [-H 'K: V']...\n"
-            "  media-ingest serve [--host H] [--port N] [--work-dir D] [--auth-token T] [--no-cors]\n"
+            "  media-ingest serve [--host H] [--port N] [--work-dir D] [--auth-token T]\n"
+            "                      [--allow-origin ORIGINS]\n"
             "  media-ingest upload <file-or-dir> --bucket B --access-key K --secret-key S\n"
             "                          [--endpoint URL] [--region R] [--prefix P] [--cdn-base URL]\n"
             "                          [--path-style|--virtual-host] [--purge --cf-token T --cf-zone Z]\n"
@@ -622,7 +623,7 @@ int main(int argc, char **argv) {
     int serve_port = -1;
     const char *serve_work_dir = NULL;
     const char *serve_token = getenv("MI_AUTH_TOKEN");
-    int serve_cors = 1;
+    const char *serve_allow_origins = NULL;
 
     storage_opts so;
     storage_opts_init(&so);
@@ -644,7 +645,7 @@ int main(int argc, char **argv) {
         OPT_SEGMENT, OPT_UPLOAD, OPT_ENDPOINT, OPT_REGION, OPT_BUCKET, OPT_ACCESS,
         OPT_SECRET, OPT_SESSION, OPT_PREFIX, OPT_CONTENTTYPE, OPT_VHOST, OPT_PATHSTYLE,
         OPT_CDN_BASE, OPT_PURGE, OPT_CF_TOKEN, OPT_CF_ZONE,
-        OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_NOCORS
+        OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN
     };
     static struct option long_opts[] = {
         {"output", required_argument, 0, 'o'},
@@ -675,7 +676,7 @@ int main(int argc, char **argv) {
         {"port", required_argument, 0, OPT_PORT},
         {"work-dir", required_argument, 0, OPT_WORKDIR},
         {"auth-token", required_argument, 0, OPT_AUTHTOKEN},
-        {"no-cors", no_argument, 0, OPT_NOCORS},
+        {"allow-origin", required_argument, 0, OPT_ALLOWORIGIN},
         {"header", required_argument, 0, 'H'},
         {"quiet", no_argument, 0, 'q'},
         {"verbose", no_argument, 0, 'v'},
@@ -718,7 +719,7 @@ int main(int argc, char **argv) {
             case OPT_PORT: serve_port = atoi(optarg); break;
             case OPT_WORKDIR: serve_work_dir = optarg; break;
             case OPT_AUTHTOKEN: serve_token = optarg; break;
-            case OPT_NOCORS: serve_cors = 0; break;
+            case OPT_ALLOWORIGIN: serve_allow_origins = optarg; break;
             default: usage(); return 2;
         }
     }
@@ -779,7 +780,8 @@ int main(int argc, char **argv) {
             rc = cmd_upload(positional, &so);
             break;
         case CMD_SERVE:
-            rc = cmd_serve(serve_host, serve_port, serve_work_dir, serve_token, serve_cors);
+            rc = cmd_serve(serve_host, serve_port, serve_work_dir, serve_token,
+                           serve_allow_origins);
             break;
         default: rc = 2;
     }

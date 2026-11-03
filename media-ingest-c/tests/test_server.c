@@ -88,8 +88,19 @@ static void test_json_unicode_escape(void) {
 /* ---------------------------------------------------------------- */
 
 /* Minimal HTTP client: send a request, return the whole response. */
+static char *http_call_origin(int port, const char *method, const char *path,
+                              const char *body, const char *auth, int *status_out,
+                              const char *origin);
+
 static char *http_call(int port, const char *method, const char *path,
                        const char *body, const char *auth, int *status_out) {
+    return http_call_origin(port, method, path, body, auth, status_out, NULL);
+}
+
+/* Same, but with an Origin header, so the CORS behaviour can be exercised. */
+static char *http_call_origin(int port, const char *method, const char *path,
+                              const char *body, const char *auth, int *status_out,
+                              const char *origin) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return NULL;
     struct sockaddr_in addr = {0};
@@ -106,9 +117,12 @@ static char *http_call(int port, const char *method, const char *path,
                      "%s %s HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                      "Content-Type: application/json\r\n"
                      "%s%s%s"
+                     "%s%s%s"
                      "Content-Length: %zu\r\nConnection: close\r\n\r\n",
                      method, path, auth ? "Authorization: Bearer " : "",
-                     auth ? auth : "", auth ? "\r\n" : "", blen);
+                     auth ? auth : "", auth ? "\r\n" : "",
+                     origin ? "Origin: " : "", origin ? origin : "",
+                     origin ? "\r\n" : "", blen);
     if (send(fd, req, (size_t)n, 0) < 0) {
         close(fd);
         return NULL;
@@ -156,7 +170,7 @@ static void test_http_api(void) {
     cfg.port = 0;
     cfg.work_dir = "/tmp/mi-test-server";
     cfg.auth_token = "testtoken";
-    cfg.cors_origin = 1;
+    cfg.allow_origins = "https://console.example";
     mi_mkdir_p(cfg.work_dir);
 
     mi_server *srv = mi_server_new(&cfg);
@@ -350,6 +364,48 @@ static void test_http_api(void) {
         CHECK(status == 202, "encoded-name download accepted");
         CHECK(strstr(body_of(resp), "\"name\":\"Six_weeks_old_cat_(aka).jpg\"") != NULL,
               "percent-encoded name is decoded");
+        free(resp);
+    }
+
+    /* --- CORS ---
+     * The allow list is the difference between "this console can talk to the
+     * engine" and "any website the user visits can read their library and start
+     * downloads". Both directions are asserted, because only testing the
+     * allowed origin would pass even if the list were ignored. */
+    {
+        resp = http_call_origin(port, "GET", "/api/v1/capabilities", NULL, "testtoken",
+                                &status, "https://console.example");
+        CHECK(status == 200, "allowed origin gets the response");
+        CHECK(strstr(resp, "Access-Control-Allow-Origin: https://console.example") != NULL,
+              "allowed origin is echoed back verbatim");
+        /* A wildcard would be refused by the browser on a credentialed request,
+         * so the exact origin must be echoed, not '*'. */
+        CHECK(strstr(resp, "Access-Control-Allow-Origin: *") == NULL,
+              "no wildcard is sent");
+        free(resp);
+
+        resp = http_call_origin(port, "GET", "/api/v1/capabilities", NULL, "testtoken",
+                                &status, "https://evil.example.com");
+        CHECK(status == 200, "the request is still answered");
+        CHECK(strstr(resp, "Access-Control-Allow-Origin") == NULL,
+              "an unlisted origin gets no CORS header, so the browser blocks it");
+        free(resp);
+
+        /* Preflight: the browser asks before a JSON POST, and the answer has to
+         * name the origin too or the real request never happens. */
+        resp = http_call_origin(port, "OPTIONS", "/api/v1/downloads", NULL, NULL,
+                                &status, "https://console.example");
+        CHECK(status == 204, "preflight 204");
+        CHECK(strstr(resp, "Access-Control-Allow-Origin: https://console.example") != NULL,
+              "preflight names the allowed origin");
+        CHECK(strstr(resp, "Access-Control-Allow-Methods") != NULL, "preflight methods");
+        CHECK(strstr(resp, "Access-Control-Allow-Headers") != NULL, "preflight headers");
+        free(resp);
+
+        resp = http_call_origin(port, "OPTIONS", "/api/v1/downloads", NULL, NULL,
+                                &status, "https://evil.example.com");
+        CHECK(strstr(resp, "Access-Control-Allow-Origin") == NULL,
+              "preflight from an unlisted origin is not allowed");
         free(resp);
     }
 

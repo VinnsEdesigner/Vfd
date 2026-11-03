@@ -168,7 +168,12 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->workers = 16;
     cfg->max_body_bytes = 64 * 1024 * 1024;
     cfg->work_dir = "./downloads";
-    cfg->cors_origin = 1;
+    /*
+     * Default to same-origin only. A server that answers every origin lets any
+     * page a user visits read their library and start downloads, so allowing
+     * one is something an operator opts into with --allow-origin.
+     */
+    cfg->allow_origins = NULL;
     cfg->auth_token = NULL;
     cfg->max_downloads = 200;
 }
@@ -207,6 +212,40 @@ static const char *request_header(const http_request *req, const char *name) {
         if (!strcasecmp(req->headers[i].name, name)) return req->headers[i].value;
     }
     return NULL;
+}
+
+/* Does `origin` appear in the comma-separated allow list? "*" matches anything.
+ * Comparison is case-insensitive and ignores surrounding spaces, because an
+ * origin is a URL scheme+host and browsers differ on case. */
+static int origin_allowed(const char *list, const char *origin) {
+    if (!list || !origin) return 0;
+    size_t olen = strlen(origin);
+    for (const char *p = list; *p;) {
+        while (*p == ' ' || *p == ',') p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != ',') p++;
+        const char *end = p;
+        while (end > start && end[-1] == ' ') end--;
+        size_t len = (size_t)(end - start);
+        if (len == 1 && start[0] == '*') return 1;
+        if (len == olen && !strncasecmp(start, origin, len)) return 1;
+    }
+    return 0;
+}
+
+/*
+ * The CORS origin to echo for this request, or NULL to send no CORS headers.
+ *
+ * Echoing the request's own Origin (rather than "*") is required once a request
+ * carries credentials: a browser rejects the wildcard for those. It also means
+ * an origin that is not on the list is simply not echoed, so the browser blocks
+ * the response.
+ */
+static const char *cors_origin_for(const mi_server *srv, const http_request *req) {
+    const char *origin = request_header(req, "Origin");
+    if (!origin || !*origin) return NULL;
+    return origin_allowed(srv->cfg.allow_origins, origin) ? origin : NULL;
 }
 
 /* Read until we have the full head, then the declared body. Returns 0/-1. */
@@ -333,32 +372,35 @@ static void send_all(int fd, const char *data, size_t len) {
 
 static void send_response(int fd, int status, const char *status_text,
                           const char *content_type, const char *body,
-                          size_t body_len, int cors) {
+                          size_t body_len, const char *cors) {
     char header[1024];
     int n = snprintf(header, sizeof header,
                      "HTTP/1.1 %d %s\r\n"
                      "Content-Type: %s\r\n"
                      "Content-Length: %zu\r\n"
                      "Connection: close\r\n"
-                     "%s"
+                     "%s%s%s"
                      "\r\n",
                      status, status_text, content_type, body_len,
-                     cors ? "Access-Control-Allow-Origin: *\r\n"
+                     cors ? "Access-Control-Allow-Origin: " : "",
+                     cors ? cors : "",
+                     cors ? "\r\n"
                             "Access-Control-Allow-Methods: GET,POST,PUT,PATCH,DELETE,OPTIONS\r\n"
                             "Access-Control-Allow-Headers: Content-Type,Authorization\r\n"
+                            "Vary: Origin\r\n"
                           : "");
     send_all(fd, header, (size_t)n);
     if (body && body_len) send_all(fd, body, body_len);
 }
 
 static void send_json(int fd, int status, const char *status_text,
-                      const mi_json_buf *b, int cors) {
+                      const mi_json_buf *b, const char *cors) {
     send_response(fd, status, status_text, "application/json",
                   mi_json_data(b), b->len, cors);
 }
 
 static void send_error(int fd, int status, const char *text, const char *message,
-                       int cors) {
+                       const char *cors) {
     mi_json_buf b;
     mi_json_init(&b);
     mi_json_raw(&b, "{\"error\":");
@@ -811,7 +853,7 @@ static const char *content_type_for_kind(const char *kind) {
  * seek. Video needs ranges; without them playback of anything non-trivial
  * fails, which is why this is not simply a whole-file send. */
 static void serve_download_content(int fd, const http_request *req,
-                                   mi_server *srv, const char *id, int cors) {
+                                   mi_server *srv, const char *id, const char *cors) {
     pthread_mutex_lock(&srv->lock);
     mi_download_rec *j = find_download(srv, id);
     char *path = NULL;
@@ -898,11 +940,14 @@ static void serve_download_content(int fd, const http_request *req,
                           "Accept-Ranges: bytes\r\n"
                           "%s"
                           "Cache-Control: no-store\r\n"
-                          "%s"
+                          "%s%s%s"
                           "Connection: close\r\n\r\n",
                           ctype, len, start, end, total, disposition,
-                          cors ? "Access-Control-Allow-Origin: *\r\n"
+                          cors ? "Access-Control-Allow-Origin: " : "",
+                          cors ? cors : "",
+                          cors ? "\r\n"
                                  "Access-Control-Expose-Headers: Content-Length,Content-Range,Content-Disposition\r\n"
+                                 "Vary: Origin\r\n"
                                : "");
         send_all(fd, header, (size_t)hn);
     } else {
@@ -913,11 +958,14 @@ static void serve_download_content(int fd, const http_request *req,
                           "Accept-Ranges: bytes\r\n"
                           "%s"
                           "Cache-Control: no-store\r\n"
-                          "%s"
+                          "%s%s%s"
                           "Connection: close\r\n\r\n",
                           ctype, len, disposition,
-                          cors ? "Access-Control-Allow-Origin: *\r\n"
+                          cors ? "Access-Control-Allow-Origin: " : "",
+                          cors ? cors : "",
+                          cors ? "\r\n"
                                  "Access-Control-Expose-Headers: Content-Length,Content-Range,Content-Disposition\r\n"
+                                 "Vary: Origin\r\n"
                                : "");
         send_all(fd, header, (size_t)hn);
     }
@@ -1348,7 +1396,7 @@ static int probe_writable(const char *dir, char *err, size_t err_size) {
 }
 
 static void handle_request(mi_server *srv, int fd, http_request *req) {
-    int cors = srv->cfg.cors_origin;
+    const char *cors = cors_origin_for(srv, req);
 
     if (!strcmp(req->method, "OPTIONS")) {
         send_response(fd, 204, "No Content", "text/plain", "", 0, cors);
@@ -1945,7 +1993,7 @@ static void *conn_thread(void *arg) {
         handle_request(ctx->srv, ctx->fd, &req);
     } else if (rc == -2) {
         send_error(ctx->fd, 413, "Payload Too Large", "body exceeds limit",
-                   ctx->srv->cfg.cors_origin);
+                   cors_origin_for(ctx->srv, &req));
     }
     if (rc == 0) request_free(&req);
     close(ctx->fd);

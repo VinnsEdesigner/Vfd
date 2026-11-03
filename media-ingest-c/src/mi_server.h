@@ -30,7 +30,17 @@ typedef struct {
     int workers;           /* max concurrent connections */
     int max_body_bytes;    /* request body cap, default 64 MiB */
     const char *work_dir;  /* where downloads write artifacts */
-    int cors_origin;       /* 1 -> echo Access-Control-Allow-Origin: * */
+    /*
+     * Which browser origins may call this API.
+     *
+     * `allow_origins` is a comma-separated list, or "*" for any. It is checked
+     * against the request's Origin header and echoed back verbatim, because a
+     * browser refuses `Access-Control-Allow-Origin: *` on a credentialed
+     * request. A request from an origin not on the list gets no CORS headers at
+     * all, so the browser blocks the response — which is the point: without this
+     * any website a user visits could read their library and start downloads.
+     */
+    const char *allow_origins;
     const char *auth_token;/* optional Bearer token; NULL disables auth */
     int max_downloads;          /* cap on retained download records */
 } mi_server_config;
