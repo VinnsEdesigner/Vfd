@@ -14,6 +14,15 @@ export function useDownloads() {
   return useQuery({
     queryKey: queryKeys.downloadList(),
     queryFn: ({ signal }) => api.downloads.list(signal),
+    // The list is the only place progress is visible, so it has to poll while
+    // something is moving — otherwise a download started from the UI sits at
+    // "running 0%" until the user refreshes by hand. It stops once everything
+    // has settled, so an idle tab makes no requests.
+    refetchInterval: (query) => {
+      const list = query.state.data;
+      if (!list || list.length === 0) return false;
+      return list.some((d) => !isTerminal(d.state)) ? 1_000 : false;
+    },
   });
 }
 

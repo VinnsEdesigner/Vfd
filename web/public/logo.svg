@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Vyzorix File Downloader">
+  <title>Vyzorix File Downloader</title>
+
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fb7185"/>
+      <stop offset="1" stop-color="#be123c"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ffe4e6"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#plate)"/>
+  <path d="M0 112C0 49.8 49.8 0 112 0h288c62.2 0 112 49.8 112 112v26c-80 42-166 62-256 62S80 180 0 138z"
+        fill="#ffffff" opacity="0.16"/>
+
+  <!-- The V doubles as the arrowhead: a shaft descends into a chevron, and the
+       pair lands in a tray. Reads as "Vyzorix" and as "download" at once. -->
+  <g fill="none" stroke="url(#mark)" stroke-width="50" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 108 L256 232"/>
+    <path d="M156 190 L256 292 L356 190"/>
+    <path d="M150 348 L150 380 Q150 404 174 404 L338 404 Q362 404 362 380 L362 348"/>
+  </g>
+</svg>

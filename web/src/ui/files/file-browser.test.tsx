@@ -14,7 +14,14 @@ import { FileToolbar } from './FileToolbar';
 import { useFileBrowser } from './useFileBrowser';
 import { renderHook } from '@testing-library/react';
 import { shareItems, mimeForName } from './share';
+import { useFileBrowserStore } from '../../stores/file-browser-store';
 import type { DownloadView } from '../../hooks/view-models';
+
+// The preferences are persisted by design, so each case starts from defaults or
+// it would inherit the previous one's view/sort/filter.
+beforeEach(() => {
+  useFileBrowserStore.getState().reset();
+});
 
 function view(patch: Partial<DownloadView> & { id: string; name: string }): DownloadView {
   return {

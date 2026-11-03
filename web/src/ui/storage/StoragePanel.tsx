@@ -10,6 +10,7 @@ import { Card } from '../primitives/Card';
 import { Button } from '../primitives/Button';
 import { EmptyState } from '../primitives/EmptyState';
 import { StorageChooser } from './StorageChooser';
+import { EngineStorageNotice, type EngineStorageFacts } from './EngineStorageNotice';
 import { formatBytes } from '../../hooks/view-models';
 import type { StorageEnvironment, StorageTierId } from '../../platform/storage-capabilities';
 import type { StoredItem } from '../../platform/media-store';
@@ -24,6 +25,8 @@ export interface StoragePanelProps {
   items: ReadonlyArray<StoredItem>;
   usage: number;
   offlineStatus: string;
+  /** Where the engine itself writes downloads, when that is known. */
+  engineStorage?: EngineStorageFacts | null;
   busy?: boolean;
   onChoose: (tier: StorageTierId, directory?: FileSystemDirectoryHandle) => void;
   onRegrant?: () => void;
@@ -43,6 +46,7 @@ export function StoragePanel({
   items,
   usage,
   offlineStatus,
+  engineStorage = null,
   busy = false,
   onChoose,
   onRegrant,
@@ -53,6 +57,22 @@ export function StoragePanel({
 }: StoragePanelProps) {
   return (
     <>
+      {/* First, because it is the actual answer to "where do my downloads go?" —
+          the browser options below are only a second copy. */}
+      {engineStorage && (
+        <Card
+          title="Where downloads are written"
+          subtitle="The engine owns this path, not the browser"
+        >
+          <EngineStorageNotice
+            facts={engineStorage}
+            // A same-device engine is writing to a real directory the user can
+            // reach from another app; a remote one is not.
+            browsable={engineStorage.sameDevice}
+          />
+        </Card>
+      )}
+
       <Card title="Local storage" subtitle="Where downloaded media is kept on this device">
         {environment ? (
           <StorageChooser

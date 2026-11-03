@@ -68,6 +68,7 @@ import type { FormatChoice } from './downloads/FormatChooser';
 import { DownloadInfo } from './downloads/DownloadInfo';
 import { StorageChooser } from './storage/StorageChooser';
 import { StoragePanel } from './storage/StoragePanel';
+import type { EngineStorageFacts } from './storage/EngineStorageNotice';
 import { shareItems, mimeForName } from './files';
 import {
   formatBytes,
@@ -707,6 +708,35 @@ export function App({ initialView = 'overview' }: AppProps) {
     [allViews, localMedia, toast],
   );
 
+  /**
+   * Where the engine writes, and whether that is this same machine. The browser
+   * cannot see or choose this path — the engine owns it — so the honest thing is
+   * to report it rather than let the browser storage options imply they are the
+   * whole story.
+   */
+  const engineStorage = useMemo<EngineStorageFacts | null>(() => {
+    const store = systemStorage;
+    if (!store) return null;
+    let sameDevice = false;
+    try {
+      const engineHost = new URL(endpoint).hostname;
+      const pageHost = typeof window === 'undefined' ? '' : window.location.hostname;
+      const loopback = (h: string) => h === 'localhost' || h === '127.0.0.1' || h === '::1';
+      sameDevice = engineHost === pageHost || (loopback(engineHost) && loopback(pageHost));
+    } catch {
+      sameDevice = false;
+    }
+    return {
+      workDir: store.workDir,
+      mountPoint: store.mountPoint,
+      fsType: store.fsType,
+      libraryBytes: store.library.bytes,
+      libraryFiles: store.library.files,
+      freeBytes: store.filesystem ? store.filesystem.availBytes : null,
+      sameDevice,
+    };
+  }, [systemStorage, endpoint]);
+
   const [title, subtitle] = VIEW_TITLES[view];
 
   return (
@@ -1009,6 +1039,7 @@ export function App({ initialView = 'overview' }: AppProps) {
                 items={localMedia.items}
                 usage={localMedia.usage}
                 offlineStatus={offlineStatus}
+                engineStorage={engineStorage}
                 busy={busy === 'storage'}
                 onChoose={chooseStorage}
                 onRegrant={() => void localStore.regrantDirectory()}

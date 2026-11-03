@@ -3907,3 +3907,67 @@ input[type='range']:focus-visible {
   background: var(--surface);
   border: 1px solid var(--border);
 }
+
+/* Where the engine writes — stated plainly, because the browser cannot see or
+   choose that path and implying otherwise would mislead. */
+.engstore {
+  padding: 4px 0 2px;
+}
+.engstore__head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.engstore__icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.engstore__icon svg {
+  width: 17px;
+  height: 17px;
+}
+.engstore__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.engstore__title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.engstore__path {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.engstore__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.engstore__mono {
+  font-family: var(--mono);
+  color: var(--text-3);
+}
+.engstore__note {
+  margin-top: 11px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
