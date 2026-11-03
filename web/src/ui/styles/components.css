@@ -2458,6 +2458,13 @@
   text-align: left;
   margin-top: 8px;
 }
+.viewerfallback__note--warn {
+  color: var(--state-fail-fg);
+}
+.viewerfallback__actions .btn {
+  flex-wrap: wrap;
+  justify-content: center;
+}
 
 @media (max-width: 860px) {
   .viewerpage__actions .btn span {

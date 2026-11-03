@@ -39,6 +39,12 @@ export interface DownloadsResource {
   pause(id: string, signal?: AbortSignal): Promise<Download>;
   /** Continue a paused transfer from where it stopped. */
   resume(id: string, signal?: AbortSignal): Promise<Download>;
+  /**
+   * Convert a container the browser cannot play (MKV, AVI) into MP4. Runs in
+   * the engine's background; the returned record reports `conversion.state`,
+   * which the caller polls until it settles.
+   */
+  convert(id: string, signal?: AbortSignal): Promise<Download>;
 }
 
 function toWireRequest(input: CreateDownloadInput): WireCreateDownloadRequest {
@@ -140,6 +146,16 @@ export function createDownloadsResource(client: ApiClient): DownloadsResource {
         method: 'PATCH',
         path: `/api/v1/downloads/${encodeURIComponent(id)}`,
         body: { action: 'resume' } satisfies WireActionRequest,
+        ...(signal ? { signal } : {}),
+      });
+      return normalizeDownload(wire);
+    },
+
+    async convert(id, signal) {
+      const wire = await client.transport.request<WireDownload>({
+        method: 'PATCH',
+        path: `/api/v1/downloads/${encodeURIComponent(id)}`,
+        body: { action: 'convert' } satisfies WireActionRequest,
         ...(signal ? { signal } : {}),
       });
       return normalizeDownload(wire);

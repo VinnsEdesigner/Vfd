@@ -55,6 +55,7 @@ import {
   useMoveDownload,
   usePauseDownload,
   useResumeDownload,
+  useConvertDownload,
   useLocalStorageStore,
   useLocalMedia,
   useProbe,
@@ -227,6 +228,7 @@ export function App({ initialView = 'overview' }: AppProps) {
   const moveDownload = useMoveDownload();
   const pauseDownload = usePauseDownload();
   const resumeDownload = useResumeDownload();
+  const convertDownload = useConvertDownload();
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const systemStorage = systemStorageQuery.data ?? null;
   const allViews = useDownloadViewsWithPipeline(downloadsQuery.data ?? [], {
@@ -347,6 +349,21 @@ export function App({ initialView = 'overview' }: AppProps) {
     [toast],
   );
 
+  /**
+   * Start a container-to-MP4 conversion. The progress is followed through the
+   * download query, which polls while `conversion.state` is `converting`, so
+   * the viewer updates itself without anything being polled here.
+   */
+  const convertFile = useCallback(
+    (id: string) => {
+      void convertDownload
+        .mutateAsync(id)
+        .then(() => toast.success('Converting to MP4 — this plays here when it is ready'))
+        .catch((e: unknown) => toast.error('Could not start the conversion', describeError(e)));
+    },
+    [convertDownload, toast],
+  );
+
   const cancelDownloadById = useCallback(
     (id: string) => {
       setCancellingId(id);
@@ -357,6 +374,17 @@ export function App({ initialView = 'overview' }: AppProps) {
         .finally(() => setCancellingId(null));
     },
     [cancelDownload, toast],
+  );
+
+  /** The MP4 the engine produced, or null for anything it does not hold. */
+  const convertedUrlFor = useCallback(
+    (view: DownloadView) =>
+      view.source === 'engine'
+        ? api.client.transport.resolve(
+            `/api/v1/downloads/${encodeURIComponent(view.id)}/converted`,
+          )
+        : null,
+    [api.client.transport],
   );
 
   /**
@@ -1083,6 +1111,10 @@ export function App({ initialView = 'overview' }: AppProps) {
               deleteFile(openFile.id);
               setOpenFileId(null);
             }}
+            {...(openFile.source === 'engine' ? { onConvert: () => convertFile(openFile.id) } : {})}
+            converting={openFile.conversion.state === 'converting'}
+            conversionError={openFile.conversion.error}
+            convertedUrl={convertedUrlFor(openFile)}
           />
         ) : (
         <>

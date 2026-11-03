@@ -6,6 +6,8 @@
 import type {
   SystemStorage,
   Capabilities,
+  Conversion,
+  ConversionState,
   Download,
   DownloadState,
   Media,
@@ -66,6 +68,21 @@ export function toDownloadState(raw: string | null | undefined): DownloadState {
   return 'failed';
 }
 
+const CONVERSION_STATES: ReadonlySet<string> = new Set<ConversionState>([
+  'none',
+  'converting',
+  'done',
+  'failed',
+]);
+
+/** Absent on servers that predate conversion, so it reads as "not asked for". */
+export function normalizeConversion(
+  w: { state: string; error: string | null } | null | undefined,
+): Conversion {
+  const state = w && CONVERSION_STATES.has(w.state) ? (w.state as ConversionState) : 'none';
+  return { state, error: w?.error ?? null };
+}
+
 export function normalizeMedia(w: WireMedia | null | undefined): Media | null {
   if (!w) return null;
   return {
@@ -110,6 +127,7 @@ export function normalizeDownload(w: WireDownload): Download {
     bytes: w.bytes ?? 0,
     sha256: w.sha256 ?? null,
     masterPlaylist: w.master_playlist ?? null,
+    conversion: normalizeConversion(w.conversion),
     artifacts: Array.isArray(w.artifacts) ? w.artifacts : [],
     error: w.error ?? null,
     requestedQuality: w.requested_quality ?? null,

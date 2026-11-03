@@ -36,6 +36,19 @@ export interface WireDownloadProgress {
   bytes_per_second?: number;
 }
 
+/**
+ * How a container the browser cannot play is being turned into MP4.
+ *
+ *   none       — not asked for
+ *   converting — ffmpeg is running now
+ *   done       — the MP4 is on disk and served at /converted
+ *   failed     — it could not be converted; `error` says why
+ */
+export interface WireConversion {
+  state: string;
+  error: string | null;
+}
+
 export interface WireDownload {
   id: string;
   /** Display name. Optional: older servers only sent the id and url. */
@@ -52,6 +65,8 @@ export interface WireDownload {
   bytes: number;
   sha256: string | null;
   master_playlist: string | null;
+  /** Absent on servers that predate container conversion. */
+  conversion?: WireConversion;
   artifacts: string[];
   error: string | null;
   /** The format the user chose, echoed back by the engine. */
@@ -116,7 +131,7 @@ export interface WireMoveRequest {
 }
 
 export interface WireActionRequest {
-  action: 'pause' | 'resume';
+  action: 'pause' | 'resume' | 'convert';
 }
 
 export interface WireCreateDownloadRequest {

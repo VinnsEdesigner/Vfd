@@ -11,7 +11,7 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
-import { MediaApiProvider, useDownloads, useCreateDownload, useHealth, useSystemStorage, useSetStorageLocation } from '../src/hooks';
+import { MediaApiProvider, useDownload, useDownloads, useCreateDownload, useConvertDownload, useHealth, useSystemStorage, useSetStorageLocation } from '../src/hooks';
 import { useConnectionStore, connectionSettings, DEFAULT_CONNECTION } from '../src/stores/connection-store';
 import { useStorageStore, effectiveCredentials } from '../src/stores/storage-store';
 import { useDownloadFormStore } from '../src/stores/download-form-store';
@@ -405,6 +405,83 @@ describe('system storage hooks', () => {
     });
     const { result } = renderHook(() => useSetStorageLocation(), { wrapper: wrapper(fetchImpl) });
     await expect(result.current.mutateAsync('/nope')).rejects.toThrow();
+  });
+});
+
+describe('useConvertDownload', () => {
+  /** A record with a conversion state, as the engine reports it. */
+  const record = (conversion: { state: string; error: string | null }) => ({
+    json: {
+      id: 'j1',
+      url: 'http://x/movie.mkv',
+      state: 'done',
+      progress: { downloaded_bytes: 10, total_bytes: 10 },
+      media: { kind: 'matroska', container: 'matroska', confidence: 1, is_video: true },
+      bytes: 10,
+      sha256: null,
+      master_playlist: null,
+      conversion,
+      artifacts: [],
+      error: null,
+      created_at: 1,
+      finished_at: 2,
+    },
+  });
+
+  it('asks the engine to convert with the convert action', async () => {
+    const { fetchImpl, calls } = makeFetch({
+      'PATCH /api/v1/downloads/j1': () => ({
+        status: 202,
+        ...record({ state: 'converting', error: null }),
+      }),
+      'GET /api/v1/downloads': () => ({ json: { items: [], count: 0 } }),
+    });
+    const { result } = renderHook(() => useConvertDownload(), { wrapper: wrapper(fetchImpl) });
+    await act(async () => {
+      await result.current.mutateAsync('j1');
+    });
+    const patch = calls.find((c) => c.method === 'PATCH');
+    expect(patch?.body).toEqual({ action: 'convert' });
+    await waitFor(() => expect(result.current.data?.conversion.state).toBe('converting'));
+  });
+
+  it('normalises an absent conversion to none, for an older server', async () => {
+    const body = record({ state: 'none', error: null }).json as Record<string, unknown>;
+    delete body.conversion;
+    const { fetchImpl } = makeFetch({
+      'GET /api/v1/downloads': () => ({ json: { items: [body], count: 1 } }),
+    });
+    const { result } = renderHook(() => useDownloads(), { wrapper: wrapper(fetchImpl) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.[0]?.conversion.state).toBe('none');
+  });
+
+  it('keeps polling the detail while a conversion is running', async () => {
+    const { fetchImpl, calls } = makeFetch({
+      'GET /api/v1/downloads/j1': () => record({ state: 'converting', error: null }),
+    });
+    vi.useFakeTimers();
+    renderHook(() => useDownload('j1'), { wrapper: wrapper(fetchImpl) });
+    await vi.advanceTimersByTimeAsync(0);
+    const before = calls.length;
+    await vi.advanceTimersByTimeAsync(3_200);
+    vi.useRealTimers();
+    // Without this the viewer would sit on "converting" forever, because the
+    // download itself has already settled.
+    expect(calls.length).toBeGreaterThan(before);
+  });
+
+  it('stops polling the detail once the conversion has finished', async () => {
+    const { fetchImpl, calls } = makeFetch({
+      'GET /api/v1/downloads/j1': () => record({ state: 'done', error: null }),
+    });
+    vi.useFakeTimers();
+    renderHook(() => useDownload('j1'), { wrapper: wrapper(fetchImpl) });
+    await vi.advanceTimersByTimeAsync(0);
+    const before = calls.length;
+    await vi.advanceTimersByTimeAsync(5_000);
+    vi.useRealTimers();
+    expect(calls.length).toBe(before);
   });
 });
 

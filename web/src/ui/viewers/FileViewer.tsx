@@ -31,6 +31,18 @@ export interface FileViewerProps {
   /** Shares the file to another app or person. */
   onShare: () => void;
   onDelete: () => void;
+  /**
+   * Converts a container the browser cannot play (MKV, AVI) into MP4. Only
+   * offered for an engine item; a device copy or a remote candidate has no
+   * engine to convert it.
+   */
+  onConvert?: () => void;
+  /** True while a conversion is running, so the button becomes a status line. */
+  converting?: boolean;
+  /** Why a conversion failed, when it did. */
+  conversionError?: string | null;
+  /** The URL of the converted MP4, once the engine has produced it. */
+  convertedUrl?: string | null;
 }
 
 export function FileViewer({
@@ -42,10 +54,21 @@ export function FileViewer({
   onOpenWith,
   onShare,
   onDelete,
+  onConvert,
+  converting = false,
+  conversionError = null,
+  convertedUrl = null,
 }: FileViewerProps) {
   const capability = viewerFor(file);
   const [dims, setDims] = useState<{ width: number; height: number } | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  /**
+   * Once the engine has converted the file, the MP4 is what plays — the
+   * original container still cannot be decoded here. This takes precedence over
+   * the original capability, so the same viewer switches to the converted file
+   * without the user reopening anything.
+   */
+  const convertedSrc = file.conversion.state === 'done' && convertedUrl ? convertedUrl : null;
 
   const info = (
     <div className="kv">
@@ -75,6 +98,18 @@ export function FileViewer({
         <span className="kv__k">Saved to</span>
         <span className="kv__v">{location}</span>
       </div>
+      {file.conversion.state !== 'none' && (
+        <div className="kv__row">
+          <span className="kv__k">Conversion</span>
+          <span className="kv__v">
+            {file.conversion.state === 'done'
+              ? 'Converted to MP4'
+              : file.conversion.state === 'converting'
+                ? 'Converting…'
+                : `Failed${conversionError ? ` — ${conversionError}` : ''}`}
+          </span>
+        </div>
+      )}
       {playbackError && (
         <div className="kv__row">
           <span className="kv__k">Playback</span>
@@ -88,8 +123,12 @@ export function FileViewer({
 
   let stage: React.ReactNode;
 
-  if (!capability.playable) {
+  if (convertedSrc) {
+    // The engine produced an MP4 from the original container; play that.
+    stage = <VideoPlayer src={convertedSrc} onError={setPlaybackError} />;
+  } else if (!capability.playable) {
     const Glyph = file.isImage ? IconImage : file.isAudio ? IconMusic : IconFile;
+    const canConvert = Boolean(onConvert) && file.isVideo;
     stage = (
       <div className="viewerfallback">
         <span className="viewerfallback__icon">
@@ -98,7 +137,19 @@ export function FileViewer({
         <h2 className="viewerfallback__title">{file.kindLabel} can’t be previewed here</h2>
         <p className="viewerfallback__text">{capability.reason}</p>
         <div className="viewerfallback__actions">
-          <button type="button" className="btn btn--primary" onClick={onOpenWith}>
+          {/* A video the browser cannot decode is exactly what a conversion is
+              for, so the offer is the primary action, not a footnote. */}
+          {canConvert && (
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={onConvert}
+              disabled={converting}
+            >
+              {converting ? 'Converting…' : 'Convert to MP4'}
+            </button>
+          )}
+          <button type="button" className="btn" onClick={onOpenWith}>
             Open with…
           </button>
           <button type="button" className="btn" onClick={onShare}>
@@ -108,7 +159,17 @@ export function FileViewer({
             Download
           </a>
         </div>
-        {file.isVideo && (
+        {converting && (
+          <Note className="viewerfallback__note">
+            Converting to MP4 — this plays here as soon as it is ready.
+          </Note>
+        )}
+        {conversionError && (
+          <Note className="viewerfallback__note viewerfallback__note--warn">
+            Conversion failed: {conversionError}
+          </Note>
+        )}
+        {!canConvert && file.isVideo && (
           <Note className="viewerfallback__note">
             Transcoding to HLS produces a ladder the browser can play anywhere — that is
             what the transcode step is for.

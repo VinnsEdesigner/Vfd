@@ -10,6 +10,7 @@
  */
 
 import type {
+  Conversion,
   Download,
   DownloadState,
   MediaKind,
@@ -22,6 +23,7 @@ import { isTerminal } from '../domain/media';
 
 /** Re-exported so components can type their props without reaching into domain. */
 export type {
+  Conversion,
   Download,
   DownloadState,
   MediaKind,
@@ -352,6 +354,8 @@ export interface DownloadView {
   sha256: string | null;
   /** Master playlist path, present once HLS transcode produced output. */
   masterPlaylist: string | null;
+  /** Container-to-MP4 conversion state, for the viewer's convert action. */
+  conversion: Conversion;
   artifacts: string[];
   error: string | null;
   createdAtLabel: string;
@@ -413,6 +417,7 @@ export function toDownloadView(d: Download): DownloadView {
     bytesPerSecond: d.bytesPerSecond,
     sha256: d.sha256,
     masterPlaylist: d.masterPlaylist,
+    conversion: d.conversion,
     artifacts: d.artifacts,
     error: d.error,
     createdAtLabel: formatTimestamp(d.createdAt),
@@ -488,6 +493,8 @@ export function toRemoteView(item: {
     bytesPerSecond: 0,
     sha256: null,
     masterPlaylist: null,
+    // A remote candidate is never converted: it is not in the library.
+    conversion: { state: 'none', error: null },
     artifacts: [],
     error: null,
     createdAtLabel: '—',
@@ -554,6 +561,8 @@ export function toDeviceView(f: DeviceFileInfo): DownloadView {
     bytesPerSecond: 0,
     sha256: null,
     masterPlaylist: null,
+    // The bytes are already here; the engine has nothing to convert.
+    conversion: { state: 'none', error: null },
     artifacts: [],
     error: null,
     createdAtLabel: '\u2014',

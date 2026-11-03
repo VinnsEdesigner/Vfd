@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -87,6 +89,17 @@ typedef struct {
     int allow_non_media;
     char *sha256;
     char *master_playlist;
+    /* Conversion of a container the browser cannot play (MKV, AVI) into MP4.
+     * `converting` is 1 while a job runs, `converted` is 1 once the MP4 is on
+     * disk, and `convert_error` explains a failure. */
+    volatile int converting;
+    volatile int converted;
+    /* Counts conversion threads still holding this record. A delete waits on it
+     * the same way it waits on `worker_active`, so a converter can never write
+     * through a freed record. */
+    volatile int convert_active;
+    char *converted_path;
+    char *convert_error;
     char *error;
     char **artifact_urls;
     size_t artifact_count;
@@ -440,6 +453,8 @@ static void download_free(mi_download_rec *j) {
     free(j->requested_quality);
     free(j->sha256);
     free(j->master_playlist);
+    free(j->converted_path);
+    free(j->convert_error);
     free(j->error);
     for (size_t i = 0; i < j->artifact_count; i++) free(j->artifact_urls[i]);
     free(j->artifact_urls);
@@ -585,6 +600,22 @@ static void download_to_json(const mi_download_rec *j, mi_json_buf *b) {
     mi_json_raw(b, ",");
     mi_json_key(b, "master_playlist");
     mi_json_string(b, j->master_playlist);
+    mi_json_raw(b, ",");
+    /* Conversion state, so the UI can poll it and say what happened rather than
+     * guessing from a missing file. */
+    mi_json_key(b, "conversion");
+    mi_json_raw(b, "{");
+    mi_json_key(b, "state");
+    mi_json_string(b,
+                   j->converting ? "converting"
+                   : j->converted ? "done"
+                   : j->convert_error ? "failed"
+                                      : "none");
+    mi_json_raw(b, ",");
+    mi_json_key(b, "error");
+    if (j->convert_error) mi_json_string(b, j->convert_error);
+    else mi_json_null(b);
+    mi_json_raw(b, "}");
     mi_json_raw(b, ",");
     mi_json_key(b, "artifacts");
     mi_json_raw(b, "[");
@@ -814,6 +845,17 @@ static int apply_move(mi_server *srv, mi_download_rec *j, const char *folder) {
                     j->source_path = moved;
                 }
             }
+            /* A conversion writes into the item's directory too, so its path
+             * has to follow the move or /converted would start 404ing. */
+            if (j->converted_path && !strncmp(j->converted_path, old_dir, olen)) {
+                const char *rel = j->converted_path + olen;
+                while (*rel == '/') rel++;
+                char *moved = mi_path_join(new_dir, rel);
+                if (moved) {
+                    free(j->converted_path);
+                    j->converted_path = moved;
+                }
+            }
             free(j->out_dir);
             j->out_dir = mi_strdup(new_dir);
             free(j->hls_dir);
@@ -849,43 +891,17 @@ static const char *content_type_for_kind(const char *kind) {
     return "application/octet-stream";
 }
 
-/* Stream a downloaded file, honouring a single Range request so a browser can
- * seek. Video needs ranges; without them playback of anything non-trivial
- * fails, which is why this is not simply a whole-file send. */
-static void serve_download_content(int fd, const http_request *req,
-                                   mi_server *srv, const char *id, const char *cors) {
-    pthread_mutex_lock(&srv->lock);
-    mi_download_rec *j = find_download(srv, id);
-    char *path = NULL;
-    char *kind = NULL;
-    char *filename = NULL;
-    if (j && j->state == DOWNLOAD_DONE) {
-        if (j->source_path) {
-            path = mi_strdup(j->source_path);
-        } else {
-            /* Older records predate the extension rename. */
-            char *dir = j->out_dir ? mi_strdup(j->out_dir)
-                                   : mi_asprintf("%s/%s", srv->download_dir, j->id);
-            path = mi_path_join(dir, "source.bin");
-            free(dir);
-        }
-        kind = mi_strdup(j->media_kind);
-        filename = source_filename(j);
-    }
-    pthread_mutex_unlock(&srv->lock);
+/* An item's directory. Caller holds the server lock. Defined below. */
+static char *download_dir_for(const mi_server *srv, const mi_download_rec *j);
 
-    if (!path) {
-        free(filename);
-        send_error(fd, 404, "Not Found", "no completed download with that id", cors);
-        return;
-    }
-
+/* Stream one file, honouring a single Range request so a browser can seek.
+ * Video needs ranges; without them playback of anything non-trivial fails,
+ * which is why this is not simply a whole-file send. */
+static void serve_file(int fd, const http_request *req, const char *path,
+                       const char *ctype, const char *filename, const char *cors) {
     FILE *f = fopen(path, "rb");
     if (!f) {
         send_error(fd, 404, "Not Found", "file is no longer on disk", cors);
-        free(path);
-        free(kind);
-        free(filename);
         return;
     }
     fseek(f, 0, SEEK_END);
@@ -905,9 +921,6 @@ static void serve_download_content(int fd, const http_request *req,
             if (dash + 1 < spec + strlen(spec)) end = strtol(dash + 1, NULL, 10);
             if (start < 0 || start > end || start >= total) {
                 fclose(f);
-                free(path);
-                free(kind);
-                free(filename);
                 send_error(fd, 416, "Range Not Satisfiable", "bad range", cors);
                 return;
             }
@@ -917,7 +930,6 @@ static void serve_download_content(int fd, const http_request *req,
     }
 
     long len = end - start + 1;
-    const char *ctype = content_type_for_kind(kind);
     /* The download name travels in Content-Disposition so a shared or saved
      * file keeps a real name instead of the id-based path. */
     char header[1024];
@@ -983,10 +995,142 @@ static void serve_download_content(int fd, const http_request *req,
         }
     }
     fclose(f);
+}
+
+static void serve_download_content(int fd, const http_request *req,
+                                   mi_server *srv, const char *id, const char *cors) {
+    pthread_mutex_lock(&srv->lock);
+    mi_download_rec *j = find_download(srv, id);
+    char *path = NULL;
+    char *kind = NULL;
+    char *filename = NULL;
+    if (j && j->state == DOWNLOAD_DONE) {
+        if (j->source_path) {
+            path = mi_strdup(j->source_path);
+        } else {
+            /* Older records predate the extension rename. */
+            char *dir = download_dir_for(srv, j);
+            path = mi_path_join(dir, "source.bin");
+            free(dir);
+        }
+        kind = mi_strdup(j->media_kind);
+        filename = source_filename(j);
+    }
+    pthread_mutex_unlock(&srv->lock);
+
+    if (!path) {
+        free(filename);
+        send_error(fd, 404, "Not Found", "no completed download with that id", cors);
+        return;
+    }
+    const char *ctype = content_type_for_kind(kind);
+    serve_file(fd, req, path, ctype, filename, cors);
     free(path);
     free(kind);
     free(filename);
 }
+
+/* An item's directory. `out_dir` is only set once an item has been moved, so it
+ * has to be derived from the work dir otherwise — forgetting this is how a
+ * conversion ends up with no input and no directory to write to. Caller holds
+ * the server lock. */
+static char *download_dir_for(const mi_server *srv, const mi_download_rec *j) {
+    if (j->out_dir) return mi_strdup(j->out_dir);
+    return mi_asprintf("%s/%s", srv->download_dir, j->id);
+}
+
+/* Content type for a transcoded HLS artifact, by extension. */
+static const char *hls_content_type(const char *path) {
+    size_t n = strlen(path);
+    if (n > 5 && !strcmp(path + n - 5, ".m3u8")) return "application/vnd.apple.mpegurl";
+    if (n > 3 && !strcmp(path + n - 3, ".ts")) return "video/mp2t";
+    if (n > 4 && !strcmp(path + n - 4, ".m4s")) return "video/iso.segment";
+    if (n > 4 && !strcmp(path + n - 4, ".mp4")) return "video/mp4";
+    return "application/octet-stream";
+}
+
+/* True when `sub` is a safe relative path: no empty, "." or ".." segment, no
+ * absolute start, no backslash, no control characters. Nothing legitimate needs
+ * any of those, so they are refused rather than normalised away. */
+static int is_safe_relative_path(const char *sub) {
+    if (!sub || !*sub || sub[0] == '/') return 0;
+    const char *seg = sub;
+    while (*seg) {
+        const char *end = strchr(seg, '/');
+        size_t n = end ? (size_t)(end - seg) : strlen(seg);
+        if (n == 0) return 0;                                  /* empty segment */
+        if (n == 1 && seg[0] == '.') return 0;                 /* "." */
+        if (n == 2 && seg[0] == '.' && seg[1] == '.') return 0; /* ".." */
+        for (size_t i = 0; i < n; i++) {
+            unsigned char c = (unsigned char)seg[i];
+            if (c == '\\' || c < 0x20 || c == 0x7f) return 0;
+        }
+        if (!end) break;
+        seg = end + 1;
+    }
+    return 1;
+}
+
+/*
+ * Serve an artifact from a download's own directory.
+ *
+ * `sub` is untrusted: it comes straight from the URL. It is first rejected
+ * outright if it contains any traversal segment, and then the resolved path is
+ * required to sit under the item's real directory — so a symlink planted in the
+ * library cannot be used to read a file outside it either.
+ */
+static void serve_artifact(int fd, const http_request *req, mi_server *srv,
+                           const char *id, const char *sub, const char *cors) {
+    if (!is_safe_relative_path(sub)) {
+        send_error(fd, 400, "Bad Request", "invalid artifact path", cors);
+        return;
+    }
+
+    pthread_mutex_lock(&srv->lock);
+    mi_download_rec *j = find_download(srv, id);
+    char *dir = NULL;
+    if (j && j->state == DOWNLOAD_DONE) {
+        /* The URL's `hls/` prefix means the path is relative to the transcoded
+         * output, which is `<item>/hls` unless the job named its own. */
+        if (j->hls_dir) {
+            dir = mi_strdup(j->hls_dir);
+        } else {
+            char *item = download_dir_for(srv, j);
+            dir = item ? mi_path_join(item, "hls") : NULL;
+            free(item);
+        }
+    }
+    pthread_mutex_unlock(&srv->lock);
+
+    if (!dir) {
+        send_error(fd, 404, "Not Found", "no completed download with that id", cors);
+        return;
+    }
+    char *path = mi_path_join(dir, sub);
+    if (!path) {
+        free(dir);
+        send_error(fd, 500, "Internal Server Error", "out of memory", cors);
+        return;
+    }
+
+    /* Both sides are resolved, so the containment test compares real paths and
+     * a symlinked directory cannot slip past a string prefix. A path that does
+     * not resolve yet is served by serve_file, which reports 404 on its own. */
+    char real_dir[PATH_MAX];
+    char real_path[PATH_MAX];
+    int ok = realpath(dir, real_dir) != NULL && realpath(path, real_path) != NULL &&
+             !strncmp(real_path, real_dir, strlen(real_dir)) &&
+             real_path[strlen(real_dir)] == '/';
+    free(dir);
+    if (!ok) {
+        free(path);
+        send_error(fd, 404, "Not Found", "no such artifact", cors);
+        return;
+    }
+    serve_file(fd, req, path, hls_content_type(path), NULL, cors);
+    free(path);
+}
+
 
 static storage_snapshot *snapshot_from_headers(const http_request *req) {
     /* Storage settings travel in headers so secrets never hit the download store
@@ -1395,6 +1539,145 @@ static int probe_writable(const char *dir, char *err, size_t err_size) {
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* container conversion                                                */
+/* ------------------------------------------------------------------ */
+
+/* Run a converter to completion, discarding its output. Returns the exit
+ * status, or -1 when it could not be started. */
+static int run_converter(char *const argv[]) {
+    int devnull = open("/dev/null", O_RDWR);
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (devnull >= 0) close(devnull);
+        return -1;
+    }
+    if (pid == 0) {
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+        }
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    if (devnull >= 0) close(devnull);
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return -1;
+}
+
+/*
+ * Convert a downloaded file into an MP4 the browser can play.
+ *
+ * A remux (`-c:v copy`) is tried first: an MKV almost always carries h264
+ * already, so copying the video stream and re-encoding only the audio is both
+ * near-instant and lossless for the picture. If that fails — a codec MP4 cannot
+ * hold, an odd pixel format — it falls back to a real encode, which is slow but
+ * works. The failure of the fast path is not reported: only the final outcome is.
+ *
+ * `+faststart` moves the index to the front of the file, without which the
+ * browser has to fetch the whole thing before it will start playing.
+ */
+static int convert_to_mp4(const char *input, const char *output, char *err, size_t err_size) {
+    char *argv_copy[] = {
+        "ffmpeg", "-y", "-i", (char *)input,
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        (char *)output, NULL,
+    };
+    if (run_converter(argv_copy) == 0 && mi_file_size(output) > 0) return MI_OK;
+
+    /* The fast path leaves a partial file behind when it fails; start clean. */
+    unlink(output);
+
+    char *argv_encode[] = {
+        "ffmpeg", "-y", "-i", (char *)input,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        (char *)output, NULL,
+    };
+    if (run_converter(argv_encode) == 0 && mi_file_size(output) > 0) return MI_OK;
+
+    snprintf(err, err_size, "ffmpeg could not convert this file");
+    return MI_ERR;
+}
+
+/* One conversion job. Runs off the connection thread so the request returns. */
+typedef struct {
+    mi_server *srv;
+    mi_download_rec *download;
+} convert_task;
+
+static void *convert_thread(void *arg) {
+    convert_task *task = arg;
+    mi_server *srv = task->srv;
+    mi_download_rec *j = task->download;
+    free(task);
+
+    pthread_mutex_lock(&srv->lock);
+    char *dir = download_dir_for(srv, j);
+    /* Older records predate the extension rename, so their bytes are still at
+     * source.bin. Falling back keeps an old library convertible. */
+    char *input = j->source_path ? mi_strdup(j->source_path)
+                                 : (dir ? mi_path_join(dir, "source.bin") : NULL);
+    pthread_mutex_unlock(&srv->lock);
+
+    char *output = NULL;
+    char err[256] = {0};
+    int rc = MI_ERR;
+
+    if (input && dir) {
+        output = mi_path_join(dir, "converted.mp4");
+        if (output) rc = convert_to_mp4(input, output, err, sizeof err);
+    }
+
+    pthread_mutex_lock(&srv->lock);
+    j->converting = 0;
+    if (rc == MI_OK) {
+        free(j->converted_path);
+        j->converted_path = output; /* takes ownership */
+        j->converted = 1;
+        free(j->convert_error);
+        j->convert_error = NULL;
+    } else {
+        free(output);
+        j->converted = 0;
+        free(j->convert_error);
+        j->convert_error = mi_strdup(err[0] ? err : "conversion failed");
+    }
+    /* Release the record last: a delete waiting on this count must not see it
+     * reach zero before the write above has landed. */
+    j->convert_active = 0;
+    pthread_mutex_unlock(&srv->lock);
+
+    free(input);
+    free(dir);
+    return NULL;
+}
+
+/* Start a conversion off the connection thread. Caller holds the server lock,
+ * and has already set `converting` so a second request cannot start a rival
+ * job on the same output file. */
+static int start_conversion(mi_server *srv, mi_download_rec *j) {
+    convert_task *task = mi_calloc(1, sizeof *task);
+    if (!task) return MI_ERR_NOMEM;
+    task->srv = srv;
+    task->download = j;
+    j->convert_active = 1;
+    pthread_t th;
+    if (pthread_create(&th, NULL, convert_thread, task) != 0) {
+        j->convert_active = 0;
+        free(task);
+        return MI_ERR;
+    }
+    pthread_detach(th);
+    return MI_OK;
+}
+
 static void handle_request(mi_server *srv, int fd, http_request *req) {
     const char *cors = cors_origin_for(srv, req);
 
@@ -1610,22 +1893,48 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
     }
 
     /* GET|HEAD /api/v1/downloads/{id}/content — the downloaded bytes. */
-    static const char kContentSuffix[] = "/content";
+    /* GET|HEAD /api/v1/downloads/{id}/content, /hls/{path}, /converted */
     {
         static const char kDownloadsPrefix2[] = "/api/v1/downloads/";
-        if (!strncmp(req->path, kDownloadsPrefix2, sizeof kDownloadsPrefix2 - 1)) {
+        if (!strncmp(req->path, kDownloadsPrefix2, sizeof kDownloadsPrefix2 - 1) &&
+            (!strcmp(req->method, "GET") || !strcmp(req->method, "HEAD"))) {
             const char *rest = req->path + (sizeof kDownloadsPrefix2 - 1);
             size_t rest_len = strlen(rest);
-            size_t suffix_len = sizeof kContentSuffix - 1;
-            if (rest_len > suffix_len &&
-                !strcmp(rest + rest_len - suffix_len, kContentSuffix) &&
-                (!strcmp(req->method, "GET") || !strcmp(req->method, "HEAD"))) {
+            /* The id runs to the first '/'; everything after is a sub-path. */
+            const char *slash = strchr(rest, '/');
+            size_t idlen = slash ? (size_t)(slash - rest) : rest_len;
+            const char *sub = slash ? slash + 1 : "";
+
+            if (idlen > 0 && idlen < 64) {
                 char idbuf[64];
-                size_t idlen = rest_len - suffix_len;
-                if (idlen < sizeof idbuf) {
-                    memcpy(idbuf, rest, idlen);
-                    idbuf[idlen] = '\0';
+                memcpy(idbuf, rest, idlen);
+                idbuf[idlen] = '\0';
+
+                if (!*sub) {
+                    /* Bare id: not a content route; fall through to the
+                     * record routes below. */
+                } else if (!strcmp(sub, "content")) {
                     serve_download_content(fd, req, srv, idbuf, cors);
+                    return;
+                } else if (!strcmp(sub, "converted")) {
+                    /* The MP4 produced by a conversion, when there is one. */
+                    pthread_mutex_lock(&srv->lock);
+                    mi_download_rec *cj = find_download(srv, idbuf);
+                    char *cpath = (cj && cj->converted_path)
+                                      ? mi_strdup(cj->converted_path)
+                                      : NULL;
+                    pthread_mutex_unlock(&srv->lock);
+                    if (!cpath) {
+                        send_error(fd, 404, "Not Found",
+                                   "this item has not been converted", cors);
+                        return;
+                    }
+                    serve_file(fd, req, cpath, "video/mp4", NULL, cors);
+                    free(cpath);
+                    return;
+                } else if (!strncmp(sub, "hls/", 4)) {
+                    /* Transcoded HLS output: playlists and segments. */
+                    serve_artifact(fd, req, srv, idbuf, sub + 4, cors);
                     return;
                 }
             }
@@ -1659,6 +1968,48 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             const char *name = mi_json_get_string(in, "name", NULL);
             const char *move_to = mi_json_get_string(in, "move_to", NULL);
             const char *action = mi_json_get_string(in, "action", NULL);
+
+            /* Convert to MP4: for a container the browser cannot play (MKV,
+             * AVI), so "play" has something playable to point at. Only a
+             * finished download with bytes on disk can be converted. */
+            if (action && !strcmp(action, "convert")) {
+                if (j->state != DOWNLOAD_DONE) {
+                    pthread_mutex_unlock(&srv->lock);
+                    send_error(fd, 409, "Conflict",
+                               "only a completed download can be converted", cors);
+                    mi_json_value_free(in);
+                    return;
+                }
+                if (j->converting) {
+                    /* Already running: report the state rather than starting a
+                     * second ffmpeg on the same output file. */
+                    mi_json_buf b;
+                    mi_json_init(&b);
+                    download_to_json(j, &b);
+                    pthread_mutex_unlock(&srv->lock);
+                    send_json(fd, 202, "Accepted", &b, cors);
+                    mi_json_free(&b);
+                    mi_json_value_free(in);
+                    return;
+                }
+                j->converting = 1;
+                free(j->convert_error);
+                j->convert_error = NULL;
+                int started = start_conversion(srv, j);
+                if (started != MI_OK) {
+                    j->converting = 0;
+                    free(j->convert_error);
+                    j->convert_error = mi_strdup("could not start the converter");
+                }
+                mi_json_buf b;
+                mi_json_init(&b);
+                download_to_json(j, &b);
+                pthread_mutex_unlock(&srv->lock);
+                send_json(fd, 202, "Accepted", &b, cors);
+                mi_json_free(&b);
+                mi_json_value_free(in);
+                return;
+            }
 
             /* Transfer control: pause stops the worker but keeps everything, so
              * resume continues from what is already on disk. */
@@ -1770,12 +2121,13 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                 memmove(&srv->downloads[idx], &srv->downloads[idx + 1],
                         (srv->download_count - idx - 1) * sizeof(mi_download_rec *));
                 srv->download_count--;
-                /* Stop the transfer, then wait for the worker to actually let go
-                 * before freeing the record — otherwise the worker would keep
-                 * writing through a dangling pointer. */
+                /* Stop the transfer, then wait for the worker — and any
+                 * converter — to actually let go before freeing the record,
+                 * otherwise either would keep writing through a dangling
+                 * pointer. */
                 j->pause_requested = 1;
                 pthread_mutex_unlock(&srv->lock);
-                for (int i = 0; i < 100 && j->worker_active; i++) {
+                for (int i = 0; i < 100 && (j->worker_active || j->convert_active); i++) {
                     struct timespec ts = {.tv_sec = 0, .tv_nsec = 50 * 1000 * 1000};
                     nanosleep(&ts, NULL);
                 }

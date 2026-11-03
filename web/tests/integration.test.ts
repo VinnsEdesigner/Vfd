@@ -207,6 +207,36 @@ describe('jobs resource', () => {
       status: 404,
     });
   });
+
+  it('reports no conversion until one is asked for', async () => {
+    const created = await api.downloads.create({
+      url: 'http://127.0.0.1:1/convert-me.mkv',
+      hls: false,
+      upload: false,
+      purge: false,
+      connections: 1,
+    });
+    expect(created.conversion).toEqual({ state: 'none', error: null });
+  });
+
+  it('refuses to convert a download that has not finished', async () => {
+    const created = await api.downloads.create({
+      url: 'http://127.0.0.1:1/still-going.mkv',
+      hls: false,
+      upload: false,
+      purge: false,
+      connections: 1,
+    });
+    // A record that has not completed has no bytes to convert, so the engine
+    // answers with a conflict rather than starting a doomed ffmpeg.
+    await expect(api.downloads.convert(created.id)).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+
+  it('reports 404 when converting an unknown download', async () => {
+    await expect(api.downloads.convert('deadbeef')).rejects.toMatchObject({ status: 404 });
+  });
 });
 
 describe('auth', () => {

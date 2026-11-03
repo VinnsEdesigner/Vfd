@@ -73,6 +73,20 @@ export interface DownloadProgress {
   totalBytes: number;
 }
 
+/**
+ * Turning a container the browser cannot play (MKV, AVI) into MP4.
+ *
+ * `none` means it has not been asked for. A `failed` conversion keeps the
+ * original file untouched, so it can be retried or opened with another app.
+ */
+export type ConversionState = 'none' | 'converting' | 'done' | 'failed';
+
+export interface Conversion {
+  state: ConversionState;
+  /** Why it failed, when it did. Null otherwise. */
+  error: string | null;
+}
+
 export interface Download {
   id: string;
   /** What to call this item: the name it was renamed to, or the one derived
@@ -92,6 +106,8 @@ export interface Download {
   bytes: number;
   sha256: string | null;
   masterPlaylist: string | null;
+  /** Container-to-MP4 conversion state, so a viewer can offer it and poll it. */
+  conversion: Conversion;
   artifacts: string[];
   error: string | null;
   /** The format the user chose, if any. */

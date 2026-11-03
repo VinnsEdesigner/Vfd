@@ -6,6 +6,8 @@
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -14,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "mi_json.h"
@@ -594,6 +598,375 @@ static void test_http_api(void) {
     mi_server_free(srv);
 }
 
+/* ---------------------------------------------------------------- */
+/* HLS artifact serving + container conversion                       */
+/* ---------------------------------------------------------------- */
+
+/* A minimal HTTP/1.1 server for the engine to download from, so a real download
+ * can be completed and then converted. It honours a Range request, because the
+ * engine's parallel downloader needs one to exercise the real code path. */
+static const char *g_mock_body = NULL;
+static size_t g_mock_body_len = 0;
+
+static void mock_serve_conn(int fd) {
+    char req[4096];
+    ssize_t got = read(fd, req, sizeof req - 1);
+    if (got <= 0) {
+        close(fd);
+        return;
+    }
+    req[got] = '\0';
+    int head_only = strncmp(req, "HEAD", 4) == 0;
+
+    size_t start = 0, end = g_mock_body_len ? g_mock_body_len - 1 : 0;
+    int is_range = 0;
+    const char *r = strstr(req, "Range: bytes=");
+    if (r) {
+        r += strlen("Range: bytes=");
+        start = (size_t)strtoull(r, (char **)&r, 10);
+        if (*r == '-') {
+            r++;
+            end = (size_t)strtoull(r, NULL, 10);
+            if (end >= g_mock_body_len) end = g_mock_body_len - 1;
+        }
+        is_range = 1;
+    }
+
+    char header[512];
+    int hlen;
+    if (is_range) {
+        hlen = snprintf(header, sizeof header,
+                        "HTTP/1.1 206 Partial Content\r\n"
+                        "Content-Range: bytes %zu-%zu/%zu\r\n"
+                        "Content-Length: %zu\r\n"
+                        "Accept-Ranges: bytes\r\n"
+                        "Content-Type: application/octet-stream\r\n"
+                        "Connection: close\r\n\r\n",
+                        start, end, g_mock_body_len, end - start + 1);
+    } else {
+        hlen = snprintf(header, sizeof header,
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Length: %zu\r\n"
+                        "Accept-Ranges: bytes\r\n"
+                        "Content-Type: application/octet-stream\r\n"
+                        "Connection: close\r\n\r\n",
+                        g_mock_body_len);
+    }
+    (void)!write(fd, header, (size_t)hlen);
+    if (!head_only && g_mock_body) {
+        if (is_range) (void)!write(fd, g_mock_body + start, end - start + 1);
+        else (void)!write(fd, g_mock_body, g_mock_body_len);
+    }
+    close(fd);
+}
+
+static void mock_loop(int listen_fd) {
+    signal(SIGTERM, SIG_DFL);
+    for (;;) {
+        int fd = accept(listen_fd, NULL, NULL);
+        if (fd < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        mock_serve_conn(fd);
+    }
+    _exit(0);
+}
+
+/* Start the mock server serving `body`. Returns the port, or -1. The child pid
+ * is written to `pid_out` so the caller can stop it. */
+static int start_mock_body(const char *body, size_t len, pid_t *pid_out) {
+    g_mock_body = body;
+    g_mock_body_len = len;
+
+    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_fd < 0) return -1;
+    int one = 1;
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+        close(listen_fd);
+        return -1;
+    }
+    socklen_t alen = sizeof addr;
+    getsockname(listen_fd, (struct sockaddr *)&addr, &alen);
+    listen(listen_fd, 16);
+    pid_t pid = fork();
+    if (pid == 0) mock_loop(listen_fd);
+    close(listen_fd);
+    *pid_out = pid;
+    return ntohs(addr.sin_port);
+}
+
+static int64_t file_size(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 ? (int64_t)st.st_size : -1;
+}
+
+/* Poll the record until its conversion reaches a terminal state. */
+static int wait_for_conversion(int port, const char *id, char *state, size_t state_size) {
+    for (int i = 0; i < 600; i++) {
+        char path[128];
+        snprintf(path, sizeof path, "/api/v1/downloads/%s", id);
+        int status = 0;
+        char *resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+        if (resp) {
+            const char *c = strstr(resp, "\"conversion\":{\"state\":\"");
+            if (c) {
+                c += strlen("\"conversion\":{\"state\":\"");
+                size_t n = 0;
+                while (c[n] && c[n] != '"' && n + 1 < state_size) {
+                    state[n] = c[n];
+                    n++;
+                }
+                state[n] = '\0';
+                int done = !strcmp(state, "done") || !strcmp(state, "failed");
+                free(resp);
+                if (done) return 1;
+                usleep(50000);
+                continue;
+            }
+            free(resp);
+        }
+        usleep(50000);
+    }
+    return 0;
+}
+
+/* Build a real MKV with ffmpeg, so the conversion exercises an actual codec
+ * rather than a fixture. Returns 0 on success. */
+static int make_mkv(const char *path) {
+    char *argv[] = {
+        "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=2",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest", (char *)path, NULL,
+    };
+    pid_t pid = fork();
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+        }
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+static void test_hls_serve_and_convert(void) {
+    mi_server_config cfg;
+    mi_server_config_init(&cfg);
+    cfg.port = 0;
+    cfg.host = "127.0.0.1";
+    cfg.work_dir = "/tmp/mi-test-hls-convert";
+    cfg.auth_token = "testtoken";
+    mi_rm_rf(cfg.work_dir);
+    mi_mkdir_p(cfg.work_dir);
+
+    mi_server *srv = mi_server_new(&cfg);
+    CHECK(srv != NULL, "hls/convert: server new");
+    if (!srv) return;
+    CHECK(mi_server_listen(srv) == MI_OK, "hls/convert: server listen");
+    int port = mi_server_port(srv);
+    pthread_t th;
+    pthread_create(&th, NULL, server_thread, srv);
+
+    /* --- Traversal attempts are refused, not resolved. The guard runs before
+     * any record lookup, so it holds even for an unknown id. Both the raw ".."
+     * and its percent-encoded form are checked, because a proxy or client may
+     * send either and the path is matched before any decoding. --- */
+    const char *jid = "aaaaaaaabbbbbbbbccccccccdddddddd";
+    int status = 0;
+    char path[256];
+    char *resp;
+
+    snprintf(path, sizeof path, "/api/v1/downloads/%s/hls/../../../etc/passwd", jid);
+    resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+    CHECK(status == 400, "raw traversal refused");
+    free(resp);
+
+    snprintf(path, sizeof path, "/api/v1/downloads/%s/hls/..%%2f..%%2fetc%%2fpasswd", jid);
+    resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+    CHECK(status == 400 || status == 404, "encoded traversal refused");
+    free(resp);
+
+    /* The artifact route 404s for an id that is not a finished download. */
+    snprintf(path, sizeof path, "/api/v1/downloads/deadbeef/hls/master.m3u8");
+    resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+    CHECK(status == 404, "hls for unknown id 404");
+    free(resp);
+
+    /* --- Conversion. Download a real MKV through the engine, then convert. --- */
+    if (mi_which("ffmpeg")) {
+        const char *mkv_src = "/tmp/mi-test-source.mkv";
+        int have_mkv = make_mkv(mkv_src) == 0;
+        CHECK(have_mkv, "a real MKV fixture was built with ffmpeg");
+
+        if (have_mkv) {
+            int64_t src_len = file_size(mkv_src);
+            char *mkv_bytes = mi_malloc((size_t)src_len);
+            FILE *mf = mkv_bytes ? fopen(mkv_src, "rb") : NULL;
+            size_t nread = mf ? fread(mkv_bytes, 1, (size_t)src_len, mf) : 0;
+            if (mf) fclose(mf);
+            CHECK(nread == (size_t)src_len, "the MKV fixture was read back");
+
+            pid_t mock_pid = -1;
+            int mock_port = start_mock_body(mkv_bytes, (size_t)src_len, &mock_pid);
+            CHECK(mock_port > 0, "mock server started for the MKV");
+
+            char body[512];
+            snprintf(body, sizeof body,
+                     "{\"url\":\"http://127.0.0.1:%d/source.mkv\",\"hls\":false}", mock_port);
+            resp = http_call(port, "POST", "/api/v1/downloads", body, "testtoken", &status);
+            CHECK(status == 202, "mkv download accepted");
+            char id[64] = {0};
+            if (resp) {
+                mi_json *jj = mi_json_parse(body_of(resp));
+                const char *got = mi_json_get_string(jj, "id", NULL);
+                if (got) snprintf(id, sizeof id, "%s", got);
+                mi_json_value_free(jj);
+                free(resp);
+            }
+            CHECK(id[0] != '\0', "mkv download id returned");
+
+            /* Wait for the bytes to land. */
+            int done = 0;
+            for (int i = 0; i < 200; i++) {
+                char p[128];
+                snprintf(p, sizeof p, "/api/v1/downloads/%s", id);
+                resp = http_call(port, "GET", p, NULL, "testtoken", &status);
+                if (resp && strstr(resp, "\"state\":\"done\"")) { done = 1; free(resp); break; }
+                free(resp);
+                usleep(50000);
+            }
+            CHECK(done, "the MKV download completed");
+
+            /* --- HLS artifacts for a real, finished record. The transcode
+             * would normally write this layout; it is built here so the serving
+             * route is tested without waiting for a full ladder. --- */
+            if (done) {
+                char dir[PATH_MAX];
+                snprintf(dir, sizeof dir, "%s/%s", cfg.work_dir, id);
+                char *hlsdir = mi_path_join(dir, "hls");
+                mi_mkdir_p(hlsdir);
+                char *vdir = mi_path_join(hlsdir, "360p");
+                mi_mkdir_p(vdir);
+                char *master = mi_path_join(hlsdir, "master.m3u8");
+                char *seg = mi_path_join(vdir, "seg_000.ts");
+                FILE *f = fopen(master, "w");
+                if (f) {
+                    fputs("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\n360p/index.m3u8\n", f);
+                    fclose(f);
+                }
+                f = fopen(seg, "wb");
+                if (f) { fputs("SEGMENTBYTES", f); fclose(f); }
+
+                /* A file outside the library that a traversal would reach. */
+                FILE *secret = fopen("/tmp/mi-test-secret.txt", "w");
+                if (secret) { fputs("TOP SECRET", secret); fclose(secret); }
+
+                snprintf(path, sizeof path, "/api/v1/downloads/%s/hls/master.m3u8", id);
+                resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+                CHECK(status == 200, "hls master 200");
+                CHECK(resp && strstr(resp, "Content-Type: application/vnd.apple.mpegurl") != NULL,
+                      "hls playlist content type");
+                CHECK(resp && strstr(resp, "#EXTM3U") != NULL, "hls playlist body served");
+                free(resp);
+
+                snprintf(path, sizeof path, "/api/v1/downloads/%s/hls/360p/seg_000.ts", id);
+                resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+                CHECK(status == 200, "hls segment 200");
+                CHECK(resp && strstr(resp, "Content-Type: video/mp2t") != NULL,
+                      "hls segment content type");
+                CHECK(resp && strstr(resp, "SEGMENTBYTES") != NULL, "hls segment body served");
+                free(resp);
+
+                /* A symlink inside the served hls directory must not be followed
+                 * out of it, even though the path itself has no traversal. */
+                char link[PATH_MAX + 16];
+                snprintf(link, sizeof link, "%s/escape", hlsdir);
+                unlink(link);
+                if (symlink("/tmp/mi-test-secret.txt", link) == 0) {
+                    snprintf(path, sizeof path, "/api/v1/downloads/%s/hls/escape", id);
+                    resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+                    CHECK(status == 404, "a symlink out of the item directory is refused");
+                    CHECK(resp && strstr(resp, "TOP SECRET") == NULL, "the secret is not leaked");
+                    free(resp);
+                }
+
+                free(master);
+                free(seg);
+                free(vdir);
+                free(hlsdir);
+            }
+
+            /* Before converting, there is nothing at /converted. */
+            snprintf(path, sizeof path, "/api/v1/downloads/%s/converted", id);
+            resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+            CHECK(status == 404, "converted 404 before a conversion");
+            free(resp);
+
+            /* The record reports no conversion until one is asked for. */
+            {
+                char p[128];
+                snprintf(p, sizeof p, "/api/v1/downloads/%s", id);
+                resp = http_call(port, "GET", p, NULL, "testtoken", &status);
+                CHECK(resp && strstr(resp, "\"conversion\":{\"state\":\"none\"") != NULL,
+                      "conversion state starts at none");
+                free(resp);
+            }
+
+            /* Ask for the conversion. */
+            snprintf(path, sizeof path, "/api/v1/downloads/%s", id);
+            resp = http_call(port, "PATCH", path, "{\"action\":\"convert\"}",
+                             "testtoken", &status);
+            CHECK(status == 202, "convert accepted");
+            CHECK(resp && strstr(resp, "\"conversion\":{\"state\":\"converting\"") != NULL,
+                  "the response reports the conversion as running");
+            free(resp);
+
+            char cstate[32] = {0};
+            CHECK(wait_for_conversion(port, id, cstate, sizeof cstate),
+                  "conversion reaches a terminal state");
+            CHECK(!strcmp(cstate, "done"), "the MKV converted to MP4");
+
+            /* The converted MP4 is served with the right type. */
+            snprintf(path, sizeof path, "/api/v1/downloads/%s/converted", id);
+            resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+            CHECK(status == 200, "converted MP4 is served");
+            CHECK(resp && strstr(resp, "Content-Type: video/mp4") != NULL,
+                  "converted file content type");
+            free(resp);
+
+            if (mock_pid > 0) kill(mock_pid, SIGKILL);
+            free(mkv_bytes);
+        }
+
+        /* A record that has not finished cannot be converted. */
+        {
+            snprintf(path, sizeof path, "/api/v1/downloads/%s", "deadbeef");
+            resp = http_call(port, "PATCH", path, "{\"action\":\"convert\"}",
+                             "testtoken", &status);
+            CHECK(status == 404, "convert on an unknown id 404");
+            free(resp);
+        }
+    }
+
+    mi_server_stop(srv);
+    pthread_join(th, NULL);
+    mi_server_free(srv);
+    mi_rm_rf(cfg.work_dir);
+    unlink("/tmp/mi-test-secret.txt");
+    unlink("/tmp/mi-test-source.mkv");
+}
+
 /* The volume holding a path must be identified from the mount table, not
  * guessed from the path itself. */
 static void test_mount_info(void) {
@@ -635,6 +1008,7 @@ int main(void) {
     test_json_rejects_bad();
     test_json_unicode_escape();
     test_http_api();
+    test_hls_serve_and_convert();
 
     printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

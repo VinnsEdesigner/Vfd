@@ -17,6 +17,7 @@ export {
   useMoveDownload,
   usePauseDownload,
   useResumeDownload,
+  useConvertDownload,
 } from './use-downloads';
 export { useProbe, useDetectBytes } from './use-media';
 export { useBrowse } from './use-browse';
@@ -55,6 +56,7 @@ export type {
   PipelineStageView,
   PipelineOptions,
 } from './view-models';
+export type { Conversion, ConversionState } from '../domain/media';
 
 // Error helpers, re-exported so `ui` never reaches into `api-client` directly.
 export { ApiError, NetworkError, isApiError, isNetworkError } from '../api-client';

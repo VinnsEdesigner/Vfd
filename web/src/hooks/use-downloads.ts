@@ -21,7 +21,11 @@ export function useDownloads() {
     refetchInterval: (query) => {
       const list = query.state.data;
       if (!list || list.length === 0) return false;
-      return list.some((d) => !isTerminal(d.state)) ? 1_000 : false;
+      // A conversion runs after the download has settled, so it is a second
+      // reason to keep polling: the viewer learns the MP4 is ready from here.
+      return list.some((d) => !isTerminal(d.state) || d.conversion.state === 'converting')
+        ? 1_000
+        : false;
     },
   });
 }
@@ -32,11 +36,13 @@ export function useDownload(id: string | null) {
     queryKey: id ? queryKeys.download(id) : queryKeys.download('__none__'),
     queryFn: ({ signal }) => api.downloads.get(id as string, signal),
     enabled: Boolean(id),
-    // Poll while the download is in flight; stop once it settles.
+    // Poll while the download is in flight, and while a conversion it was
+    // asked to run is still going; stop once both have settled.
     refetchInterval: (query) => {
-      const state = query.state.data?.state;
-      if (!state) return 1_000;
-      return isTerminal(state) ? false : 1_000;
+      const data = query.state.data;
+      if (!data) return 1_000;
+      if (data.conversion.state === 'converting') return 1_000;
+      return isTerminal(data.state) ? false : 1_000;
     },
   });
 }
@@ -144,6 +150,26 @@ export function useMoveDownload() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, folder }: MoveDownloadVariables) => api.downloads.move(id, folder),
+    onSuccess: (download) => {
+      queryClient.setQueryData(queryKeys.download(download.id), download);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.downloadList() });
+    },
+  });
+}
+
+/**
+ * Convert a container the browser cannot play into MP4.
+ *
+ * The mutation only starts the job; the result is followed through the detail
+ * query, which keeps polling while `conversion.state` is `converting`. The
+ * seeded cache entry means the viewer shows "converting" at once, before the
+ * first poll comes back.
+ */
+export function useConvertDownload() {
+  const { api } = useMediaApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.downloads.convert(id),
     onSuccess: (download) => {
       queryClient.setQueryData(queryKeys.download(download.id), download);
       void queryClient.invalidateQueries({ queryKey: queryKeys.downloadList() });
