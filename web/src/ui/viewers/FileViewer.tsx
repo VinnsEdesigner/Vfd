@@ -102,7 +102,7 @@ export function FileViewer({
           <button type="button" className="btn" onClick={onShare}>
             Share
           </button>
-          <a className="btn" href={downloadUrl} download={file.name}>
+          <a className="btn" href={downloadUrl} download={file.filename}>
             Download
           </a>
         </div>
@@ -129,6 +129,7 @@ export function FileViewer({
       sizeLabel={file.bytesLabel}
       onClose={onClose}
       downloadUrl={downloadUrl}
+      downloadFilename={file.filename}
       onOpenWith={onOpenWith}
       onShare={onShare}
       onDelete={onDelete}

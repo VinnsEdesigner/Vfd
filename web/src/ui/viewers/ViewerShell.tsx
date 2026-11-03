@@ -17,6 +17,8 @@ export interface ViewerShellProps {
   onClose: () => void;
   /** The file's own URL, used for the real "Download" action. */
   downloadUrl: string;
+  /** The name to save under, extension included. */
+  downloadFilename: string;
   /** Hands the file to another app (share sheet / app chooser). */
   onOpenWith?: () => void;
   /** Shares the file to another app or person. */
@@ -34,6 +36,7 @@ export function ViewerShell({
   sizeLabel,
   onClose,
   downloadUrl,
+  downloadFilename,
   onOpenWith,
   onShare,
   onDelete,
@@ -65,7 +68,7 @@ export function ViewerShell({
               <IconShare /> Share
             </Button>
           )}
-          <a className="btn btn--sm" href={downloadUrl} download={name}>
+          <a className="btn btn--sm" href={downloadUrl} download={downloadFilename}>
             Download
           </a>
           {onDelete && (
