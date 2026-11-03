@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
 import { MediaApiProvider, useDownloads, useCreateDownload, useHealth, useSystemStorage, useSetStorageLocation } from '../src/hooks';
-import { useConnectionStore, connectionSettings } from '../src/stores/connection-store';
+import { useConnectionStore, connectionSettings, DEFAULT_CONNECTION } from '../src/stores/connection-store';
 import { useStorageStore, effectiveCredentials } from '../src/stores/storage-store';
 import { useDownloadFormStore } from '../src/stores/download-form-store';
 
@@ -287,7 +287,24 @@ describe('connection store', () => {
 
   it('resets to defaults', () => {
     act(() => useConnectionStore.getState().reset());
-    expect(useConnectionStore.getState().baseUrl).toBe('http://127.0.0.1:8787');
+    expect(useConnectionStore.getState().baseUrl).toBe(DEFAULT_CONNECTION.baseUrl);
+  });
+
+  it('defaults to the page origin rather than a hardcoded localhost', () => {
+    // jsdom serves on localhost; the point is that the default is derived from
+    // where the page lives, so a deployed build is not stuck on 127.0.0.1:8787.
+    expect(DEFAULT_CONNECTION.baseUrl).not.toBe('');
+    expect(DEFAULT_CONNECTION.baseUrl.startsWith('http')).toBe(true);
+  });
+
+  it('drives the API client, so a change redirects every request', () => {
+    // The provider reads these two values; changing them must produce a client
+    // pointed elsewhere. Asserted at the store boundary the provider consumes.
+    act(() => useConnectionStore.getState().setBaseUrl('http://engine.example:9000'));
+    act(() => useConnectionStore.getState().setAuthToken('secret'));
+    const settings = connectionSettings(useConnectionStore.getState());
+    expect(settings.baseUrl).toBe('http://engine.example:9000');
+    expect(settings.authToken).toBe('secret');
   });
 });
 

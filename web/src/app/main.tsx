@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { MediaApiProvider, useHealth } from '../hooks';
+import { MediaApiProvider, useConnectionStore, useHealth } from '../hooks';
 import { App, BootGate, ToastProvider } from '../ui';
 import { registerServiceWorker } from '../platform/service-worker';
 
@@ -25,6 +25,25 @@ void registerServiceWorker().then((state) => {
     console.warn('service worker registration failed:', state.detail);
   }
 });
+
+/**
+ * The single API provider, driven by the connection store.
+ *
+ * It lives here rather than inside `ui` so `App` stays a pure component that can
+ * be rendered in tests against any transport. Following the store is what makes
+ * Settings → Connection real: changing the endpoint or token there rebuilds the
+ * client, so every request goes to the new engine without a reload. A deployed
+ * console can therefore point at whichever engine the user runs.
+ */
+function ApiConnection({ children }: { children: React.ReactNode }) {
+  const baseUrl = useConnectionStore((s) => s.baseUrl);
+  const authToken = useConnectionStore((s) => s.authToken);
+  return (
+    <MediaApiProvider baseUrl={baseUrl} authToken={authToken}>
+      {children}
+    </MediaApiProvider>
+  );
+}
 
 /**
  * Holds the splash until the engine answers its health check, so the shell
@@ -52,9 +71,9 @@ const container = document.getElementById('root');
 if (!container) throw new Error('#root not found');
 
 createRoot(container).render(
-  <MediaApiProvider baseUrl={import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8787'}>
+  <ApiConnection>
     <ToastProvider>
       <Boot />
     </ToastProvider>
-  </MediaApiProvider>,
+  </ApiConnection>,
 );
