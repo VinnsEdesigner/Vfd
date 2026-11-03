@@ -2034,15 +2034,31 @@
 
 /* ------------------------------ Video player ------------------------------ */
 
-.vplayer {
+/* The space the player is given. The player is taken out of the flow below, so
+   its size can never influence this box — which is what makes rotation stable
+   rather than feeding the rotated size back into the measurement. */
+.vplayer__frame {
   position: relative;
   flex: 1;
   min-height: 320px;
+  min-width: 0;
+  overflow: hidden;
+}
+.vplayer {
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   background: #000;
   border-radius: var(--r-lg);
   overflow: hidden;
+}
+/* Landscape is sized in the frame's transpose and turned a quarter turn, so a
+   portrait window shows the video wide. Absolute + auto insets + auto margins
+   centre the turned box in the frame. */
+.vplayer.is-landscape {
+  inset: auto;
+  margin: auto;
 }
 .vplayer__el {
   flex: 1;
@@ -2051,11 +2067,6 @@
   object-fit: contain;
   background: #000;
   cursor: pointer;
-}
-/* Fill: the picture is cropped to the screen instead of letterboxed. The two
-   modes are what a player's aspect/zoom control switches between. */
-.vplayer__el.is-fill {
-  object-fit: cover;
 }
 .vplayer__error {
   position: absolute;
