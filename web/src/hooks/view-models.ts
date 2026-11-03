@@ -33,17 +33,24 @@ export type {
 
 /* ------------------------------ status ------------------------------ */
 
-export type StatusTone = 'idle' | 'running' | 'done' | 'failed';
+export type StatusTone = 'idle' | 'running' | 'done' | 'failed' | 'paused';
 
 export function statusTone(state: DownloadState): StatusTone {
   if (state === 'running') return 'running';
   if (state === 'done') return 'done';
   if (state === 'failed') return 'failed';
+  if (state === 'paused') return 'paused';
   return 'idle';
 }
 
 export function isActiveState(state: DownloadState): boolean {
   return state === 'running' || state === 'queued';
+}
+
+/** Paused: deliberately stopped, waiting to be resumed. Not active (nothing is
+ *  transferring) and not settled (it is not finished). */
+export function isResumableState(state: DownloadState): boolean {
+  return state === 'paused';
 }
 
 export function isSettledState(state: DownloadState): boolean {
@@ -71,9 +78,16 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(digits)} ${BYTE_UNITS[unit]}`;
 }
 
-/** Bytes-per-second as a transfer rate. `—` when not transferring. */
+/**
+ * Bytes-per-second as a transfer rate. `—` when not transferring.
+ *
+ * Scales the unit, because a slow transfer rendered as "0.0 MB/s" tells the user
+ * nothing — which is exactly when they most want to know the speed.
+ */
 export function formatRate(bytesPerSecond: number): string {
   if (!bytesPerSecond || bytesPerSecond <= 0) return '—';
+  if (bytesPerSecond < 1000) return `${Math.round(bytesPerSecond)} B/s`;
+  if (bytesPerSecond < 1e6) return `${(bytesPerSecond / 1000).toFixed(1)} KB/s`;
   return `${(bytesPerSecond / 1e6).toFixed(1)} MB/s`;
 }
 
@@ -228,6 +242,17 @@ export function pipelineStages(
   d: DownloadView,
   options: PipelineOptions,
 ): PipelineStageView[] {
+  // A paused download stopped at the fetch stage and is waiting, not failed.
+  if (d.state === 'paused') {
+    return [
+      { key: 'probe', status: 'done' },
+      { key: 'fetch', status: 'active' },
+      { key: 'verify', status: 'pending' },
+      { key: 'transcode', status: options.hls ? 'pending' : 'skipped' },
+      { key: 'upload', status: options.upload ? 'pending' : 'skipped' },
+      { key: 'purge', status: options.purge && options.upload ? 'pending' : 'skipped' },
+    ];
+  }
   const finished = d.state === 'done';
   const faulted = d.state === 'failed';
   const running = d.state === 'running' || d.state === 'queued';
@@ -290,6 +315,8 @@ export interface DownloadView {
    *  whether the grid can show a real thumbnail. */
   extension: string;
   isActive: boolean;
+  /** Paused: can be resumed from where it stopped. */
+  isResumable: boolean;
   isSettled: boolean;
   isOpenable: boolean;
   /** What the viewer should render, and which actions make sense. */
@@ -299,6 +326,13 @@ export interface DownloadView {
   qualities: QualityOption[];
   /** Which stages this download ran, and where each got to. */
   pipeline: PipelineStageView[];
+  /** The format the user chose, and the options the job runs — recorded by the
+   *  engine, so "download info" reports what actually happened. */
+  requestedQuality: string | null;
+  connections: number;
+  hls: boolean;
+  upload: boolean;
+  purge: boolean;
 }
 
 export function toDownloadView(d: Download): DownloadView {
@@ -332,6 +366,7 @@ export function toDownloadView(d: Download): DownloadView {
     kindLabel: d.media ? formatKind(d.media.kind) : '—',
     extension: extensionOf(d.name),
     isActive: isActiveState(d.state),
+    isResumable: isResumableState(d.state),
     isSettled: isSettledState(d.state),
     isOpenable: d.state === 'done',
     isVideo: Boolean(d.media?.isVideo),
@@ -339,6 +374,11 @@ export function toDownloadView(d: Download): DownloadView {
     isAudio: Boolean(d.media?.isAudio),
     qualities: d.media ? toQualityOptions(d.media.qualities) : [],
     pipeline: [],
+    requestedQuality: d.requestedQuality,
+    connections: d.connections,
+    hls: d.hls,
+    upload: d.upload,
+    purge: d.purge,
   };
 }
 

@@ -6,6 +6,7 @@
  * because it is a per-item detail, not a dashboard summary.
  */
 
+import { useMemo } from 'react';
 import { Card } from '../primitives/Card';
 import { Tabs } from '../primitives/Tabs';
 import { Button } from '../primitives/Button';
@@ -207,7 +208,12 @@ function PipelineInspector({
   inspectedId: string | null;
   onInspectChange: (id: string) => void;
 }) {
-  const current = downloads.find((d) => d.id === inspectedId) ?? downloads[0] ?? null;
+  // Newest first. The list arrives in creation order (oldest first), so this is
+  // a reverse rather than a sort: `created_at` has one-second resolution, which
+  // is not enough to order several downloads made in the same second — sorting
+  // on it leaves ties and buries the one you just started.
+  const ordered = useMemo(() => [...downloads].reverse(), [downloads]);
+  const current = ordered.find((d) => d.id === inspectedId) ?? ordered[0] ?? null;
 
   if (!current) {
     return (
@@ -226,18 +232,20 @@ function PipelineInspector({
       subtitle={current.name}
       actions={<StatusBadge state={current.state} />}
     >
-      {downloads.length > 1 && (
+      {ordered.length > 1 && (
         <div className="field field--full" style={{ marginBottom: 14 }}>
           <span className="field__label">Download</span>
           <Select
             label="Download to inspect"
             value={current.id}
-            options={downloads.map((d) => ({
+            options={ordered.map((d) => ({
               value: d.id,
               label: d.name,
               detail: d.state,
             }))}
             onChange={onInspectChange}
+            searchable
+            searchPlaceholder="Search downloads…"
           />
         </div>
       )}

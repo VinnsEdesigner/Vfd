@@ -32,7 +32,10 @@ typedef enum {
     DOWNLOAD_RUNNING,
     DOWNLOAD_DONE,
     DOWNLOAD_FAILED,
-    DOWNLOAD_CANCELLED
+    DOWNLOAD_CANCELLED,
+    /* Paused: the transfer was stopped deliberately and can be resumed from
+     * what is already on disk. Distinct from cancelled, which is final. */
+    DOWNLOAD_PAUSED
 } download_state;
 
 typedef struct {
@@ -45,6 +48,9 @@ typedef struct {
     int do_upload;
     int do_purge;
     int connections;
+    /* The options the job was created with, echoed back so the UI can say which
+     * stages this download actually runs instead of assuming. */
+    char *requested_quality;
 
     download_state state;
     double created_at;
@@ -69,6 +75,10 @@ typedef struct {
     int media_is_video;
     int media_is_image;
     int media_is_audio;
+    /* Set by a pause request; read by the running worker's control callback. */
+    volatile int pause_requested;
+    /* 1 while a worker owns the record, so the server never starts a second. */
+    int worker_active;
     char *sha256;
     char *master_playlist;
     char *error;
@@ -132,6 +142,7 @@ static const char *download_state_name(download_state s) {
         case DOWNLOAD_DONE: return "done";
         case DOWNLOAD_FAILED: return "failed";
         case DOWNLOAD_CANCELLED: return "cancelled";
+        case DOWNLOAD_PAUSED: return "paused";
     }
     return "unknown";
 }
@@ -374,6 +385,7 @@ static void download_free(mi_download_rec *j) {
     free(j->container);
     free(j->source_path);
     free(j->display_name);
+    free(j->requested_quality);
     free(j->sha256);
     free(j->master_playlist);
     free(j->error);
@@ -470,6 +482,23 @@ static void download_to_json(const mi_download_rec *j, mi_json_buf *b) {
     mi_json_raw(b, "],");
     mi_json_key(b, "error");
     mi_json_string(b, j->error);
+    mi_json_raw(b, ",");
+    /* The options this job actually runs, so the UI can report them rather than
+     * assume the current form values. */
+    mi_json_key(b, "requested_quality");
+    mi_json_string(b, j->requested_quality);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "connections");
+    mi_json_int(b, j->connections);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "hls");
+    mi_json_bool(b, j->do_hls);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "upload");
+    mi_json_bool(b, j->do_upload);
+    mi_json_raw(b, ",");
+    mi_json_key(b, "purge");
+    mi_json_bool(b, j->do_purge);
     mi_json_raw(b, ",");
     mi_json_key(b, "created_at");
     mi_json_double(b, j->created_at);
@@ -980,6 +1009,17 @@ typedef struct {
     storage_snapshot *snap;
 } download_task;
 
+/* Asked by the downloader between chunks. A pause or a cancel both stop the
+ * transfer; which one it was is decided by the record's state when the worker
+ * finishes. */
+static int download_should_stop(void *user) {
+    mi_download_rec *j = user;
+    if (j->pause_requested) return 1;
+    /* A cancel while the worker runs is also a stop. Read under the server lock
+     * is not possible from a worker, so the state is checked as an int. */
+    return 0;
+}
+
 static void snapshot_free(storage_snapshot *s);
 
 static void *download_thread(void *arg) {
@@ -998,13 +1038,24 @@ static void *download_worker(void *arg) {
     mi_download_rec *j = task->download;
 
     pthread_mutex_lock(&srv->lock);
+    /* A pause requested before the worker got going must be honoured, not
+     * cleared: the user asked for it. */
+    if (j->pause_requested) {
+        j->state = DOWNLOAD_PAUSED;
+        j->worker_active = 0;
+        pthread_mutex_unlock(&srv->lock);
+        return NULL;
+    }
     j->state = DOWNLOAD_RUNNING;
     j->started_at = (double)time(NULL);
+    j->worker_active = 1;
     pthread_mutex_unlock(&srv->lock);
 
     mi_download_config dcfg;
     mi_download_config_init(&dcfg);
     dcfg.connections = j->connections;
+    mi_download_control control = {.stop = download_should_stop, .user = j};
+    dcfg.control = &control;
     /* Video, image and audio are all valid downloads; only payloads the
      * detector does not recognise are refused. */
     dcfg.require_media = 1;
@@ -1017,12 +1068,25 @@ static void *download_worker(void *arg) {
     progress_ctx pctx = {.srv = srv, .rec = j};
     mi_download_result res;
     int rc = mi_download(&dcfg, j->url, dest, on_download_progress, &pctx, &res);
+    if (rc == MI_ERR_ABORTED) {
+        /* Stopped on purpose. The partial parts are still on disk, so this is a
+         * pause the user can resume, not a failure to report. */
+        pthread_mutex_lock(&srv->lock);
+        j->state = DOWNLOAD_PAUSED;
+        j->bytes_per_second = 0;
+        j->worker_active = 0;
+        pthread_mutex_unlock(&srv->lock);
+        free(dest);
+        free(out_dir);
+        return NULL;
+    }
     if (rc != MI_OK) {
         pthread_mutex_lock(&srv->lock);
         j->state = DOWNLOAD_FAILED;
         j->bytes_per_second = 0;
         j->error = mi_strdup("download failed");
         j->finished_at = (double)time(NULL);
+        j->worker_active = 0;
         pthread_mutex_unlock(&srv->lock);
         free(dest);
         free(out_dir);
@@ -1090,6 +1154,7 @@ static void *download_worker(void *arg) {
     j->artifact_urls = urls;
     j->artifact_count = n_urls;
     j->finished_at = (double)time(NULL);
+    j->worker_active = 0;
     pthread_mutex_unlock(&srv->lock);
 
     mi_download_result_free(&res);
@@ -1303,6 +1368,10 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         const char *prefix = mi_json_get_string(in, "prefix", NULL);
         if (hls) j->hls_dir = mi_strdup(hls);
         if (prefix) j->prefix = mi_strdup(prefix);
+        /* Echoed back so the UI can say which format and which stages this
+         * particular download runs. */
+        const char *quality = mi_json_get_string(in, "quality", NULL);
+        if (quality) j->requested_quality = mi_strdup(quality);
         j->do_hls = mi_json_get_bool(in, "hls", 1);
         j->do_upload = mi_json_get_bool(in, "upload", 0);
         j->do_purge = mi_json_get_bool(in, "purge", 0);
@@ -1397,15 +1466,63 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             return;
         }
         if (!strcmp(req->method, "PATCH")) {
-            /* Rename and/or move. Both are metadata edits that keep the bytes,
-             * so they are reversible and need no confirmation. */
             mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
             const char *name = mi_json_get_string(in, "name", NULL);
             const char *move_to = mi_json_get_string(in, "move_to", NULL);
+            const char *action = mi_json_get_string(in, "action", NULL);
+
+            /* Transfer control: pause stops the worker but keeps everything, so
+             * resume continues from what is already on disk. */
+            if (action && (!strcmp(action, "pause") || !strcmp(action, "resume"))) {
+                int want_pause = !strcmp(action, "pause");
+                int restart = 0;
+                if (want_pause) {
+                    if (j->state != DOWNLOAD_RUNNING && j->state != DOWNLOAD_QUEUED) {
+                        pthread_mutex_unlock(&srv->lock);
+                        send_error(fd, 409, "Conflict",
+                                   "only a running download can be paused", cors);
+                        mi_json_value_free(in);
+                        return;
+                    }
+                    /* Ask the worker to stop; it flips the state to paused when
+                     * it actually stops, so the UI never claims a pause that has
+                     * not happened. */
+                    j->pause_requested = 1;
+                } else {
+                    if (j->state != DOWNLOAD_PAUSED) {
+                        pthread_mutex_unlock(&srv->lock);
+                        send_error(fd, 409, "Conflict",
+                                   "only a paused download can be resumed", cors);
+                        mi_json_value_free(in);
+                        return;
+                    }
+                    j->pause_requested = 0;
+                    j->state = DOWNLOAD_QUEUED;
+                    j->error = NULL;
+                    /* Restart the transfer. The parts and state file from the
+                     * pause are still on disk, so this resumes rather than
+                     * starting over. The storage snapshot was released when the
+                     * original worker stopped, so a resumed download fetches but
+                     * does not re-upload — the bytes are already local. */
+                    restart = !j->worker_active;
+                }
+                mi_json_buf b;
+                mi_json_init(&b);
+                download_to_json(j, &b);
+                pthread_mutex_unlock(&srv->lock);
+                if (restart) start_download(srv, j, NULL);
+                send_json(fd, 200, "OK", &b, cors);
+                mi_json_free(&b);
+                mi_json_value_free(in);
+                return;
+            }
+
+            /* Rename and/or move. Both are metadata edits that keep the bytes,
+             * so they are reversible and need no confirmation. */
             if (!name && !move_to) {
                 pthread_mutex_unlock(&srv->lock);
                 send_error(fd, 400, "Bad Request",
-                           "provide 'name' and/or 'move_to'", cors);
+                           "provide 'name', 'move_to' or 'action'", cors);
                 mi_json_value_free(in);
                 return;
             }
@@ -1464,7 +1581,15 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                 memmove(&srv->downloads[idx], &srv->downloads[idx + 1],
                         (srv->download_count - idx - 1) * sizeof(mi_download_rec *));
                 srv->download_count--;
+                /* Stop the transfer, then wait for the worker to actually let go
+                 * before freeing the record — otherwise the worker would keep
+                 * writing through a dangling pointer. */
+                j->pause_requested = 1;
                 pthread_mutex_unlock(&srv->lock);
+                for (int i = 0; i < 100 && j->worker_active; i++) {
+                    struct timespec ts = {.tv_sec = 0, .tv_nsec = 50 * 1000 * 1000};
+                    nanosleep(&ts, NULL);
+                }
 
                 int removed = mi_rm_rf(out_dir) == 0;
                 free(out_dir);
@@ -1480,6 +1605,9 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                 return;
             }
 
+            /* Ask the worker to stop. A cancel is final: the record stays but
+             * it will not be resumed. */
+            j->pause_requested = 1;
             j->state = DOWNLOAD_CANCELLED;
             pthread_mutex_unlock(&srv->lock);
             mi_json_buf b;

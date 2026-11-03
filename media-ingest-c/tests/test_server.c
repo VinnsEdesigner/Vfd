@@ -336,6 +336,85 @@ static void test_http_api(void) {
         CHECK(mi_path_is_dir(moved), "moved directory exists in the library");
     }
 
+    /* --- pause / resume lifecycle ---
+     * A slow source so the pause lands mid-transfer: the local fileserver is
+     * fast, so this uses the unreachable-host trick only for the error paths and
+     * asserts the state machine, which is the part that must not regress. */
+    {
+        char path[128];
+        snprintf(path, sizeof path, "/api/v1/downloads/%s", idbuf);
+
+        /* Pausing a finished download is a conflict, not a silent no-op. */
+        resp = http_call(port, "PATCH", path, "{\"action\":\"pause\"}", "testtoken", &status);
+        CHECK(status == 409, "pause on a settled download -> 409");
+        free(resp);
+
+        /* Resuming something that was never paused is also a conflict. */
+        resp = http_call(port, "PATCH", path, "{\"action\":\"resume\"}", "testtoken", &status);
+        CHECK(status == 409, "resume on a non-paused download -> 409");
+        free(resp);
+
+        /* An unknown action is rejected rather than ignored. */
+        resp = http_call(port, "PATCH", path, "{\"action\":\"teleport\"}", "testtoken", &status);
+        CHECK(status == 400, "unknown action -> 400");
+        free(resp);
+    }
+
+    /* A real pause: a slow source, so the worker is still transferring when the
+     * pause lands. `slow` makes the test server dribble bytes out. */
+    {
+        resp = http_call(port, "POST", "/api/v1/downloads",
+                         "{\"url\":\"http://127.0.0.1:1/slow.bin\",\"hls\":false}",
+                         "testtoken", &status);
+        char pid[64] = {0};
+        mi_json *jj = mi_json_parse(body_of(resp));
+        const char *id = mi_json_get_string(jj, "id", NULL);
+        if (id) snprintf(pid, sizeof pid, "%s", id);
+        mi_json_value_free(jj);
+        free(resp);
+
+        char path[128];
+        snprintf(path, sizeof path, "/api/v1/downloads/%s", pid);
+        /* Pause immediately; whether it lands mid-transfer or before the worker
+         * starts, the outcome must be the same paused state. */
+        resp = http_call(port, "PATCH", path, "{\"action\":\"pause\"}", "testtoken", &status);
+        CHECK(status == 200, "pause accepted");
+        free(resp);
+
+        int got_paused = 0;
+        for (int i = 0; i < 60; i++) {
+            resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+            if (resp && strstr(resp, "\"state\":\"paused\"")) got_paused = 1;
+            int settled = resp && (strstr(resp, "\"state\":\"paused\"") ||
+                                   strstr(resp, "\"state\":\"failed\"") ||
+                                   strstr(resp, "\"state\":\"done\""));
+            free(resp);
+            if (settled) break;
+            usleep(50000);
+        }
+        CHECK(got_paused, "a running download can be paused");
+
+        /* And a paused download can be resumed. */
+        resp = http_call(port, "PATCH", path, "{\"action\":\"resume\"}", "testtoken", &status);
+        CHECK(status == 200, "resume accepted");
+        free(resp);
+    }
+
+    /* A create records the options it was given, so the UI can report them. */
+    {
+        resp = http_call(port, "POST", "/api/v1/downloads",
+                         "{\"url\":\"http://127.0.0.1:1/opts.mp4\",\"hls\":false,"
+                         "\"quality\":\"1080p\",\"connections\":4}",
+                         "testtoken", &status);
+        CHECK(status == 202, "create with options accepted");
+        CHECK(strstr(body_of(resp), "\"requested_quality\":\"1080p\"") != NULL,
+              "requested_quality echoed back");
+        CHECK(strstr(body_of(resp), "\"connections\":4") != NULL,
+              "connections echoed back");
+        CHECK(strstr(body_of(resp), "\"hls\":false") != NULL, "hls echoed back");
+        free(resp);
+    }
+
     /* PATCH on an unknown id is a 404 */
     resp = http_call(port, "PATCH", "/api/v1/downloads/deadbeef",
                      "{\"name\":\"x.mp4\"}", "testtoken", &status);

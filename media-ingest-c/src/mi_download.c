@@ -62,6 +62,8 @@ typedef struct {
     int64_t *shared_bytes;
     /* Set when the server asks us to back off (429 / Retry-After). */
     long retry_after_seconds;
+    /* Non-NULL when the caller wants to be able to stop the transfer. */
+    const mi_download_control *control;
 } file_writer;
 
 /* Read Retry-After (seconds form) off a response header block. */
@@ -78,6 +80,11 @@ static size_t header_retry_after(char *ptr, size_t size, size_t nmemb, void *use
 static size_t write_file(char *ptr, size_t size, size_t nmemb, void *userdata) {
     file_writer *w = userdata;
     size_t n = size * nmemb;
+    /* Checked before every chunk so a pause takes effect promptly, and the
+     * partial file is left intact for the resume. */
+    if (w->control && w->control->stop && w->control->stop(w->control->user)) {
+        return 0;
+    }
     size_t wrote = fwrite(ptr, 1, n, w->fp);
     if (wrote != n) return 0;
     if (w->shared_bytes && w->lock) {
@@ -249,6 +256,11 @@ static int fetch_range_once(const mi_download_config *cfg, const char *url,
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    /* A write error while the caller has asked to stop is a pause, not a
+     * failure: it must not be retried and must not be reported as an error. */
+    if (cfg->control && cfg->control->stop && cfg->control->stop(cfg->control->user)) {
+        return MI_ERR_ABORTED;
+    }
     if (rc != CURLE_OK) return MI_ERR_NET;
     if (code != 200 && code != 206) return MI_ERR_NET;
     return MI_OK;
@@ -278,9 +290,14 @@ static void *range_worker(void *arg) {
                          .progress = job->progress,
                          .lock = job->lock,
                          .shared_bytes = job->shared_bytes,
-                         .retry_after_seconds = 0};
+                         .retry_after_seconds = 0,
+                         .control = job->cfg->control};
         int rc = fetch_range_once(job->cfg, job->url, job->rng, &w);
         fclose(fp);
+        if (rc == MI_ERR_ABORTED) {
+            job->rc = MI_ERR_ABORTED;
+            return NULL;
+        }
         if (rc == MI_OK) {
             int64_t actual = mi_file_size(job->rng->part_path);
             if (actual == expected) {
@@ -466,14 +483,20 @@ static int download_ranged(const mi_download_config *cfg, const char *url,
     }
 
     int rc = MI_OK;
+    int aborted = 0;
     for (j = 0; j < pending; j++) {
         pthread_join(threads[j], NULL);
+        if (jobs[j].rc == MI_ERR_ABORTED) {
+            aborted = 1;
+            continue;
+        }
         if (jobs[j].rc != MI_OK && rc == MI_OK) {
             rc = jobs[j].rc;
             mi_logf(MI_LOG_ERROR, "%s", jobs[j].err ? jobs[j].err : "range failed");
         }
         free(jobs[j].err);
     }
+    if (aborted) rc = MI_ERR_ABORTED;
 
     if (rc == MI_OK) {
         for (int i = 0; i < count; i++) ranges[i].done = 1;
@@ -495,6 +518,17 @@ static int download_ranged(const mi_download_config *cfg, const char *url,
     progress.total_bytes = total;
     progress.finished = (rc == MI_OK);
     if (on_progress) on_progress(&progress, user);
+    if (rc == MI_ERR_ABORTED) {
+        /* Leave the parts and the state file exactly as they are: the next
+         * call resumes from here. */
+        free(jobs);
+        free(threads);
+        for (int i = 0; i < count; i++) free(ranges[i].part_path);
+        free(ranges);
+        free(state_path);
+        free(work_dir);
+        return MI_ERR_ABORTED;
+    }
 
     if (rc == MI_OK) {
         out->bytes_written = mi_file_size(dest);
@@ -537,7 +571,8 @@ static int download_stream(const mi_download_config *cfg, const char *url,
                      .user = user,
                      .progress = &progress,
                      .lock = &lock,
-                     .shared_bytes = &shared};
+                     .shared_bytes = &shared,
+                     .control = cfg->control};
     struct curl_slist *headers = build_headers(cfg, NULL);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -550,6 +585,12 @@ static int download_stream(const mi_download_config *cfg, const char *url,
     fclose(fp);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    if (cfg->control && cfg->control->stop && cfg->control->stop(cfg->control->user)) {
+        /* A streamed download cannot resume; the partial file is discarded so
+         * the next attempt starts clean rather than keeping a truncated file. */
+        unlink(dest);
+        return MI_ERR_ABORTED;
+    }
     if (rc != CURLE_OK) return MI_ERR_NET;
 
     progress.downloaded_bytes = shared;
@@ -613,6 +654,7 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->max_bytes = 0;
     cfg->headers = NULL;
     cfg->header_count = 0;
+    cfg->control = NULL;
 }
 
 void mi_download_result_free(mi_download_result *res) {

@@ -13,6 +13,7 @@ import type {
   WireDownloadList,
   WireMoveRequest,
   WireRenameRequest,
+  WireActionRequest,
 } from '../domain/wire';
 
 export interface DownloadsResource {
@@ -34,6 +35,10 @@ export interface DownloadsResource {
   rename(id: string, name: string, signal?: AbortSignal): Promise<Download>;
   /** Move an item into a named folder inside the library. */
   move(id: string, folder: string, signal?: AbortSignal): Promise<Download>;
+  /** Stop a running transfer, keeping the partial data for a resume. */
+  pause(id: string, signal?: AbortSignal): Promise<Download>;
+  /** Continue a paused transfer from where it stopped. */
+  resume(id: string, signal?: AbortSignal): Promise<Download>;
 }
 
 function toWireRequest(input: CreateDownloadInput): WireCreateDownloadRequest {
@@ -44,6 +49,7 @@ function toWireRequest(input: CreateDownloadInput): WireCreateDownloadRequest {
     purge: input.purge,
     connections: input.connections,
   };
+  if (input.quality) req.quality = input.quality;
   if (input.prefix) req.prefix = input.prefix;
   if (input.hlsDir) req.hls_dir = input.hlsDir;
   return req;
@@ -113,6 +119,26 @@ export function createDownloadsResource(client: ApiClient): DownloadsResource {
         method: 'PATCH',
         path: `/api/v1/downloads/${encodeURIComponent(id)}`,
         body: { move_to: folder } satisfies WireMoveRequest,
+        ...(signal ? { signal } : {}),
+      });
+      return normalizeDownload(wire);
+    },
+
+    async pause(id, signal) {
+      const wire = await client.transport.request<WireDownload>({
+        method: 'PATCH',
+        path: `/api/v1/downloads/${encodeURIComponent(id)}`,
+        body: { action: 'pause' } satisfies WireActionRequest,
+        ...(signal ? { signal } : {}),
+      });
+      return normalizeDownload(wire);
+    },
+
+    async resume(id, signal) {
+      const wire = await client.transport.request<WireDownload>({
+        method: 'PATCH',
+        path: `/api/v1/downloads/${encodeURIComponent(id)}`,
+        body: { action: 'resume' } satisfies WireActionRequest,
         ...(signal ? { signal } : {}),
       });
       return normalizeDownload(wire);

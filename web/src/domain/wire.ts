@@ -46,6 +46,12 @@ export interface WireDownload {
   master_playlist: string | null;
   artifacts: string[];
   error: string | null;
+  /** The format the user chose, echoed back by the engine. */
+  requested_quality?: string | null;
+  connections?: number;
+  hls?: boolean;
+  upload?: boolean;
+  purge?: boolean;
   created_at: number;
   finished_at: number;
 }
@@ -97,8 +103,14 @@ export interface WireMoveRequest {
   move_to: string;
 }
 
+export interface WireActionRequest {
+  action: 'pause' | 'resume';
+}
+
 export interface WireCreateDownloadRequest {
   url: string;
+  /** Chosen format label, e.g. "1080p". Recorded for display. */
+  quality?: string;
   hls?: boolean;
   upload?: boolean;
   purge?: boolean;

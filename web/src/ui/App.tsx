@@ -48,6 +48,8 @@ import {
   useRemoveDownload,
   useRenameDownload,
   useMoveDownload,
+  usePauseDownload,
+  useResumeDownload,
   useProbe,
   useConnectionStore,
   useDownloadFormStore,
@@ -58,8 +60,17 @@ import {
 } from '../hooks';
 import { useToast } from './feedback';
 import { ConfirmDialog } from './primitives/ConfirmDialog';
+import { FormatChooser, formatsFromQualities, formatFromFile } from './downloads/FormatChooser';
+import type { FormatChoice } from './downloads/FormatChooser';
+import { DownloadInfo } from './downloads/DownloadInfo';
 import { shareItems, mimeForName } from './files';
-import { formatBytes, toQualityOptions, type DownloadView } from '../hooks/view-models';
+import {
+  formatBytes,
+  toQualityOptions,
+  hostFromUrl,
+  fileNameFromUrl,
+  type DownloadView,
+} from '../hooks/view-models';
 
 export type ViewId = 'overview' | 'downloads' | 'ingest' | 'storage' | 'settings';
 
@@ -152,6 +163,12 @@ export function App({ initialView = 'overview' }: AppProps) {
   const [openFileId, setOpenFileId] = useState<string | null>(null);
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  /** Formats offered before a download starts; null when not choosing. */
+  const [choosingFormats, setChoosingFormats] = useState<FormatChoice[] | null>(null);
+  /** The download whose live detail panel is open. */
+  const [infoId, setInfoId] = useState<string | null>(null);
+  /** Which transfer action is in flight, for its button. */
+  const [transferBusy, setTransferBusy] = useState<string | null>(null);
   const [probe, setProbe] = useState<ProbeOutcome>({ status: 'idle' });
   const [probing, setProbing] = useState(false);
   const [selectedQuality, setSelectedQuality] = useState<number | null>(null);
@@ -181,6 +198,8 @@ export function App({ initialView = 'overview' }: AppProps) {
   const removeDownload = useRemoveDownload();
   const renameDownload = useRenameDownload();
   const moveDownload = useMoveDownload();
+  const pauseDownload = usePauseDownload();
+  const resumeDownload = useResumeDownload();
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const systemStorage = systemStorageQuery.data ?? null;
   const allViews = useDownloadViewsWithPipeline(downloadsQuery.data ?? [], {
@@ -228,6 +247,11 @@ export function App({ initialView = 'overview' }: AppProps) {
       summary: `${formatBytes(fs.usedBytes)} of ${formatBytes(fs.totalBytes)} used on ${volume}.`,
     };
   }, [systemStorage]);
+
+  const infoDownload = useMemo(
+    () => (infoId ? allViews.find((d) => d.id === infoId) ?? null : null),
+    [infoId, allViews],
+  );
 
   const openFile = useMemo(
     () => (openFileId ? allViews.find((d) => d.id === openFileId) ?? null : null),
@@ -448,47 +472,176 @@ export function App({ initialView = 'overview' }: AppProps) {
   const cloudPath =
     location.target === 'cloud' ? `s3://${location.bucket}/${location.keyPrefix}` : DEFAULT_CLOUD_PATH;
 
-  const runProbe = useCallback(async () => {
-    const url = draft.url.trim();
-    if (!url) return;
-    setProbing(true);
-    setProbe({ status: 'probing' });
-    try {
-      const result = await probeUrl.mutateAsync({
-        url,
-        ...(draft.durationSeconds && draft.durationSeconds > 0
-          ? { durationSeconds: draft.durationSeconds }
-          : {}),
-      });
-      if (result.media && !result.media.isVideo) {
-        setProbe({ status: 'error', message: 'Not a video payload' });
-        toast.error('Probe rejected the source', 'The bytes are not a recognised video format.');
-      } else {
+  /**
+   * Probes the source and returns what was found, so the same result can drive
+   * both the probe panel and the format chooser. `announce` keeps the toasts out
+   * of the way when this is a step inside "start a download" rather than a probe
+   * the user asked for on its own.
+   */
+  const runProbe = useCallback(
+    async (announce = true): Promise<ProbeOutcome | null> => {
+      const url = draft.url.trim();
+      if (!url) return null;
+      setProbing(true);
+      setProbe({ status: 'probing' });
+      try {
+        const result = await probeUrl.mutateAsync({
+          url,
+          ...(draft.durationSeconds && draft.durationSeconds > 0
+            ? { durationSeconds: draft.durationSeconds }
+            : {}),
+        });
+        if (result.media && !result.media.isVideo) {
+          setProbe({ status: 'error', message: 'Not a video payload' });
+          if (announce) {
+            toast.error('Probe rejected the source', 'The bytes are not a recognised video format.');
+          }
+          return null;
+        }
         const qualities = toQualityOptions(result.media?.qualities ?? []);
-        setProbe({
+        const outcome: ProbeOutcome = {
           status: 'done',
           container: result.media ? result.media.container : '—',
           rangeSupport: result.acceptRanges ? 'Accepted (parallel download available)' : 'Not supported',
           size: formatBytes(result.totalBytes > 0 ? result.totalBytes : 0),
           confidence: result.media ? result.media.confidence.toFixed(3) : '—',
           qualities,
-        });
+        };
+        setProbe(outcome);
         // Default to the largest rendition the manifest offers.
         setSelectedQuality(qualities.length > 0 ? (qualities[0]?.height ?? null) : null);
-        toast.success('Probe succeeded', result.media ? `Detected ${result.media.container}` : undefined);
+        if (announce) {
+          toast.success('Probe succeeded', result.media ? `Detected ${result.media.container}` : undefined);
+        }
+        return outcome;
+      } catch (e) {
+        setProbe({ status: 'error', message: 'Probe failed' });
+        toast.error('Probe failed', describeError(e));
+        return null;
+      } finally {
+        setProbing(false);
       }
-    } catch (e) {
-      setProbe({ status: 'error', message: 'Probe failed' });
-      toast.error('Probe failed', describeError(e));
-    } finally {
-      setProbing(false);
+    },
+    [draft.url, draft.durationSeconds, probeUrl, toast],
+  );
+
+  /**
+   * Creating a download needs the bytes queued, and the choice of format is part
+   * of that. So the flow is: probe to see what is actually there, show the
+   * formats it supports with their sizes, then start only what was chosen. If
+   * the probe cannot tell us anything the single "Source" format is offered
+   * rather than guessing.
+   */
+  const beginDownload = useCallback(async () => {
+    const url = draft.url.trim();
+    if (!url) return;
+    const outcome = await runProbe(false);
+    if (!outcome || outcome.status !== 'done') {
+      toast.error('Cannot start', 'The source could not be read, so nothing was queued.');
+      return;
     }
-  }, [draft.url, draft.durationSeconds, probeUrl, toast]);
+    const formats =
+      outcome.qualities && outcome.qualities.length > 0
+        ? formatsFromQualities(outcome.qualities)
+        : formatFromFile(outcome.container ?? '', outcome.size ?? 'unknown');
+    setChoosingFormats(formats);
+  }, [draft.url, runProbe, toast]);
+
+  const startWithFormat = useCallback(
+    (qualityId: string) => {
+      const url = draft.url.trim();
+      if (!url) return;
+      void runAction(
+        'start-download',
+        async () => {
+          await createDownload.mutateAsync({
+            input: {
+              url,
+              quality: qualityId,
+              hls: draft.hls,
+              upload: draft.upload,
+              purge: draft.purge,
+              connections: draft.connections,
+            },
+          });
+          setChoosingFormats(null);
+          setView('downloads');
+        },
+        { success: 'Download queued', failure: 'Could not queue the download' },
+      );
+    },
+    [draft.url, draft.hls, draft.upload, draft.purge, draft.connections, createDownload, runAction],
+  );
+
+  /** Pause / resume / cancel, each reported honestly and never optimistically. */
+  const transferAction = useCallback(
+    (kind: 'pause' | 'resume' | 'cancel', id: string) => {
+      setTransferBusy(kind);
+      const run =
+        kind === 'pause'
+          ? pauseDownload.mutateAsync(id)
+          : kind === 'resume'
+            ? resumeDownload.mutateAsync(id)
+            : cancelDownload.mutateAsync(id);
+      const done =
+        kind === 'pause' ? 'Paused' : kind === 'resume' ? 'Resumed' : 'Cancelled';
+      const failed =
+        kind === 'pause'
+          ? 'Could not pause'
+          : kind === 'resume'
+            ? 'Could not resume'
+            : 'Could not cancel';
+      void run
+        .then(() => toast.success(done))
+        .catch((e: unknown) => toast.error(failed, describeError(e)))
+        .finally(() => setTransferBusy(null));
+    },
+    [pauseDownload, resumeDownload, cancelDownload, toast],
+  );
 
   const [title, subtitle] = VIEW_TITLES[view];
 
   return (
     <>
+      {choosingFormats && (
+        <FormatChooser
+          source={fileNameFromUrl(draft.url)}
+          host={hostFromUrl(draft.url)}
+          kind={probe.container ?? ''}
+          formats={choosingFormats}
+          initialId={choosingFormats[0]?.id ?? null}
+          busy={busy === 'start-download'}
+          onConfirm={startWithFormat}
+          onCancel={() => setChoosingFormats(null)}
+        />
+      )}
+
+      {infoDownload && (
+        <DownloadInfo
+          download={infoDownload}
+          busy={transferBusy}
+          onPause={() => transferAction('pause', infoDownload.id)}
+          onResume={() => transferAction('resume', infoDownload.id)}
+          onCancel={() => transferAction('cancel', infoDownload.id)}
+          onOpen={() => {
+            setInfoId(null);
+            setOpenFileId(infoDownload.id);
+          }}
+          onReveal={() =>
+            toast.info(
+              location.target === 'local'
+                ? 'Revealed in file manager'
+                : 'Opened bucket in storage console',
+            )
+          }
+          onDelete={() => {
+            setInfoId(null);
+            deleteFile(infoDownload.id);
+          }}
+          onClose={() => setInfoId(null)}
+        />
+      )}
+
       {pendingDelete && (
         <ConfirmDialog
           title={pendingDelete.title}
@@ -586,6 +739,7 @@ export function App({ initialView = 'overview' }: AppProps) {
               onOpen={setOpenFileId}
               onCancel={cancelDownloadById}
               onDelete={deleteFile}
+              onInfo={setInfoId}
               cancellingId={cancellingId}
               onRefresh={() =>
                 void runAction(
@@ -623,26 +777,7 @@ export function App({ initialView = 'overview' }: AppProps) {
             onProbe={runProbe}
             selectedQuality={selectedQuality}
             onSelectQuality={setSelectedQuality}
-            onStart={() => {
-              const url = draft.url.trim();
-              if (!url) return;
-              void runAction(
-                'start-download',
-                async () => {
-                  await createDownload.mutateAsync({
-                    input: {
-                      url,
-                      hls: draft.hls,
-                      upload: draft.upload,
-                      purge: draft.purge,
-                      connections: draft.connections,
-                    },
-                  });
-                  setView('downloads');
-                },
-                { success: 'Download queued', failure: 'Could not queue the download' },
-              );
-            }}
+            onStart={() => void beginDownload()}
           />
           ))}
 

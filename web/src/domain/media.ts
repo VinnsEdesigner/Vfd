@@ -55,7 +55,14 @@ export interface Media {
   qualities: Quality[];
 }
 
-export type DownloadState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+export type DownloadState =
+  | 'queued'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  /** Stopped on purpose; the partial data is kept and it can be resumed. */
+  | 'paused';
 
 export interface DownloadProgress {
   downloadedBytes: number;
@@ -78,6 +85,12 @@ export interface Download {
   masterPlaylist: string | null;
   artifacts: string[];
   error: string | null;
+  /** The format the user chose, if any. */
+  requestedQuality: string | null;
+  connections: number;
+  hls: boolean;
+  upload: boolean;
+  purge: boolean;
   createdAt: number;
   finishedAt: number;
 }
@@ -108,6 +121,8 @@ export interface StorageConfig {
 /** Requests the data layer accepts (already domain-shaped). */
 export interface CreateDownloadInput {
   url: string;
+  /** Chosen format label, e.g. "1080p" / "Source". */
+  quality?: string;
   hls: boolean;
   upload: boolean;
   purge: boolean;
@@ -135,6 +150,11 @@ export interface StorageCredentials {
 
 export function isTerminal(state: DownloadState): boolean {
   return state === 'done' || state === 'failed' || state === 'cancelled';
+}
+
+/** Paused is not terminal: it is waiting to be resumed. */
+export function isResumable(state: DownloadState): boolean {
+  return state === 'paused';
 }
 
 export function progressFraction(p: DownloadProgress): number {

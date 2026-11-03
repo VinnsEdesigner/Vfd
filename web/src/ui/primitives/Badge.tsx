@@ -7,7 +7,7 @@
 
 import type { ReactNode } from 'react';
 
-export type BadgeTone = 'idle' | 'running' | 'done' | 'failed';
+export type BadgeTone = 'idle' | 'running' | 'done' | 'failed' | 'paused';
 
 export interface BadgeProps {
   tone: BadgeTone;

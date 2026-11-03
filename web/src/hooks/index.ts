@@ -12,6 +12,8 @@ export {
   useRemoveDownload,
   useRenameDownload,
   useMoveDownload,
+  usePauseDownload,
+  useResumeDownload,
 } from './use-downloads';
 export { useProbe, useDetectBytes } from './use-media';
 export type { ProbeVariables } from './use-media';
@@ -35,6 +37,7 @@ export {
   statusLabel,
   isActiveState,
   isSettledState,
+  isResumableState,
 } from './view-models';
 export type {
   DownloadView,

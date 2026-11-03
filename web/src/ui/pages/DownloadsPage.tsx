@@ -19,6 +19,8 @@ export interface DownloadsPageProps {
   onOpen: (id: string) => void;
   onCancel?: (id: string) => void;
   onDelete?: (id: string) => void;
+  /** Opens the live detail panel for a download. */
+  onInfo?: (id: string) => void;
   cancellingId?: string | null;
   onRefresh?: () => void;
   refreshing?: boolean;
@@ -31,6 +33,7 @@ export function DownloadsPage({
   onOpen,
   onCancel,
   onDelete,
+  onInfo,
   cancellingId = null,
   onRefresh,
   refreshing = false,
@@ -68,6 +71,7 @@ export function DownloadsPage({
         onOpen={onOpen}
         {...(onCancel ? { onCancel } : {})}
         {...(onDelete ? { onDelete } : {})}
+        {...(onInfo ? { onInfo } : {})}
         cancellingId={cancellingId}
       />
     </Card>

@@ -36,6 +36,7 @@ const JOB_STATES: ReadonlySet<string> = new Set<DownloadState>([
   'done',
   'failed',
   'cancelled',
+  'paused',
 ]);
 
 /** Last path segment of a URL, query and fragment stripped. The domain's own
@@ -104,6 +105,11 @@ export function normalizeDownload(w: WireDownload): Download {
     masterPlaylist: w.master_playlist ?? null,
     artifacts: Array.isArray(w.artifacts) ? w.artifacts : [],
     error: w.error ?? null,
+    requestedQuality: w.requested_quality ?? null,
+    connections: w.connections ?? 0,
+    hls: Boolean(w.hls),
+    upload: Boolean(w.upload),
+    purge: Boolean(w.purge),
     createdAt: w.created_at ?? 0,
     finishedAt: w.finished_at ?? 0,
   };

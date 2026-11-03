@@ -104,6 +104,31 @@ export interface MoveDownloadVariables {
   folder: string;
 }
 
+/** Pause stops the transfer but keeps everything, so it can be resumed. */
+export function usePauseDownload() {
+  const { api } = useMediaApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.downloads.pause(id),
+    onSuccess: (download) => {
+      queryClient.setQueryData(queryKeys.download(download.id), download);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.downloadList() });
+    },
+  });
+}
+
+export function useResumeDownload() {
+  const { api } = useMediaApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.downloads.resume(id),
+    onSuccess: (download) => {
+      queryClient.setQueryData(queryKeys.download(download.id), download);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.downloadList() });
+    },
+  });
+}
+
 /** Move relocates the item's directory inside the library. */
 export function useMoveDownload() {
   const { api } = useMediaApi();

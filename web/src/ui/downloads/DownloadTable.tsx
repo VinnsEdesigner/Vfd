@@ -19,6 +19,7 @@ import { OverflowMenu, type MenuAction } from '../menus/OverflowMenu';
 import {
   IconFile,
   IconImage,
+  IconInfo,
   IconMusic,
   IconPlay,
   IconTrash,
@@ -42,6 +43,8 @@ export interface DownloadTableProps {
   onDelete?: (id: string) => void;
   /** Id whose cancel is in flight, so its action can show it. */
   cancellingId?: string | null;
+  /** Opens the live detail panel for a download. */
+  onInfo?: (id: string) => void;
   emptyTitle?: string;
   emptyDescription?: string;
 }
@@ -76,22 +79,27 @@ function MediaTile({ d, contentUrl }: { d: DownloadView; contentUrl?: (id: strin
 }
 
 /** Progress: a live bar while transferring, an honest label otherwise. */
-function ProgressCell({ d }: { d: DownloadView }) {
-  if (d.isActive) {
+function ProgressCell({ d, onInfo }: { d: DownloadView; onInfo?: (id: string) => void }) {
+  if (d.isActive || d.isResumable) {
     return (
-      <div className="dlrow__progress">
-        <div
+      <button
+        type="button"
+        className="dlrow__progress"
+        onClick={onInfo ? (e) => { e.stopPropagation(); onInfo(d.id); } : undefined}
+        aria-label={`${d.name} progress — open download info`}
+        tabIndex={onInfo ? 0 : -1}
+      >
+        <span
           className="dlrow__bar"
           role="progressbar"
           aria-valuenow={d.percent}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-label={`${d.name} progress`}
         >
           <span style={{ width: `${d.percent}%` }} />
-        </div>
+        </span>
         <span className="dlrow__pct">{d.percent}%</span>
-      </div>
+      </button>
     );
   }
   if (d.state === 'done') return <span className="dlrow__state muted">Done</span>;
@@ -107,6 +115,7 @@ export function DownloadTable({
   onCancel,
   onDelete,
   cancellingId = null,
+  onInfo,
   emptyTitle = 'No downloads yet',
   emptyDescription = 'Start a download to see it appear here.',
 }: DownloadTableProps) {
@@ -116,6 +125,15 @@ export function DownloadTable({
 
   const actionsFor = (d: DownloadView): MenuAction[] => {
     const actions: MenuAction[] = [];
+    // First, because it is what a running download is for: watching it.
+    if (onInfo) {
+      actions.push({
+        id: 'info',
+        label: 'Download info',
+        icon: <IconInfo />,
+        onSelect: () => onInfo(d.id),
+      });
+    }
     if (onOpen && d.isOpenable) {
       actions.push({
         id: 'open',
@@ -160,7 +178,7 @@ export function DownloadTable({
         return (
           <div
             key={d.id}
-            className={d.isActive ? 'dlrow is-active' : 'dlrow'}
+            className={d.isActive ? 'dlrow is-active' : d.isResumable ? 'dlrow is-paused' : 'dlrow'}
             role="listitem"
             tabIndex={0}
             aria-label={d.name}
@@ -192,7 +210,7 @@ export function DownloadTable({
             </span>
 
             <span className="dlrow__progress-cell">
-              <ProgressCell d={d} />
+              <ProgressCell d={d} {...(onInfo ? { onInfo } : {})} />
             </span>
 
             <span className="dlrow__speed num">

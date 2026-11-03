@@ -26,6 +26,17 @@ typedef struct {
 
 typedef void (*mi_progress_fn)(const mi_progress *p, void *user);
 
+/* Cooperative control for a running download. A worker polls `stop()` between
+ * chunks; when it reports true the transfer is abandoned. The partial data is
+ * left on disk and the state file records it, so the same call resumes later —
+ * that is what makes pause/resume cheap rather than a restart.
+ *
+ * Both callbacks are invoked from worker threads and must be thread-safe. */
+typedef struct {
+    int (*stop)(void *user);
+    void *user;
+} mi_download_control;
+
 typedef struct {
     int connections;
     int64_t chunk_size;
@@ -38,6 +49,8 @@ typedef struct {
     int64_t max_bytes; /* 0 == unlimited */
     char **headers;    /* extra "Key: Value" headers */
     size_t header_count;
+    /* Optional: lets a caller stop a running download (pause/cancel). */
+    const mi_download_control *control;
 } mi_download_config;
 
 typedef struct {

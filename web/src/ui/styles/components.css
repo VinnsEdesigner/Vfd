@@ -149,6 +149,10 @@
   color: var(--state-done-fg);
   border-color: var(--border-strong);
 }
+.badge--paused {
+  background: var(--state-idle);
+  color: var(--state-idle-fg);
+}
 .badge--failed {
   background: var(--state-fail);
   color: var(--state-fail-fg);
@@ -3344,4 +3348,317 @@ input[type='range']:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
   border-radius: 999px;
+}
+
+/* A search box inside the Select menu: pinned to the top so it does not scroll
+   away with a long option list. */
+.select__search {
+  width: 100%;
+  height: 32px;
+  margin-bottom: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.select__search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.select__empty {
+  padding: 10px 9px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+/* ==========================================================================
+   FormatChooser and DownloadInfo.
+
+   Both are the app's own dialogs, opened from the download flow and from a
+   download's breadcrumb menu. Neither uses browser chrome.
+   ========================================================================== */
+
+/* ------------------------------ FormatChooser ------------------------------ */
+
+.fchooser {
+  width: min(560px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.fchooser__head {
+  padding: 18px 20px 12px;
+}
+.fchooser__title {
+  font-size: 15.5px;
+  font-weight: 600;
+}
+.fchooser__source {
+  margin-top: 5px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fchooser__host {
+  font-family: var(--mono);
+  color: var(--text-3);
+}
+.fchooser__list {
+  max-height: 340px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.fchooser__opt {
+  display: grid;
+  grid-template-columns: 20px 74px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 20px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+  transition: background 0.12s;
+}
+.fchooser__opt:last-child {
+  border-bottom: none;
+}
+.fchooser__opt:hover {
+  background: var(--surface-2);
+}
+.fchooser__opt.is-active {
+  background: linear-gradient(90deg, var(--sel-from), var(--sel-to));
+  color: var(--sel-fg);
+}
+.fchooser__opt:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.fchooser__tick {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  color: #fff;
+}
+.fchooser__opt.is-active .fchooser__tick {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.fchooser__tick svg {
+  width: 11px;
+  height: 11px;
+}
+.fchooser__label {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.fchooser__detail {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fchooser__opt.is-active .fchooser__detail {
+  color: var(--text-2);
+}
+.fchooser__codecs {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fchooser__size {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  white-space: nowrap;
+}
+/* A size derived from the manifest is an estimate, and says so quietly. */
+.fchooser__size--est {
+  color: var(--text-3);
+  font-style: italic;
+}
+.fchooser__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px;
+}
+.fchooser__kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.fchooser__count {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.fchooser__actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ------------------------------ DownloadInfo ------------------------------ */
+
+.dinfo {
+  width: min(500px, 100%);
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+.dinfo__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dinfo__titles {
+  min-width: 0;
+}
+.dinfo__title {
+  font-size: 15.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dinfo__host {
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dinfo__bar {
+  height: 8px;
+  margin-top: 16px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.dinfo__bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.dinfo__pct {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 9px;
+}
+.dinfo__pct-value {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.dinfo__pct-sub {
+  font-size: 12.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.dinfo__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px 22px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.dinfo__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  min-width: 0;
+}
+.dinfo__k {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.dinfo__v {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dinfo__strong {
+  font-weight: 600;
+}
+.dinfo__error {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: var(--state-fail);
+  color: var(--state-fail-fg);
+  font-size: 12.5px;
+}
+.dinfo__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+.dinfo__actions-left,
+.dinfo__actions-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* A paused row: stopped, and clearly not the same as finished. */
+.dlrow.is-paused {
+  background: var(--surface-2);
+}
+.dlrow__progress {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.dlrow__progress:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--r-sm);
 }

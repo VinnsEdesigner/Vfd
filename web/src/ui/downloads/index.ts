@@ -8,3 +8,7 @@ export { DownloadCardList } from './DownloadCardList';
 export type { DownloadCardListProps } from './DownloadCardList';
 export { QualityPicker } from './QualityPicker';
 export type { QualityPickerProps } from './QualityPicker';
+export { FormatChooser, formatsFromQualities, formatFromFile } from './FormatChooser';
+export type { FormatChooserProps, FormatChoice } from './FormatChooser';
+export { DownloadInfo } from './DownloadInfo';
+export type { DownloadInfoProps } from './DownloadInfo';
