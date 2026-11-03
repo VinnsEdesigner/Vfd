@@ -1823,8 +1823,15 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             return;
         }
 
+        /* "media" (the default) keeps only what this app can play or show;
+         * "all" keeps every reference, so a site can be read as a browser shows
+         * it rather than only as a source of media. */
+        const char *want = mi_json_get_string(in, "filter", "media");
+        mi_browse_filter filter =
+            (want && !strcasecmp(want, "all")) ? MI_BROWSE_ALL : MI_BROWSE_MEDIA;
+
         mi_browse_result res;
-        int rc = mi_browse_url(url, srv->cfg.user_agent, &res);
+        int rc = mi_browse_url(url, srv->cfg.user_agent, filter, &res);
         if (rc != MI_OK) {
             mi_browse_result_free(&res);
             send_error(fd, 502, "Bad Gateway", "could not fetch that page", cors);
@@ -1846,6 +1853,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             mi_json_string(&b, it->url);
             mi_json_raw(&b, ",\"filename\":");
             mi_json_string(&b, it->filename);
+            mi_json_raw(&b, ",\"title\":");
+            mi_json_string(&b, it->title);
             mi_json_raw(&b, ",\"mime\":");
             mi_json_string(&b, it->mime);
             mi_json_raw(&b, ",\"bytes\":");
@@ -1854,6 +1863,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         }
         mi_json_raw(&b, "],\"count\":");
         mi_json_int(&b, (int64_t)res.count);
+        mi_json_raw(&b, ",\"filter\":");
+        mi_json_string(&b, filter == MI_BROWSE_ALL ? "all" : "media");
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);

@@ -19,7 +19,7 @@ import { Spinner } from '../primitives/Spinner';
 import { Note } from '../primitives/Note';
 import { IconSearch, IconRefresh, IconFolder, IconImage, IconMusic, IconFile } from '../primitives/Icons';
 import { formatBytes } from '../../hooks/view-models';
-import { browseKindLabel, type BrowseItem, type BrowseKind } from '../../hooks';
+import { browseKindLabel, type BrowseFilter, type BrowseItem, type BrowseKind } from '../../hooks';
 
 export interface BrowsePageProps {
   term: string;
@@ -56,6 +56,9 @@ export interface BrowsePageProps {
   onReadUrl: () => void;
   /** The page's own title, when the listing had one. */
   sourceTitle: string | null;
+  /** How much of the page to list. */
+  filter: BrowseFilter;
+  onFilterChange: (filter: BrowseFilter) => void;
 }
 
 export type BrowseMode = 'search' | 'url';
@@ -110,6 +113,8 @@ export function BrowsePage(props: BrowsePageProps) {
     onSourceUrlChange,
     onReadUrl,
     sourceTitle,
+    filter,
+    onFilterChange,
   } = props;
 
   const debounced = useDebounced(term, 350);
@@ -204,6 +209,30 @@ export function BrowsePage(props: BrowsePageProps) {
             >
               <IconSearch /> Search
             </Button>
+          </div>
+        )}
+
+        {/* In URL mode the choice is how much of the page to list: only what
+            this app can play, or everything the page references, the way a
+            browser shows it. */}
+        {byUrl && (
+          <div className="browse__modes" role="group" aria-label="What to list">
+            <button
+              type="button"
+              className={filter === 'media' ? 'browse__mode is-active' : 'browse__mode'}
+              aria-pressed={filter === 'media'}
+              onClick={() => onFilterChange('media')}
+            >
+              Media only
+            </button>
+            <button
+              type="button"
+              className={filter === 'all' ? 'browse__mode is-active' : 'browse__mode'}
+              aria-pressed={filter === 'all'}
+              onClick={() => onFilterChange('all')}
+            >
+              Everything
+            </button>
           </div>
         )}
 

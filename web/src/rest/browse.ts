@@ -14,7 +14,14 @@
 
 import type { ApiClient } from '../api-client';
 import { normalizeBrowseResult } from '../domain/normalize';
-import { browseKindFor, type BrowseItem, type BrowseKind, type BrowseQuery, type BrowseResult } from '../domain/browse';
+import {
+  browseKindFor,
+  type BrowseFilter,
+  type BrowseItem,
+  type BrowseKind,
+  type BrowseQuery,
+  type BrowseResult,
+} from '../domain/browse';
 import type { WireBrowseResult } from '../domain/wire';
 
 const API = 'https://commons.wikimedia.org/w/api.php';
@@ -117,11 +124,15 @@ export interface BrowseSourceOptions {
  */
 export function createBrowseResource(client: ApiClient) {
   return {
-    async listFromUrl(url: string, signal?: AbortSignal): Promise<BrowseResult> {
+    async listFromUrl(
+      url: string,
+      filter: BrowseFilter = 'media',
+      signal?: AbortSignal,
+    ): Promise<BrowseResult> {
       const wire = await client.transport.request<WireBrowseResult>({
         method: 'POST',
         path: '/api/v1/browse',
-        body: { url },
+        body: { url, filter },
         ...(signal ? { signal } : {}),
       });
       return normalizeBrowseResult(wire);

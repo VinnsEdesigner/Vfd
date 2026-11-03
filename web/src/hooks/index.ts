@@ -5,7 +5,7 @@ export { MediaApiProvider, useMediaApi } from './provider';
 export { queryKeys } from './query-keys';
 export { searchCommons, SUPPORTED_KINDS } from '../rest/browse';
 export { browseKindFor, browseKindLabel } from '../domain/browse';
-export type { BrowseItem, BrowseKind, BrowseQuery, BrowseResult } from '../domain/browse';
+export type { BrowseFilter, BrowseItem, BrowseKind, BrowseQuery, BrowseResult } from '../domain/browse';
 export { useHealth, useCapabilities, useStorageConfig, useSystemStorage, useSetStorageLocation } from './use-system';
 export {
   useDownloads,

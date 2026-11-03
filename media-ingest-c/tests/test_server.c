@@ -1036,7 +1036,7 @@ static void test_browse_parse(void) {
             "<a href=\"page.html\">Another page</a>"
             "</body></html>";
         mi_browse_result r;
-        CHECK(mi_browse_parse(html, strlen(html), "https://host.example/gallery/index.html", &r) == MI_OK,
+        CHECK(mi_browse_parse(html, strlen(html), "https://host.example/gallery/index.html", MI_BROWSE_MEDIA, &r) == MI_OK,
               "browse: html parses");
         CHECK(r.title && !strcmp(r.title, "My & Gallery"), "browse: title read and entities decoded");
         /* Relative to the page's directory, not the host root. */
@@ -1063,7 +1063,7 @@ static void test_browse_parse(void) {
             "<a href=\"a.mp4\">one</a><a href=\"a.mp4\">two</a>"
             "<video src=\"a.mp4\"></video>";
         mi_browse_result r;
-        CHECK(mi_browse_parse(html, strlen(html), "https://h/p.html", &r) == MI_OK, "browse: repeats parse");
+        CHECK(mi_browse_parse(html, strlen(html), "https://h/p.html", MI_BROWSE_MEDIA, &r) == MI_OK, "browse: repeats parse");
         CHECK(r.count == 1, "browse: the same file offered once");
         mi_browse_result_free(&r);
     }
@@ -1072,7 +1072,7 @@ static void test_browse_parse(void) {
     {
         const char *html = "<a href=\"../../../../etc/passwd.mp4\">x</a>";
         mi_browse_result r;
-        CHECK(mi_browse_parse(html, strlen(html), "https://h/a/b/c.html", &r) == MI_OK, "browse: dotdot parses");
+        CHECK(mi_browse_parse(html, strlen(html), "https://h/a/b/c.html", MI_BROWSE_MEDIA, &r) == MI_OK, "browse: dotdot parses");
         CHECK(r.count == 1, "browse: the dotdot link is still offered");
         CHECK(url_of(&r, "passwd.mp4") &&
                   !strcmp(url_of(&r, "passwd.mp4"), "https://h/etc/passwd.mp4"),
@@ -1086,7 +1086,7 @@ static void test_browse_parse(void) {
             "{\"items\":[{\"url\":\"/v/one.mp4\",\"size\":1234},"
             "{\"file\":\"two.mp3\"},{\"nope\":\"three.txt\"}]}";
         mi_browse_result r;
-        CHECK(mi_browse_parse(json, strlen(json), "https://h/list", &r) == MI_OK, "browse: json parses");
+        CHECK(mi_browse_parse(json, strlen(json), "https://h/list", MI_BROWSE_MEDIA, &r) == MI_OK, "browse: json parses");
         CHECK(url_of(&r, "one.mp4") && !strcmp(url_of(&r, "one.mp4"), "https://h/v/one.mp4"),
               "browse: a json url is resolved");
         CHECK(has(&r, "two.mp3"), "browse: the `file` key is understood");
@@ -1103,7 +1103,7 @@ static void test_browse_parse(void) {
     {
         const char *html = "<a href=\"Six_weeks_old_cat_%28aka%29.jpg\">x</a>";
         mi_browse_result r;
-        mi_browse_parse(html, strlen(html), "https://h/", &r);
+        mi_browse_parse(html, strlen(html), "https://h/", MI_BROWSE_MEDIA, &r);
         CHECK(has(&r, "Six_weeks_old_cat_(aka).jpg"),
               "browse: a percent-encoded name is decoded");
         mi_browse_result_free(&r);
@@ -1113,8 +1113,76 @@ static void test_browse_parse(void) {
     {
         const char *html = "<html><body><p>Nothing here.</p></body></html>";
         mi_browse_result r;
-        CHECK(mi_browse_parse(html, strlen(html), "https://h/", &r) == MI_OK, "browse: empty page is ok");
+        CHECK(mi_browse_parse(html, strlen(html), "https://h/", MI_BROWSE_MEDIA, &r) == MI_OK, "browse: empty page is ok");
         CHECK(r.count == 0, "browse: no media means no items");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- The "everything" filter reads the page as a browser shows it. The
+     * same markup that yields one media file in media mode should yield the
+     * links, the stylesheet and the framed document too. --- */
+    {
+        const char *html =
+            "<html><head><title>Docs</title>"
+            "<link rel=\"stylesheet\" href=\"/style.css\">"
+            "<link rel=\"icon\" href=\"/favicon.ico\"></head><body>"
+            "<nav><a href=\"/about\">About us</a> <a href=\"guide.html\">Guide</a></nav>"
+            "<a href=\"clip.mp4\">A clip</a>"
+            "<a href=\"archive.zip\">Download</a>"
+            "<iframe src=\"https://player.example/embed\"></iframe>"
+            "<a href=\"/\">Home</a>"
+            "</body></html>";
+        mi_browse_result media, all;
+        mi_browse_parse(html, strlen(html), "https://site.example/docs/", MI_BROWSE_MEDIA, &media);
+        mi_browse_parse(html, strlen(html), "https://site.example/docs/", MI_BROWSE_ALL, &all);
+
+        /* Media mode is unchanged: only the clip is something to play. */
+        CHECK(media.count == 1 && url_of(&media, "clip.mp4") != NULL,
+              "browse: media mode still keeps only media");
+
+        /* Everything mode keeps the page's structure. */
+        CHECK(url_of(&all, "about") && !strcmp(url_of(&all, "about"), "https://site.example/about"),
+              "browse all: a link to another page is listed");
+        CHECK(url_of(&all, "guide.html"), "browse all: a relative page link is listed");
+        CHECK(has(&all, "style.css"), "browse all: a stylesheet is listed");
+        CHECK(has(&all, "favicon.ico"), "browse all: the icon is listed");
+        CHECK(has(&all, "archive.zip"), "browse all: a non-media download is listed");
+        CHECK(has(&all, "embed"), "browse all: a framed document is listed");
+        /* The site root has no final segment; it is still a place to go. */
+        CHECK(url_of(&all, "index") && !strcmp(url_of(&all, "index"), "https://site.example/"),
+              "browse all: the site root is listed");
+        CHECK(all.count > media.count, "browse all: more is listed than media alone");
+
+        /* The link text is carried, so a listing reads like the page. */
+        const char *about_title = NULL;
+        for (size_t i = 0; i < all.count; i++) {
+            if (!strcmp(all.items[i].filename, "about")) about_title = all.items[i].title;
+        }
+        CHECK(about_title && !strcmp(about_title, "About us"),
+              "browse all: the link text is carried as the title");
+
+        mi_browse_result_free(&media);
+        mi_browse_result_free(&all);
+    }
+
+    /* --- Nested markup inside a link does not lose or truncate its text. --- */
+    {
+        const char *html = "<a href=\"x.mp4\"><span>Clip</span> <b>one</b></a>";
+        mi_browse_result r;
+        mi_browse_parse(html, strlen(html), "https://h/", MI_BROWSE_ALL, &r);
+        CHECK(r.count == 1, "browse: the nested link is offered");
+        CHECK(r.count == 1 && r.items[0].title && !strcmp(r.items[0].title, "Clip one"),
+              "browse: nested markup is stripped and the text joined");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- An anchor with no text still yields the URL, just no label. --- */
+    {
+        const char *html = "<a href=\"only.mp4\"></a>";
+        mi_browse_result r;
+        mi_browse_parse(html, strlen(html), "https://h/", MI_BROWSE_ALL, &r);
+        CHECK(r.count == 1 && r.items[0].title == NULL,
+              "browse: a link with no text is listed without a title");
         mi_browse_result_free(&r);
     }
 }

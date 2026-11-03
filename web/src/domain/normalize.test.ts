@@ -257,8 +257,8 @@ describe('normalizeBrowseResult', () => {
     url: 'https://host.example/media/',
     title: 'My Gallery',
     items: [
-      { url: 'https://host.example/media/clip.mp4', filename: 'clip.mp4', mime: 'video/mp4', bytes: 1234 },
-      { url: 'https://host.example/media/photo.png', filename: 'photo.png', mime: 'image/png', bytes: -1 },
+      { url: 'https://host.example/media/clip.mp4', filename: 'clip.mp4', title: 'A clip', mime: 'video/mp4', bytes: 1234 },
+      { url: 'https://host.example/media/photo.png', filename: 'photo.png', title: null, mime: 'image/png', bytes: -1 },
     ],
     count: 2,
     ...patch,
@@ -271,7 +271,8 @@ describe('normalizeBrowseResult', () => {
     expect(r.title).toBe('My Gallery');
     const clip = r.items[0]!;
     expect(clip.filename).toBe('clip.mp4');
-    expect(clip.title).toBe('clip');
+    // The link text wins over the filename: it is what the page calls it.
+    expect(clip.title).toBe('A clip');
     expect(clip.kind).toBe('video');
     expect(clip.bytes).toBe(1234);
     // The page a person would visit is the listing itself.
@@ -283,8 +284,8 @@ describe('normalizeBrowseResult', () => {
     const r = normalizeBrowseResult(
       wire({
         items: [
-          { url: 'https://h/a.bin', filename: 'a.mp3', mime: '', bytes: -1 },
-          { url: 'https://h/b', filename: 'b', mime: 'image/png', bytes: -1 },
+          { url: 'https://h/a.bin', filename: 'a.mp3', title: null, mime: '', bytes: -1 },
+          { url: 'https://h/b', filename: 'b', title: null, mime: 'image/png', bytes: -1 },
         ],
         count: 2,
       }),
@@ -297,14 +298,24 @@ describe('normalizeBrowseResult', () => {
     const r = normalizeBrowseResult(
       wire({
         items: [
-          { url: '', filename: 'x.mp4', mime: '', bytes: 5 },
-          { url: 'https://h/ok.mp4', filename: 'ok.mp4', mime: '', bytes: -1 },
+          { url: '', filename: 'x.mp4', title: null, mime: '', bytes: 5 },
+          { url: 'https://h/ok.mp4', filename: 'ok.mp4', title: null, mime: '', bytes: -1 },
         ],
         count: 2,
       }),
     );
     expect(r.items).toHaveLength(1);
     expect(r.items[0]!.bytes).toBe(-1);
+  });
+
+  it('falls back to the filename when the page gave no link text', () => {
+    const r = normalizeBrowseResult(
+      wire({
+        items: [{ url: 'https://h/thing.mp4', filename: 'thing.mp4', title: null, mime: '', bytes: -1 }],
+        count: 1,
+      }),
+    );
+    expect(r.items[0]!.title).toBe('thing');
   });
 
   it('handles a missing title and a missing item list', () => {

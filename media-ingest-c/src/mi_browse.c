@@ -239,6 +239,7 @@ void mi_browse_result_free(mi_browse_result *res) {
     for (size_t i = 0; i < res->count; i++) {
         free(res->items[i].url);
         free(res->items[i].filename);
+        free(res->items[i].title);
         free(res->items[i].mime);
     }
     free(res->items);
@@ -257,11 +258,15 @@ static int already_have(const mi_browse_result *out, const char *url) {
 
 /*
  * Offer a reference for the list. `base` resolves it; `size_hint` is -1 when the
- * source did not say. Everything that is not a media-looking URL is dropped, so
- * the caller can hand over raw attributes without pre-filtering.
+ * source did not say; `title` is the link text, when there was one.
+ *
+ * Under MI_BROWSE_MEDIA anything that is not a media-looking URL is dropped, so
+ * the caller can hand over raw attributes without pre-filtering. Under
+ * MI_BROWSE_ALL everything is kept, which is what makes a listing read like the
+ * page does.
  */
 static void offer(mi_browse_result *out, const char *base, const char *ref,
-                  int64_t size_hint) {
+                  const char *title, int64_t size_hint, mi_browse_filter filter) {
     if (out->count >= MAX_ITEMS) return;
     if (!ref || strlen(ref) > MAX_URL) return;
 
@@ -274,11 +279,18 @@ static void offer(mi_browse_result *out, const char *base, const char *ref,
 
     char *name = basename_of(abs);
     if (!name || !*name) {
+        /* No final segment: a directory or the site root. There is nothing to
+         * name the file after, so media mode drops it. Everything mode keeps it
+         * — it is a real place to go — under a placeholder that says so. */
+        if (filter != MI_BROWSE_ALL) {
+            free(name);
+            free(abs);
+            return;
+        }
         free(name);
-        free(abs);
-        return;
+        name = mi_strdup("index");
     }
-    if (!is_media_name(name)) {
+    if (filter != MI_BROWSE_ALL && !is_media_name(name)) {
         free(name);
         free(abs);
         return;
@@ -299,6 +311,7 @@ static void offer(mi_browse_result *out, const char *base, const char *ref,
     mi_browse_item *it = &out->items[out->count++];
     it->url = abs;
     it->filename = name;
+    it->title = title && *title ? mi_strdup(title) : NULL;
     it->mime = mi_strdup(mime_for_name(name));
     it->bytes = size_hint;
 }
@@ -411,9 +424,74 @@ static char *extract_title(const char *body, size_t len) {
     return title;
 }
 
+/* The text between a tag's `>` and its matching close tag, as a person would
+ * read it. Only used for anchors, where it is the name of the destination.
+ * Allocated, or NULL when there is nothing usable. */
+static char *link_text(const char *from, const char *end, const char *tagname) {
+    size_t nlen = strlen(tagname);
+    size_t close_len = nlen + 3; /* "</a>" */
+    /* Find the matching close tag, so a nested element does not cut it short. */
+    const char *close = NULL;
+    for (const char *q = from; q < end; q++) {
+        if (*q != '<') continue;
+        if (q + close_len <= end && q[1] == '/' && !strncasecmp(q + 2, tagname, nlen)) {
+            close = q;
+            break;
+        }
+        /* Another opening tag of the same kind means the first was not closed;
+         * stop rather than swallowing the rest of the page. */
+        if (q + 1 + nlen <= end && !strncasecmp(q + 1, tagname, nlen)) break;
+    }
+    if (!close || close <= from) return NULL;
+
+    /* Strip any nested markup, then collapse whitespace and decode entities. */
+    char *raw = mi_strndup(from, (size_t)(close - from));
+    if (!raw) return NULL;
+    char *w = raw;
+    int in_tag = 0;
+    for (char *r = raw; *r; r++) {
+        if (*r == '<') {
+            in_tag = 1;
+            continue;
+        }
+        if (*r == '>') {
+            in_tag = 0;
+            continue;
+        }
+        if (!in_tag) *w++ = *r;
+    }
+    *w = '\0';
+
+    char *trimmed = raw;
+    while (*trimmed && isspace((unsigned char)*trimmed)) trimmed++;
+    char *out = mi_strdup(trimmed);
+    free(raw);
+    if (!out) return NULL;
+    w = out;
+    int space = 0;
+    for (char *r = out; *r; r++) {
+        if (isspace((unsigned char)*r)) {
+            space = 1;
+            continue;
+        }
+        if (space && w != out) *w++ = ' ';
+        space = 0;
+        *w++ = *r;
+    }
+    *w = '\0';
+    decode_entities_inplace(out);
+    /* Cap it: link text is a label, not a paragraph. */
+    if (strlen(out) > 120) out[120] = '\0';
+    if (!*out) {
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
 /* Walk the tags and pull the references out of the attributes that carry them. */
 static void parse_html(const char *body, size_t len, const char *base,
-                       mi_browse_result *out) {
+                       mi_browse_filter filter, mi_browse_result *out) {
     const char *p = body;
     const char *end = body + len;
 
@@ -438,8 +516,10 @@ static void parse_html(const char *body, size_t len, const char *base,
             while (*name == '/') name++;
 
             const char *attrs[] = {NULL, NULL, NULL, NULL};
+            int is_anchor = 0;
             if (!strcasecmp(name, "a") || !strcasecmp(name, "area")) {
                 attrs[0] = "href";
+                is_anchor = 1;
             } else if (!strcasecmp(name, "img")) {
                 attrs[0] = "src";
                 attrs[1] = "data-src";
@@ -451,15 +531,22 @@ static void parse_html(const char *body, size_t len, const char *base,
                 attrs[1] = "poster";
             } else if (!strcasecmp(name, "link")) {
                 attrs[0] = "href";
+            } else if (!strcasecmp(name, "iframe") || !strcasecmp(name, "embed")) {
+                /* A framed document is part of the page a browser shows. */
+                attrs[0] = "src";
             }
+
+            /* The link text is what the destination is called on the page. */
+            char *text = is_anchor ? link_text(gt + 1, end, name) : NULL;
 
             for (size_t i = 0; attrs[i]; i++) {
                 char *v = attr_value(tag, tag_len, attrs[i]);
                 if (v) {
-                    offer(out, base, v, -1);
+                    offer(out, base, v, text, -1, filter);
                     free(v);
                 }
             }
+            free(text);
             free(tag_name);
         }
         p = gt + 1;
@@ -492,7 +579,8 @@ static const char *url_from(const mi_json *obj) {
 
 /* Walk a JSON listing. An array, or an object with an array of entries under a
  * common key, is what every listing looks like in practice. */
-static void parse_json(const mi_json *doc, const char *base, mi_browse_result *out) {
+static void parse_json(const mi_json *doc, const char *base, mi_browse_filter filter,
+                       mi_browse_result *out) {
     if (!doc) return;
 
     if (doc->type == MI_JSON_ARRAY) {
@@ -500,7 +588,9 @@ static void parse_json(const mi_json *doc, const char *base, mi_browse_result *o
             const mi_json *entry = doc->items[i];
             if (entry && entry->type == MI_JSON_OBJECT) {
                 const char *u = url_from(entry);
-                if (u) offer(out, base, u, size_from(entry));
+                /* A listing often names its entries; carry that through. */
+                const char *name = mi_json_get_string(entry, "name", NULL);
+                if (u) offer(out, base, u, name, size_from(entry), filter);
             }
         }
         return;
@@ -511,7 +601,7 @@ static void parse_json(const mi_json *doc, const char *base, mi_browse_result *o
         for (size_t i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++) {
             const mi_json *arr = mi_json_get(doc, KEYS[i]);
             if (arr && arr->type == MI_JSON_ARRAY) {
-                parse_json(arr, base, out);
+                parse_json(arr, base, filter, out);
                 return;
             }
         }
@@ -532,13 +622,13 @@ static int looks_like_html(const char *body, size_t len) {
 }
 
 int mi_browse_parse(const char *body, size_t len, const char *base,
-                    mi_browse_result *out) {
+                    mi_browse_filter filter, mi_browse_result *out) {
     if (!body || !base || !out) return MI_ERR_ARG;
     result_init(out);
 
     if (looks_like_html(body, len)) {
         out->title = extract_title(body, len);
-        parse_html(body, len, base, out);
+        parse_html(body, len, base, filter, out);
         return MI_OK;
     }
 
@@ -546,13 +636,14 @@ int mi_browse_parse(const char *body, size_t len, const char *base,
      * failure, because "nothing here" is a real answer for a page with no media. */
     mi_json *doc = mi_json_parse(body);
     if (doc) {
-        parse_json(doc, base, out);
+        parse_json(doc, base, filter, out);
         mi_json_value_free(doc);
     }
     return MI_OK;
 }
 
-int mi_browse_url(const char *url, const char *user_agent, mi_browse_result *out) {
+int mi_browse_url(const char *url, const char *user_agent, mi_browse_filter filter,
+                  mi_browse_result *out) {
     if (!url || !out) return MI_ERR_ARG;
     result_init(out);
 
@@ -570,7 +661,7 @@ int mi_browse_url(const char *url, const char *user_agent, mi_browse_result *out
     /* Extract against the URL as given: redirects are followed by the fetcher,
      * and a relative link on the page is relative to what the browser would
      * have shown, which is the final URL. */
-    int rc = mi_browse_parse(body, strlen(body), url, out);
+    int rc = mi_browse_parse(body, strlen(body), url, filter, out);
     free(body);
     return rc;
 }

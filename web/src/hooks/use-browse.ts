@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useMediaApi } from './provider';
 import { queryKeys } from './query-keys';
 import { searchCommons } from '../rest/browse';
-import type { BrowseKind, BrowseResult } from '../domain/browse';
+import type { BrowseFilter, BrowseKind, BrowseResult } from '../domain/browse';
 
 export interface UseBrowseArgs {
   term: string;
@@ -40,13 +40,13 @@ export function useBrowse({ term, kind, page, perPage = 24 }: UseBrowseArgs) {
  * an arbitrary host, while the engine can. Nothing is enabled until the URL
  * looks like an absolute one, so a half-typed address makes no request.
  */
-export function useBrowseUrl(url: string | null) {
+export function useBrowseUrl(url: string | null, filter: BrowseFilter = 'media') {
   const { api } = useMediaApi();
   const trimmed = (url ?? '').trim();
   const isAbsolute = /^https?:\/\/\S+$/i.test(trimmed);
   return useQuery<BrowseResult>({
-    queryKey: queryKeys.browseUrl(trimmed),
-    queryFn: ({ signal }) => api.browse.listFromUrl(trimmed, signal),
+    queryKey: queryKeys.browseUrl(trimmed, filter),
+    queryFn: ({ signal }) => api.browse.listFromUrl(trimmed, filter, signal),
     enabled: isAbsolute,
     staleTime: 5 * 60_000,
     retry: 0,

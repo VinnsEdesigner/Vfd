@@ -133,6 +133,43 @@ describe('browse resource', () => {
       await new Promise<void>((r) => server.close(() => r()));
     }
   });
+
+  it('lists the whole page when the "all" filter is asked for', async () => {
+    const { createServer } = await import('node:http');
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(
+        '<html><head><title>A site</title><link rel="stylesheet" href="/style.css"></head><body>' +
+          '<a href="/about">About us</a>' +
+          '<a href="clip.mp4">A clip</a>' +
+          '</body></html>',
+      );
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    const base = `http://127.0.0.1:${port}/`;
+
+    try {
+      const media = await api.browse.listFromUrl(base);
+      const all = await api.browse.listFromUrl(base, 'all');
+
+      // Media only: the clip, and nothing else.
+      expect(media.items.map((i) => i.filename)).toEqual(['clip.mp4']);
+      // Everything: the page's own links and assets too, which is the point —
+      // the site can be read as a browser shows it.
+      const allNames = all.items.map((i) => i.filename);
+      expect(allNames).toContain('about');
+      expect(allNames).toContain('style.css');
+      expect(allNames).toContain('clip.mp4');
+      expect(all.items.length).toBeGreaterThan(media.items.length);
+
+      // The link text travels, so the listing reads like the page.
+      expect(all.items.find((i) => i.filename === 'about')?.title).toBe('About us');
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
 });
 
 describe('media resource', () => {

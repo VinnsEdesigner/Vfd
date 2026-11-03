@@ -508,7 +508,7 @@ describe('useBrowseUrl', () => {
     // browser fetching an arbitrary site, and the engine is allowed to.
     const post = calls.find((c) => c.method === 'POST');
     expect(post?.url).toContain('/api/v1/browse');
-    expect(post?.body).toEqual({ url: 'https://host.example/media/' });
+    expect(post?.body).toMatchObject({ url: 'https://host.example/media/' });
     expect(result.current.data?.items[0]?.filename).toBe('clip.mp4');
     expect(result.current.data?.title).toBe('A Gallery');
   });
@@ -543,6 +543,47 @@ describe('useBrowseUrl', () => {
       wrapper: wrapper(fetchImpl),
     });
     await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+
+  it('asks for media only by default', async () => {
+    const { fetchImpl, calls } = makeFetch({ 'POST /api/v1/browse': () => listing });
+    const { result } = renderHook(() => useBrowseUrl('https://host.example/media/'), {
+      wrapper: wrapper(fetchImpl),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(calls.find((c) => c.method === 'POST')?.body).toEqual({
+      url: 'https://host.example/media/',
+      filter: 'media',
+    });
+  });
+
+  it('asks for everything on the page when that filter is chosen', async () => {
+    const { fetchImpl, calls } = makeFetch({ 'POST /api/v1/browse': () => listing });
+    const { result } = renderHook(() => useBrowseUrl('https://host.example/media/', 'all'), {
+      wrapper: wrapper(fetchImpl),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({ filter: 'all' });
+  });
+
+  it('uses the link text as the item title when the page named it', async () => {
+    const { fetchImpl } = makeFetch({
+      'POST /api/v1/browse': () => ({
+        json: {
+          url: 'https://site.example/',
+          title: 'A site',
+          items: [
+            { url: 'https://site.example/about', filename: 'about', title: 'About us', mime: '', bytes: -1 },
+          ],
+          count: 1,
+        },
+      }),
+    });
+    const { result } = renderHook(() => useBrowseUrl('https://site.example/', 'all'), {
+      wrapper: wrapper(fetchImpl),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.items[0]?.title).toBe('About us');
   });
 });
 

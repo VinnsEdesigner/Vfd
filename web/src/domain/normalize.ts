@@ -173,7 +173,9 @@ export function normalizeBrowseResult(w: WireBrowseResult): BrowseResult {
           const filename = i.filename && i.filename.trim() ? i.filename : nameFromUrl(i.url);
           return {
             id: i.url,
-            title: filename.replace(/\.[a-z0-9]{1,5}$/i, '') || filename,
+            // The link text is what the page calls it, so it reads better than
+            // the filename; fall back to the filename without its extension.
+            title: i.title?.trim() || filename.replace(/\.[a-z0-9]{1,5}$/i, '') || filename,
             source: page ? hostOf(page) : 'the web',
             pageUrl: page || null,
             kind: browseKindFor(i.mime ?? '', filename),

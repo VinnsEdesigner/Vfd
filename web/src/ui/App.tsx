@@ -67,6 +67,7 @@ import {
   useMediaApi,
   isApiError,
   isNetworkError,
+  type BrowseFilter,
   type BrowseItem,
   type BrowseKind,
 } from '../hooks';
@@ -184,6 +185,8 @@ export function App({ initialView = 'overview' }: AppProps) {
   const [browseUrl, setBrowseUrl] = useState('');
   /** The URL actually submitted, so typing does not fire a request per keystroke. */
   const [browseUrlSubmitted, setBrowseUrlSubmitted] = useState<string | null>(null);
+  /** How much of a URL's page to list: only media, or everything on it. */
+  const [browseFilter, setBrowseFilter] = useState<BrowseFilter>('media');
   const [browseQueueingId, setBrowseQueueingId] = useState<string | null>(null);
   /** A browse result being previewed, if any. */
   const [browsePreview, setBrowsePreview] = useState<BrowseItem | null>(null);
@@ -227,7 +230,7 @@ export function App({ initialView = 'overview' }: AppProps) {
   const capabilities = capabilitiesQuery.data ?? null;
   const setStorageLocation = useSetStorageLocation();
   const browseQuery = useBrowse({ term: browseTerm, kind: browseKind, page: browsePage });
-  const browseUrlQuery = useBrowseUrl(browseUrlSubmitted);
+  const browseUrlQuery = useBrowseUrl(browseUrlSubmitted, browseFilter);
   const createDownload = useCreateDownload();
   const cancelDownload = useCancelDownload();
   const probeUrl = useProbe();
@@ -1188,6 +1191,8 @@ export function App({ initialView = 'overview' }: AppProps) {
             onSourceUrlChange={setBrowseUrl}
             onReadUrl={() => setBrowseUrlSubmitted(browseUrl.trim())}
             sourceTitle={browseUrlQuery.data?.title ?? null}
+            filter={browseFilter}
+            onFilterChange={setBrowseFilter}
           />
         )}
 

@@ -89,10 +89,12 @@ export interface WireProbeRequest {
   duration_seconds?: number;
 }
 
-/** One media reference the engine found on a page. */
+/** One reference the engine found on a page. */
 export interface WireBrowseItem {
   url: string;
   filename: string;
+  /** The link text, when the reference was an anchor. Null otherwise. */
+  title: string | null;
   mime: string;
   /** -1 when the source did not say. */
   bytes: number;
@@ -104,6 +106,8 @@ export interface WireBrowseResult {
   title: string | null;
   items: WireBrowseItem[];
   count: number;
+  /** Which filter produced this listing. */
+  filter?: string;
 }
 
 export interface WireDeleteResult {

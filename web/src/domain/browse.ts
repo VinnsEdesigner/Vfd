@@ -52,6 +52,16 @@ export interface BrowseQuery {
   perPage: number;
 }
 
+/**
+ * How much of a page to list.
+ *
+ *   media  only what this app can play or show — the default.
+ *   all    every reference, the way a browser sees the page: links to other
+ *          pages, stylesheets, archives. This is reading a site, not hunting
+ *          for a file to play.
+ */
+export type BrowseFilter = 'media' | 'all';
+
 export interface BrowseResult {
   items: BrowseItem[];
   /** Total the source reports, when it says. -1 when unknown. */
