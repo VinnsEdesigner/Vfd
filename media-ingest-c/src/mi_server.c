@@ -1873,6 +1873,84 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         return;
     }
 
+    /* GET /api/v1/page?url=… — the fetched bytes of a page, to be shown.
+     *
+     * The console cannot fetch an arbitrary site itself (CORS), so the engine
+     * does, and the console renders the result. The response says whether the
+     * site permits being framed: a browser enforces X-Frame-Options and CSP
+     * frame-ancestors on the framed document, so a site that refuses is
+     * reported rather than left as a blank frame the user cannot explain. */
+    if (!strcmp(req->path, "/api/v1/page") && !strcmp(req->method, "GET")) {
+        const char *url = NULL;
+        const char *q = strstr(req->query, "url=");
+        char *decoded = NULL;
+        if (q) {
+            decoded = percent_decode(q + 4, strlen(q + 4));
+            url = decoded;
+        }
+        if (!url || !*url) {
+            free(decoded);
+            send_error(fd, 400, "Bad Request", "missing 'url'", cors);
+            return;
+        }
+        if (strncasecmp(url, "http://", 7) != 0 && strncasecmp(url, "https://", 8) != 0) {
+            free(decoded);
+            send_error(fd, 400, "Bad Request", "url must be http or https", cors);
+            return;
+        }
+
+        mi_download_config cfg;
+        mi_download_config_init(&cfg);
+        cfg.require_media = 0;
+        cfg.user_agent = srv->cfg.user_agent;
+        mi_fetch_info info;
+        char *body = mi_download_fetch_document(&cfg, url, 4 * 1024 * 1024, &info);
+        free(decoded);
+        if (!body) {
+            mi_fetch_info_free(&info);
+            send_error(fd, 502, "Bad Gateway", "could not fetch that page", cors);
+            return;
+        }
+
+        /* The frame refusal travels as a header the console can read without
+         * parsing the body, and as a value a proxy would not strip. */
+        char extra[512];
+        extra[0] = '\0';
+        if (!info.framable) {
+            snprintf(extra, sizeof extra, "X-Vyzorix-Framable: no\r\nX-Vyzorix-Frame-Blocker: %s\r\n",
+                     info.frame_blocker ? info.frame_blocker : "the site's policy");
+        } else {
+            snprintf(extra, sizeof extra, "X-Vyzorix-Framable: yes\r\n");
+        }
+
+        const char *ctype = info.content_type ? info.content_type : "text/html; charset=utf-8";
+        size_t blen = strlen(body);
+        char header[2048];
+        /* The CORS headers matter here as much as anywhere: the console reads
+         * the framing header cross-origin, and an iframe needs the origin
+         * allowed too. Omitting them made the request fail in the browser while
+         * succeeding from curl, which is exactly the trap. */
+        int hn = snprintf(header, sizeof header,
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: %s\r\n"
+                          "Content-Length: %zu\r\n"
+                          "Cache-Control: no-store\r\n"
+                          "%s"
+                          "%s%s%s"
+                          "Connection: close\r\n\r\n",
+                          ctype, blen, extra,
+                          cors ? "Access-Control-Allow-Origin: " : "",
+                          cors ? cors : "",
+                          cors ? "\r\nAccess-Control-Expose-Headers: X-Vyzorix-Framable,X-Vyzorix-Frame-Blocker\r\n"
+                                 "Vary: Origin\r\n"
+                               : "");
+        send_all(fd, header, (size_t)hn);
+        send_all(fd, body, blen);
+        free(body);
+        mi_fetch_info_free(&info);
+        return;
+    }
+
     /* POST /api/v1/detect  (raw octet-stream body) */
     if (!strcmp(req->path, "/api/v1/detect") && !strcmp(req->method, "POST")) {
         mi_media_info info;

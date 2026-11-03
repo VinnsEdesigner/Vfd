@@ -62,6 +62,21 @@ export interface BrowseQuery {
  */
 export type BrowseFilter = 'media' | 'all';
 
+/**
+ * A page the engine fetched, to be shown rather than listed.
+ *
+ * `framable` is whether the site permits being embedded. A browser enforces the
+ * site's own X-Frame-Options / CSP on the framed document, so a refusal is
+ * reported up front rather than left as a frame that silently stays blank.
+ */
+export interface FetchedPage {
+  /** The URL the engine should be asked to serve the bytes from. */
+  url: string;
+  framable: boolean;
+  /** Which header refused framing, when one did. */
+  blockedBy: string | null;
+}
+
 export interface BrowseResult {
   items: BrowseItem[];
   /** Total the source reports, when it says. -1 when unknown. */

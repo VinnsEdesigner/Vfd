@@ -78,6 +78,28 @@ void mi_download_config_init(mi_download_config *cfg);
 char *mi_download_fetch_text(const mi_download_config *cfg, const char *url,
                              size_t max_bytes);
 
+/*
+ * What a fetch learned about the response, beyond its bytes.
+ *
+ * `framable` answers the one question that decides whether a page can be shown
+ * inside the console: whether the site permits being embedded. `X-Frame-Options`
+ * and a CSP `frame-ancestors` directive are the two ways a site says no, and
+ * both are read here — a browser would enforce them, and reporting the refusal
+ * up front is more useful than an embed that silently stays blank.
+ */
+typedef struct {
+    char *final_url;     /* after any redirects; NULL when unchanged */
+    char *content_type;  /* as sent; NULL when absent */
+    int framable;        /* 1 unless the response forbids framing */
+    char *frame_blocker; /* the header that forbade it, when one did */
+} mi_fetch_info;
+
+void mi_fetch_info_free(mi_fetch_info *info);
+
+/* Like mi_download_fetch_text, but also reports what the response said. */
+char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
+                                 size_t max_bytes, mi_fetch_info *info);
+
 /* Probe a URL without downloading the whole object. Returns 0/-1. */
 int mi_probe(const mi_download_config *cfg, const char *url,
              mi_download_plan *out);

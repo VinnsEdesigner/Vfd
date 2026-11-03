@@ -16,4 +16,6 @@ export const queryKeys = {
     ['browse', term.trim().toLowerCase(), kind, page, perPage] as const,
   /** A listing fetched from a URL the user typed, under a given filter. */
   browseUrl: (url: string, filter: string) => ['browse', 'url', filter, url.trim()] as const,
+  /** Whether a page may be framed, for the page viewer. */
+  pageFrame: (url: string) => ['page', 'frame', url.trim()] as const,
 };

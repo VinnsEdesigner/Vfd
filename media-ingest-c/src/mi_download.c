@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "mi_download.h"
 
+#include <ctype.h>
 #include <curl/curl.h>
 #include <errno.h>
 #include <pthread.h>
@@ -630,11 +631,98 @@ static int download_stream(const mi_download_config *cfg, const char *url,
 /* Public entry point                                                  */
 /* ------------------------------------------------------------------ */
 
-char *mi_download_fetch_text(const mi_download_config *cfg, const char *url,
-                             size_t max_bytes) {
+void mi_fetch_info_free(mi_fetch_info *info) {
+    if (!info) return;
+    free(info->final_url);
+    free(info->content_type);
+    free(info->frame_blocker);
+    memset(info, 0, sizeof *info);
+}
+
+/* Gathers the response headers a page view needs. */
+typedef struct {
+    mi_fetch_info *info;
+    char *csp; /* Content-Security-Policy, when the response carries one */
+} doc_header_ctx;
+
+static size_t header_document(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    doc_header_ctx *ctx = userdata;
+    size_t n = size * nmemb;
+    if (!ctx || !ctx->info) return n;
+
+    /* X-Frame-Options: DENY or SAMEORIGIN both forbid another origin framing
+     * this page. A value that merely whitelists some other origin also blocks
+     * us, so anything other than an absent header counts as "not framable"
+     * unless it explicitly allows everything. */
+    if (n > 17 && !strncasecmp(ptr, "X-Frame-Options:", 16)) {
+        const char *v = ptr + 16;
+        while (*v == ' ' || *v == '\t') v++;
+        if (!strncasecmp(v, "DENY", 4) || !strncasecmp(v, "SAMEORIGIN", 10) ||
+            !strncasecmp(v, "ALLOW-FROM", 10)) {
+            ctx->info->framable = 0;
+            if (!ctx->info->frame_blocker) {
+                ctx->info->frame_blocker = mi_strndup("X-Frame-Options",
+                                                      strlen("X-Frame-Options"));
+            }
+        }
+    }
+
+    /* A CSP frame-ancestors directive is the modern equivalent. Kept so the
+     * policy can be scanned once the header block ends. */
+    if (n > 25 && !strncasecmp(ptr, "Content-Security-Policy:", 24)) {
+        const char *v = ptr + 24;
+        while (*v == ' ' || *v == '\t') v++;
+        size_t len = n - (size_t)(v - ptr);
+        while (len > 0 && (v[len - 1] == '\r' || v[len - 1] == '\n')) len--;
+        free(ctx->csp);
+        ctx->csp = mi_strndup(v, len);
+    }
+
+    if (n > 13 && !strncasecmp(ptr, "Content-Type:", 13)) {
+        const char *v = ptr + 13;
+        while (*v == ' ' || *v == '\t') v++;
+        size_t len = n - (size_t)(v - ptr);
+        while (len > 0 && (v[len - 1] == '\r' || v[len - 1] == '\n')) len--;
+        free(ctx->info->content_type);
+        ctx->info->content_type = mi_strndup(v, len);
+    }
+
+    return n;
+}
+
+/* A CSP that names no frame-ancestors does not restrict framing; one that does
+ * and does not allow this app's origin blocks it. Only "none" and "self" are
+ * treated as a refusal, because a whitelist naming some other host would also
+ * block us and there is no way to know that host list is ours. */
+static int csp_forbids_framing(const char *csp) {
+    if (!csp) return 0;
+    const char *p = csp;
+    while ((p = strcasestr(p, "frame-ancestors")) != NULL) {
+        /* Ensure it is the directive, not part of a longer word. */
+        if (p > csp && (isalnum((unsigned char)p[-1]) || p[-1] == '-')) {
+            p += 15;
+            continue;
+        }
+        const char *v = p + 15;
+        while (*v == ' ' || *v == '\t') v++;
+        if (!strncasecmp(v, "'none'", 6) || !strncasecmp(v, "none", 4) ||
+            !strncasecmp(v, "'self'", 6)) {
+            return 1;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
+                                 size_t max_bytes, mi_fetch_info *info) {
+    if (info) memset(info, 0, sizeof *info);
     if (ensure_curl() != 0 || !url) return NULL;
     CURL *curl = curl_easy_init();
     if (!curl) return NULL;
+
+    doc_header_ctx hctx = {.info = info, .csp = NULL};
+    if (info) info->framable = 1;
 
     membuf b = {0};
     struct curl_slist *headers = build_headers(cfg, NULL);
@@ -642,14 +730,35 @@ char *mi_download_fetch_text(const mi_download_config *cfg, const char *url,
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_membuf);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &b);
+    if (info) {
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_document);
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &hctx);
+    }
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, cfg->timeout_seconds);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    /* Manifests are text; ask for identity so we can parse what we get. */
+    /* Ask for identity: the bytes are parsed and shown, so they must be what
+     * the site actually sent. */
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+
     CURLcode rc = curl_easy_perform(curl);
     long code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+    if (info) {
+        char *final_url = NULL;
+        curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &final_url);
+        if (final_url && strcmp(final_url, url) != 0) {
+            info->final_url = mi_strdup(final_url);
+        }
+        if (csp_forbids_framing(hctx.csp)) {
+            info->framable = 0;
+            if (!info->frame_blocker) {
+                info->frame_blocker = mi_strdup("Content-Security-Policy");
+            }
+        }
+    }
+    free(hctx.csp);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
@@ -659,6 +768,11 @@ char *mi_download_fetch_text(const mi_download_config *cfg, const char *url,
     }
     if (b.len > max_bytes) b.data[max_bytes] = '\0';
     return b.data;
+}
+
+char *mi_download_fetch_text(const mi_download_config *cfg, const char *url,
+                             size_t max_bytes) {
+    return mi_download_fetch_document(cfg, url, max_bytes, NULL);
 }
 
 void mi_download_config_init(mi_download_config *cfg) {

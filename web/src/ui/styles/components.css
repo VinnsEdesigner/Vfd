@@ -4402,6 +4402,41 @@ input[type='range']:focus-visible {
   color: #fff;
 }
 
+/* The page viewer: the site itself, in a frame, filling the content area. */
+.browse__page {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.browse__page-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.browse__page-url {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.browse__page-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+.browse__frame {
+  width: 100%;
+  height: min(72vh, 900px);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: #fff;
+}
+
 .browse__loading {
   display: flex;
   justify-content: center;

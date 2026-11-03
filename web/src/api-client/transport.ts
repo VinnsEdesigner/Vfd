@@ -19,8 +19,19 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+/** Response headers, lower-cased, from a request whose body is not JSON. */
+export type ResponseHeaders = Record<string, string>;
+
 export interface Transport {
   request<T>(options: RequestOptions): Promise<T>;
+  /**
+   * Send a request and return only its headers.
+   *
+   * For the cases where the *response metadata* is the answer and the body is
+   * either huge or not JSON — asking the engine whether a page may be framed,
+   * for instance. The body is read and discarded so the connection is released.
+   */
+  head(options: RequestOptions): Promise<ResponseHeaders>;
   /** Resolve a path to an absolute URL (for links shown in the UI). */
   resolve(path: string): string;
 }
@@ -106,6 +117,35 @@ export function createTransport(config: TransportConfig): Transport {
       const text = await res.text();
       if (!text) return undefined as T;
       return JSON.parse(text) as T;
+    },
+
+    async head(options: RequestOptions): Promise<ResponseHeaders> {
+      const url = `${base}${options.path}${buildQuery(options.query)}`;
+      const headers: Record<string, string> = { ...config.defaultHeaders, ...options.headers };
+      if (config.authToken) headers['Authorization'] = `Bearer ${config.authToken}`;
+
+      let res: Response;
+      try {
+        res = await fetchImpl(url, {
+          method: options.method ?? 'GET',
+          headers,
+          signal: options.signal,
+        });
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
+        throw new NetworkError(`network request to ${options.path} failed`, cause);
+      }
+
+      if (!res.ok) await parseError(res);
+
+      const out: ResponseHeaders = {};
+      res.headers.forEach((value, key) => {
+        out[key.toLowerCase()] = value;
+      });
+      // Read and discard the body, so the connection is not left dangling. A
+      // body that is huge or not text must not be parsed here.
+      await res.arrayBuffer().catch(() => undefined);
+      return out;
     },
   };
 }

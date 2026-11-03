@@ -59,9 +59,16 @@ export interface BrowsePageProps {
   /** How much of the page to list. */
   filter: BrowseFilter;
   onFilterChange: (filter: BrowseFilter) => void;
+
+  /** Where the engine will serve the page bytes from, for the frame. */
+  frameUrl: string;
+  /** Whether the site permits being shown here; null while unknown. */
+  framable: boolean | null;
+  /** Which header refused framing, when one did. */
+  frameBlocker: string | null;
 }
 
-export type BrowseMode = 'search' | 'url';
+export type BrowseMode = 'search' | 'url' | 'page';
 
 const KIND_FILTERS: ReadonlyArray<{ id: BrowseKind | 'all'; label: string }> = [
   { id: 'all', label: 'Everything' },
@@ -115,13 +122,23 @@ export function BrowsePage(props: BrowsePageProps) {
     sourceTitle,
     filter,
     onFilterChange,
+    frameUrl,
+    framable,
+    frameBlocker,
   } = props;
 
   const debounced = useDebounced(term, 350);
   const searching = term.trim() !== debounced.trim();
   const byUrl = mode === 'url';
+  const byPage = mode === 'page';
 
   const subtitle = useMemo(() => {
+    if (byPage) {
+      if (!sourceUrl.trim()) return 'View a page as a browser would — the engine fetches it, so nothing is bound by CORS';
+      if (framable === null) return 'Fetching…';
+      if (framable === false) return 'That site refuses to be shown inside another page';
+      return sourceUrl.trim();
+    }
     if (byUrl) {
       if (!sourceUrl.trim()) return 'Read a page or directory you choose — its media is listed, nothing is fetched';
       if (loading) return 'Reading that page…';
@@ -136,7 +153,7 @@ export function BrowsePage(props: BrowsePageProps) {
     if (items.length === 0) return `No results for “${term.trim()}”`;
     const totalLabel = total > 0 ? ` of about ${total.toLocaleString()}` : '';
     return `${items.length}${totalLabel} result${items.length === 1 ? '' : 's'} for “${term.trim()}”`;
-  }, [byUrl, sourceUrl, sourceTitle, term, loading, error, items.length, total]);
+  }, [byPage, framable, byUrl, sourceUrl, sourceTitle, term, loading, error, items.length, total]);
 
   const empty = byUrl
     ? sourceUrl.trim()
@@ -150,12 +167,15 @@ export function BrowsePage(props: BrowsePageProps) {
 
   return (
     <>
-      <Card title={byUrl ? 'Browse a URL' : 'Browse open media'} subtitle={subtitle}>
+      <Card
+        title={byPage ? 'View a page' : byUrl ? 'Browse a URL' : 'Browse open media'}
+        subtitle={subtitle}
+      >
         <div className="browse__modes" role="group" aria-label="Where to browse">
           <button
             type="button"
-            className={!byUrl ? 'browse__mode is-active' : 'browse__mode'}
-            aria-pressed={!byUrl}
+            className={mode === 'search' ? 'browse__mode is-active' : 'browse__mode'}
+            aria-pressed={mode === 'search'}
             onClick={() => onModeChange('search')}
           >
             Search open media
@@ -168,17 +188,29 @@ export function BrowsePage(props: BrowsePageProps) {
           >
             Read a URL
           </button>
+          <button
+            type="button"
+            className={byPage ? 'browse__mode is-active' : 'browse__mode'}
+            aria-pressed={byPage}
+            onClick={() => onModeChange('page')}
+          >
+            View a page
+          </button>
         </div>
 
-        {byUrl ? (
+        {byUrl || byPage ? (
           <div className="browse__controls">
             <div className="browse__search">
               <Field
                 label="Address"
                 value={sourceUrl}
                 onChange={onSourceUrlChange}
-                placeholder="https://example.com/media/"
-                hint="A page or directory listing. The engine reads it, so nothing is fetched by this browser and no CORS rule applies."
+                placeholder="https://example.com/"
+                hint={
+                  byPage
+                    ? 'The page is fetched by the engine and shown here. A site that forbids being embedded cannot be shown, and says so.'
+                    : 'A page or directory listing. The engine reads it, so nothing is fetched by this browser and no CORS rule applies.'
+                }
               />
             </div>
             <Button
@@ -187,7 +219,7 @@ export function BrowsePage(props: BrowsePageProps) {
               loading={loading}
               disabled={!/^https?:\/\/\S+$/i.test(sourceUrl.trim())}
             >
-              <IconSearch /> Read
+              <IconSearch /> {byPage ? 'Show' : 'Read'}
             </Button>
           </div>
         ) : (
@@ -240,7 +272,7 @@ export function BrowsePage(props: BrowsePageProps) {
             list of files, so it is not offered there. Rendered conditionally
             rather than with `hidden`, because a `display: flex` class rule wins
             over the `[hidden]` attribute and it would still show. */}
-        {!byUrl && (
+        {mode === 'search' && (
         <div className="browse__kinds" role="group" aria-label="Filter by kind">
           {KIND_FILTERS.map((k) => (
             <button
@@ -257,9 +289,62 @@ export function BrowsePage(props: BrowsePageProps) {
         )}
       </Card>
 
+      {/* The page view: the site itself, in a frame, exactly as a browser would
+          show it — or a plain statement of why it cannot be shown here. */}
+      {byPage && (
+        <>
+          {!sourceUrl.trim() ? (
+            <Card>
+              <EmptyState
+                title="Paste an address to view"
+                description="The engine fetches the page and it is shown here. A site that forbids being embedded cannot be shown, and will say so."
+              />
+            </Card>
+          ) : framable === false ? (
+            <Card>
+              <EmptyState
+                title="This site does not allow being shown here"
+                description={`It refuses to be embedded in another page${
+                  frameBlocker ? ` (${frameBlocker})` : ''
+                }, which is a rule the browser enforces — not something this app can work around. Open it in a new tab instead.`}
+              />
+              <div className="browse__page-actions">
+                <a className="btn btn--primary" href={sourceUrl} target="_blank" rel="noreferrer">
+                  Open in a new tab
+                </a>
+              </div>
+            </Card>
+          ) : framable === null ? (
+            <div className="browse__loading">
+              <Spinner size="lg" />
+            </div>
+          ) : (
+            <div className="browse__page">
+              <div className="browse__page-bar">
+                <span className="browse__page-url" title={sourceUrl}>
+                  {sourceUrl}
+                </span>
+                <a className="btn btn--sm" href={sourceUrl} target="_blank" rel="noreferrer">
+                  Open in a new tab
+                </a>
+              </div>
+              <iframe
+                className="browse__frame"
+                src={frameUrl}
+                title={sourceUrl}
+                // The engine fetched these bytes; the frame only renders them.
+                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+          )}
+        </>
+      )}
+
       {error !== null && <Note className="note note--warn">{error}</Note>}
 
-      {loading && items.length === 0 ? (
+      {/* A page view shows the page; it has no result cards. */}
+      {byPage ? null : loading && items.length === 0 ? (
         <div className="browse__loading">
           <Spinner size="lg" />
         </div>

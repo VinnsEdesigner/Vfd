@@ -49,6 +49,7 @@ import {
   useCapabilities,
   useBrowse,
   useBrowseUrl,
+  usePageFrame,
   useSetStorageLocation,
   useCreateDownload,
   useCancelDownload,
@@ -231,6 +232,8 @@ export function App({ initialView = 'overview' }: AppProps) {
   const setStorageLocation = useSetStorageLocation();
   const browseQuery = useBrowse({ term: browseTerm, kind: browseKind, page: browsePage });
   const browseUrlQuery = useBrowseUrl(browseUrlSubmitted, browseFilter);
+  // Only consulted in the page mode; the query stays idle otherwise.
+  const pageFrameQuery = usePageFrame(browseMode === 'page' ? browseUrlSubmitted : null);
   const createDownload = useCreateDownload();
   const cancelDownload = useCancelDownload();
   const probeUrl = useProbe();
@@ -1193,6 +1196,17 @@ export function App({ initialView = 'overview' }: AppProps) {
             sourceTitle={browseUrlQuery.data?.title ?? null}
             filter={browseFilter}
             onFilterChange={setBrowseFilter}
+            frameUrl={
+              browseUrlSubmitted
+                ? api.page.frameUrl(browseUrlSubmitted)
+                : ''
+            }
+            framable={
+              browseMode === 'page' && browseUrlSubmitted
+                ? (pageFrameQuery.data?.framable ?? null)
+                : null
+            }
+            frameBlocker={pageFrameQuery.data?.blockedBy ?? null}
           />
         )}
 

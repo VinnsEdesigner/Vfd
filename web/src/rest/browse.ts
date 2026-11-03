@@ -21,6 +21,7 @@ import {
   type BrowseKind,
   type BrowseQuery,
   type BrowseResult,
+  type FetchedPage,
 } from '../domain/browse';
 import type { WireBrowseResult } from '../domain/wire';
 
@@ -141,6 +142,42 @@ export function createBrowseResource(client: ApiClient) {
 }
 
 export type BrowseResource = ReturnType<typeof createBrowseResource>;
+
+/**
+ * The URL the console embeds to show a page, and whether the site allows it.
+ *
+ * The bytes are served by the engine — the console cannot fetch another origin
+ * itself — and the engine reports the site's framing policy in a header, so a
+ * refusal can be explained before the frame is shown empty.
+ */
+export function createPageResource(client: ApiClient) {
+  return {
+    /** The URL to point an <iframe> at, for a given site. */
+    frameUrl(url: string): string {
+      return client.transport.resolve(
+        `/api/v1/page?url=${encodeURIComponent(url)}`,
+      );
+    },
+
+    /** Ask the engine to fetch the page and report its framing policy. */
+    async inspect(url: string, signal?: AbortSignal): Promise<FetchedPage> {
+      const headers = await client.transport.head({
+        method: 'GET',
+        path: `/api/v1/page?url=${encodeURIComponent(url)}`,
+        ...(signal ? { signal } : {}),
+      });
+      // Only the headers are wanted here: the body is the page itself, which
+      // the iframe fetches separately.
+      return {
+        url,
+        framable: headers['x-vyzorix-framable'] !== 'no',
+        blockedBy: headers['x-vyzorix-frame-blocker'] ?? null,
+      };
+    },
+  };
+}
+
+export type PageResource = ReturnType<typeof createPageResource>;
 
 /**
  * Search Commons. Returns candidates only — nothing is downloaded here.

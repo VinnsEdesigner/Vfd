@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useMediaApi } from './provider';
 import { queryKeys } from './query-keys';
 import { searchCommons } from '../rest/browse';
-import type { BrowseFilter, BrowseKind, BrowseResult } from '../domain/browse';
+import type { BrowseFilter, BrowseKind, BrowseResult, FetchedPage } from '../domain/browse';
 
 export interface UseBrowseArgs {
   term: string;
@@ -40,6 +40,26 @@ export function useBrowse({ term, kind, page, perPage = 24 }: UseBrowseArgs) {
  * an arbitrary host, while the engine can. Nothing is enabled until the URL
  * looks like an absolute one, so a half-typed address makes no request.
  */
+/**
+ * Whether a page can be shown inside the console, and where to point the frame.
+ *
+ * The engine fetches the page and reports the site's framing policy, because
+ * only the engine can fetch another origin. A site that forbids framing is
+ * reported as such rather than shown as an empty frame.
+ */
+export function usePageFrame(url: string | null) {
+  const { api } = useMediaApi();
+  const trimmed = (url ?? '').trim();
+  const isAbsolute = /^https?:\/\/\S+$/i.test(trimmed);
+  return useQuery<FetchedPage>({
+    queryKey: queryKeys.pageFrame(trimmed),
+    queryFn: ({ signal }) => api.page.inspect(trimmed, signal),
+    enabled: isAbsolute,
+    staleTime: 5 * 60_000,
+    retry: 0,
+  });
+}
+
 export function useBrowseUrl(url: string | null, filter: BrowseFilter = 'media') {
   const { api } = useMediaApi();
   const trimmed = (url ?? '').trim();
