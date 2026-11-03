@@ -15,6 +15,11 @@ import {
   requestPersistentStorage,
 } from './storage-capabilities';
 import { MemoryStore, createMediaStore } from './media-store';
+import {
+  queryDirectoryPermission,
+  requestDirectoryPermission,
+  restoreDirectory,
+} from './directory-handle-store';
 
 /** Replaces the globals the detection reads, so each case is explicit. */
 function setEnv(opts: {
@@ -148,6 +153,42 @@ describe('describeTier', () => {
 
   it('has something to say with no choice made', () => {
     expect(describeTier(undefined)).toMatch(/no storage chosen/i);
+  });
+});
+
+describe('directory handle permission', () => {
+  /** A stand-in for the structured-clone handle the browser hands back. */
+  const fakeHandle = (state: PermissionState | 'throw') => ({
+    name: 'Downloads',
+    queryPermission: async () => {
+      if (state === 'throw') throw new DOMException('nope', 'SecurityError');
+      return state;
+    },
+    requestPermission: async () => {
+      if (state === 'throw') throw new DOMException('nope', 'SecurityError');
+      return state;
+    },
+  });
+
+  it('reads permission without prompting', async () => {
+    expect(await queryDirectoryPermission(fakeHandle('granted') as never)).toBe('granted');
+    expect(await queryDirectoryPermission(fakeHandle('prompt') as never)).toBe('prompt');
+  });
+
+  it('reports unknown rather than throwing when the API is absent', async () => {
+    expect(await queryDirectoryPermission({ name: 'x' } as never)).toBe('unknown');
+  });
+
+  it('does not claim a grant when the browser refuses', async () => {
+    // requestPermission throws outside a user gesture; that must not read as
+    // success.
+    expect(await requestDirectoryPermission(fakeHandle('throw') as never)).toBe('denied');
+  });
+
+  it('restores nothing when no handle was ever stored', async () => {
+    const { handle, permission } = await restoreDirectory();
+    expect(handle).toBeNull();
+    expect(permission).toBe('unknown');
   });
 });
 

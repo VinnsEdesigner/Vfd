@@ -19,12 +19,14 @@ export interface StoragePanelProps {
   detecting: boolean;
   selected: StorageTierId;
   directoryName: string | null;
+  directoryPermission?: 'granted' | 'prompt' | 'denied' | 'unknown';
   error: string | null;
   items: ReadonlyArray<StoredItem>;
   usage: number;
   offlineStatus: string;
   busy?: boolean;
   onChoose: (tier: StorageTierId, directory?: FileSystemDirectoryHandle) => void;
+  onRegrant?: () => void;
   onRequestPersistence: () => void;
   onRefresh: () => void;
   onRemove: (id: string) => void;
@@ -36,12 +38,14 @@ export function StoragePanel({
   detecting,
   selected,
   directoryName,
+  directoryPermission = 'unknown',
   error,
   items,
   usage,
   offlineStatus,
   busy = false,
   onChoose,
+  onRegrant,
   onRequestPersistence,
   onRefresh,
   onRemove,
@@ -55,9 +59,11 @@ export function StoragePanel({
             environment={environment}
             selected={selected}
             directoryName={directoryName}
+            directoryPermission={directoryPermission}
             busy={busy || detecting}
             error={error}
             onChoose={onChoose}
+            {...(onRegrant ? { onRegrant } : {})}
             onRequestPersistence={onRequestPersistence}
             onRefresh={onRefresh}
           />

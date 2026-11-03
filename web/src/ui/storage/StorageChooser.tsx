@@ -22,11 +22,15 @@ export interface StorageChooserProps {
   environment: StorageEnvironment;
   /** The tier currently in force. */
   selected: StorageTierId;
-  /** Directory name already granted this session, if any. */
+  /** Directory name already granted, if any. */
   directoryName: string | null;
+  /** What the browser currently says about access to that directory. */
+  directoryPermission?: 'granted' | 'prompt' | 'denied' | 'unknown';
   busy?: boolean;
   error?: string | null;
   onChoose: (tier: StorageTierId, directory?: FileSystemDirectoryHandle) => void;
+  /** Re-grant a remembered folder. Must run from the click, not before it. */
+  onRegrant?: () => void;
   onRequestPersistence: () => void;
   onRefresh: () => void;
 }
@@ -52,9 +56,11 @@ export function StorageChooser({
   environment,
   selected,
   directoryName,
+  directoryPermission = 'unknown',
   busy = false,
   error = null,
   onChoose,
+  onRegrant,
   onRequestPersistence,
   onRefresh,
 }: StorageChooserProps) {
@@ -91,12 +97,31 @@ export function StorageChooser({
           {environment.standalone
             ? 'Running as an installed app.'
             : 'Running in a browser tab.'}{' '}
-          {environment.secureContext ? '' : 'This page is not on a secure connection. '}
           {environment.noneAvailable
             ? 'No local storage is available here, so downloads can only be streamed.'
             : 'This browser offers the options below.'}
         </p>
       </div>
+
+      {/* When nothing can be stored, the reason is almost always the origin, and
+          it is worth saying once at the top with the actual fix — rather than
+          repeating it inside four cards. */}
+      {environment.noneAvailable && !environment.secureContext && (
+        <div className="storchooser__blocker">
+          <strong>This page is not on a secure connection, so the browser blocks local storage.</strong>
+          <p>
+            Browsers only allow storage and offline support on HTTPS, or on{' '}
+            <code>localhost</code> / <code>127.0.0.1</code>. A plain{' '}
+            <code>http://&lt;ip-address&gt;</code> address — which is what you get
+            reaching a self-hosted engine from another device — is refused, so
+            nothing can be saved on the device.
+          </p>
+          <p>
+            To enable it, serve this page over HTTPS (a self-signed certificate is
+            enough), or reach it through <code>localhost</code> on the same device.
+          </p>
+        </div>
+      )}
 
       {estimate && (
         <div className="storchooser__usage">
@@ -156,16 +181,36 @@ export function StorageChooser({
                   )}
                   {tier.id === 'file-system-access' && tier.available && (
                     <div className="storchoice__action">
-                      <Button
-                        size="sm"
-                        variant={active ? 'default' : 'primary'}
-                        loading={granting}
-                        disabled={busy}
-                        onClick={() => void pickFolder()}
-                      >
-                        <IconFolder />
-                        {directoryName ? `Change folder (${directoryName})` : 'Choose a folder'}
-                      </Button>
+                      {/* A remembered folder that needs re-confirming gets one
+                          tap, not the whole picker again. */}
+                      {directoryName && directoryPermission !== 'granted' && onRegrant ? (
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          disabled={busy}
+                          onClick={onRegrant}
+                        >
+                          <IconFolder />
+                          Re-allow access to {directoryName}
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant={active ? 'default' : 'primary'}
+                          loading={granting}
+                          disabled={busy}
+                          onClick={() => void pickFolder()}
+                        >
+                          <IconFolder />
+                          {directoryName ? `Change folder (${directoryName})` : 'Choose a folder'}
+                        </Button>
+                      )}
+                      {directoryName && directoryPermission !== 'granted' && (
+                        <p className="storchoice__note">
+                          This folder is remembered. The browser needs you to confirm access
+                          again after a restart.
+                        </p>
+                      )}
                     </div>
                   )}
                   {tier.id === 'opfs' && tier.available && (

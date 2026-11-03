@@ -627,8 +627,13 @@ export function App({ initialView = 'overview' }: AppProps) {
   useEffect(() => {
     if (detectedOnce.current) return;
     detectedOnce.current = true;
-    void refreshLocal();
-  }, [refreshLocal]);
+    // Restore a folder granted in a previous session before detecting, so the
+    // effective tier reflects whether we can actually write through it.
+    void (async () => {
+      await localStore.restore();
+      await refreshLocal();
+    })();
+  }, [refreshLocal, localStore]);
 
   const activeTier = localStore.effectiveTier();
 
@@ -999,12 +1004,14 @@ export function App({ initialView = 'overview' }: AppProps) {
                 detecting={localStore.detecting}
                 selected={activeTier}
                 directoryName={localStore.choice?.directoryName ?? null}
+                directoryPermission={localStore.directoryPermission}
                 error={localStore.error}
                 items={localMedia.items}
                 usage={localMedia.usage}
                 offlineStatus={offlineStatus}
                 busy={busy === 'storage'}
                 onChoose={chooseStorage}
+                onRegrant={() => void localStore.regrantDirectory()}
                 onRequestPersistence={() => void localStore.requestPersistence()}
                 onRefresh={() => void refreshLocal()}
                 onRemove={(id) => void removeLocal(id)}

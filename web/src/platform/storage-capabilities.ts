@@ -139,8 +139,9 @@ const TIERS: ReadonlyArray<Omit<StorageTier, 'available' | 'unavailableReason'>>
       evictable: false,
     },
     caveats: [
-      'Chrome and Edge on desktop only.',
-      'The browser asks for permission again each session.',
+      'Chromium browsers only. Chrome for Android 132+ and desktop; not Firefox or Safari.',
+      'The folder is remembered, but the browser may ask you to re-confirm access.',
+      'Installing the app keeps the permission without asking again.',
     ],
   },
   {
@@ -216,7 +217,7 @@ export function detectStorageTiers(): StorageTier[] {
         ...t,
         available: false,
         unavailableReason:
-          'This browser has no folder picker. Chrome or Edge on desktop can do this.',
+          'This browser has no folder picker. Chrome or Edge can do this — Firefox and Safari cannot.',
       };
     }
     if (t.id === 'opfs') {

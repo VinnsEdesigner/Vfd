@@ -19,6 +19,13 @@ import {
   type StorageTier,
   type StorageTierId,
 } from '../platform/storage-capabilities';
+import {
+  forgetDirectoryHandle,
+  requestDirectoryPermission,
+  restoreDirectory,
+  saveDirectoryHandle,
+  type DirectoryPermission,
+} from '../platform/directory-handle-store';
 
 const KEY = 'vyzorix.local-storage';
 
@@ -61,8 +68,10 @@ function persist(choice: LocalStorageChoice | null): void {
 }
 
 export interface LocalStorageState {
-  /** The live directory handle, when one is held this session. */
+  /** The live directory handle, when one is held. Restored from IndexedDB. */
   directory: FileSystemDirectoryHandle | null;
+  /** What the browser says about our access to that directory right now. */
+  directoryPermission: DirectoryPermission;
   choice: LocalStorageChoice | null;
   environment: StorageEnvironment | null;
   /** True until the first detection completes. */
@@ -73,6 +82,10 @@ export interface LocalStorageState {
   refresh: () => Promise<void>;
   /** Record a choice and, for the folder tier, the handle behind it. */
   choose: (tier: StorageTierId, directory?: FileSystemDirectoryHandle) => void;
+  /** Re-grant access to a remembered folder. Must come from a user gesture. */
+  regrantDirectory: () => Promise<DirectoryPermission>;
+  /** Attempt to restore a remembered folder and report what it found. */
+  restore: () => Promise<void>;
   clear: () => void;
   /** Ask the browser to exempt this origin from eviction. */
   requestPersistence: () => Promise<boolean>;
@@ -83,6 +96,7 @@ export interface LocalStorageState {
 
 export const useLocalStorageStore = create<LocalStorageState>((set, get) => ({
   directory: null,
+  directoryPermission: 'unknown',
   choice: load(),
   environment: null,
   detecting: true,
@@ -107,12 +121,35 @@ export const useLocalStorageStore = create<LocalStorageState>((set, get) => ({
       directoryName: directory?.name ?? null,
     };
     persist(choice);
-    set({ choice, directory: directory ?? null, error: null });
+    set({
+      choice,
+      directory: directory ?? null,
+      // A freshly picked folder is granted; a tier without one has no state.
+      directoryPermission: directory ? 'granted' : 'unknown',
+      error: null,
+    });
+    // Remembered so the folder does not have to be picked again next time.
+    if (directory) void saveDirectoryHandle(directory);
+  },
+
+  restore: async () => {
+    const { handle, permission } = await restoreDirectory();
+    if (handle) set({ directory: handle, directoryPermission: permission });
+  },
+
+  regrantDirectory: async () => {
+    const handle = get().directory;
+    if (!handle) return 'unknown';
+    // Called straight from a click handler: the browser requires a gesture.
+    const permission = await requestDirectoryPermission(handle);
+    set({ directoryPermission: permission });
+    return permission;
   },
 
   clear: () => {
     persist(null);
-    set({ choice: null, directory: null });
+    void forgetDirectoryHandle();
+    set({ choice: null, directory: null, directoryPermission: 'unknown' });
   },
 
   requestPersistence: async () => {
@@ -122,12 +159,18 @@ export const useLocalStorageStore = create<LocalStorageState>((set, get) => ({
   },
 
   effectiveTier: () => {
-    const { choice, environment } = get();
+    const { choice, environment, directory, directoryPermission } = get();
     if (!choice) return 'memory';
     const tier = environment?.tiers.find((t) => t.id === choice.tier);
     // A stored choice that this device cannot honour falls back, and the UI is
     // expected to re-ask rather than write somewhere unexpected.
     if (tier && !tier.available) return 'memory';
+    // The folder tier needs a handle the browser will actually let us write
+    // through. Remembered-but-not-regranted is not usable yet.
+    if (choice.tier === 'file-system-access') {
+      if (!directory) return 'memory';
+      if (directoryPermission !== 'granted') return 'memory';
+    }
     return choice.tier;
   },
 
