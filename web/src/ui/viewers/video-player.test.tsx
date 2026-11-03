@@ -9,12 +9,93 @@
 
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { VideoPlayer } from './VideoPlayer';
+import { VideoPlayer, detectPipSupport } from './VideoPlayer';
 
 /** The control bar, whether or not it is currently showing. */
 function bar(container: HTMLElement): HTMLElement {
   return container.querySelector('.vplayer__bar') as HTMLElement;
 }
+
+describe('detectPipSupport', () => {
+  afterEach(() => {
+    // `pictureInPictureEnabled` is read-only, so restore it explicitly.
+    Object.defineProperty(document, 'pictureInPictureEnabled', {
+      configurable: true,
+      value: undefined,
+    });
+  });
+
+  const video = () => document.createElement('video');
+
+  it('reports nothing for a missing element', () => {
+    expect(detectPipSupport(null)).toBe('none');
+  });
+
+  it('reports the standard API when the document enables it', () => {
+    Object.defineProperty(document, 'pictureInPictureEnabled', {
+      configurable: true,
+      value: true,
+    });
+    const el = video();
+    (el as HTMLVideoElement & { requestPictureInPicture: () => Promise<unknown> }).requestPictureInPicture =
+      () => Promise.resolve({} as PictureInPictureWindow);
+    expect(detectPipSupport(el)).toBe('standard');
+  });
+
+  it('does not claim the standard API when the document disables it', () => {
+    // This is the mobile-Chrome case: the method may exist but the feature is off.
+    Object.defineProperty(document, 'pictureInPictureEnabled', {
+      configurable: true,
+      value: false,
+    });
+    const el = video();
+    (el as HTMLVideoElement & { requestPictureInPicture: () => Promise<unknown> }).requestPictureInPicture =
+      () => Promise.resolve({} as PictureInPictureWindow);
+    expect(detectPipSupport(el)).toBe('none');
+  });
+
+  it('reports the webkit API for Safari', () => {
+    Object.defineProperty(document, 'pictureInPictureEnabled', {
+      configurable: true,
+      value: false,
+    });
+    const el = video() as HTMLVideoElement & {
+      webkitSupportsPresentationMode: (m: string) => boolean;
+    };
+    el.webkitSupportsPresentationMode = () => true;
+    expect(detectPipSupport(el)).toBe('webkit');
+  });
+
+  it('reports nothing when webkit refuses the mode', () => {
+    Object.defineProperty(document, 'pictureInPictureEnabled', {
+      configurable: true,
+      value: false,
+    });
+    const el = video() as HTMLVideoElement & {
+      webkitSupportsPresentationMode: (m: string) => boolean;
+    };
+    el.webkitSupportsPresentationMode = () => false;
+    expect(detectPipSupport(el)).toBe('none');
+  });
+});
+
+describe('VideoPlayer picture-in-picture control', () => {
+  afterEach(() => {
+    Object.defineProperty(document, 'pictureInPictureEnabled', {
+      configurable: true,
+      value: undefined,
+    });
+  });
+
+  it('is not offered where the browser cannot do it', () => {
+    Object.defineProperty(document, 'pictureInPictureEnabled', {
+      configurable: true,
+      value: false,
+    });
+    render(<VideoPlayer src="http://x/a.mp4" />);
+    expect(screen.queryByRole('button', { name: /picture in picture/i })).toBeNull();
+  });
+});
 
 describe('VideoPlayer controls visibility', () => {
   afterEach(() => {

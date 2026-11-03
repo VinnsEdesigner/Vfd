@@ -23,6 +23,42 @@ export interface VideoPlayerProps {
 }
 
 /**
+ * How — or whether — this browser can float the video in a small window.
+ *
+ * There is no single API. Chromium and Firefox expose `requestPictureInPicture`
+ * and gate it behind `document.pictureInPictureEnabled`; Safari uses
+ * `webkitSetPresentationMode`. Mobile Chrome has none of it, so the control is
+ * hidden there rather than shown as a button that does nothing.
+ */
+export type PipSupport = 'standard' | 'webkit' | 'none';
+
+type WebkitVideo = HTMLVideoElement & {
+  webkitSupportsPresentationMode?: (mode: string) => boolean;
+  webkitSetPresentationMode?: (mode: string) => void;
+  webkitPresentationMode?: string;
+};
+
+/** Which PiP API the element supports, if any. */
+export function detectPipSupport(el: HTMLVideoElement | null): PipSupport {
+  if (!el) return 'none';
+  if (typeof document !== 'undefined' && document.pictureInPictureEnabled) {
+    if (typeof el.requestPictureInPicture === 'function') return 'standard';
+  }
+  const wk = el as WebkitVideo;
+  try {
+    if (
+      typeof wk.webkitSupportsPresentationMode === 'function' &&
+      wk.webkitSupportsPresentationMode('picture-in-picture')
+    ) {
+      return 'webkit';
+    }
+  } catch {
+    // Some builds expose the method but throw for this mode.
+  }
+  return 'none';
+}
+
+/**
  * How the video sits in the window:
  *   portrait  — upright, fitted to the window (the default)
  *   landscape — turned on its side, so a phone held upright shows the video the
@@ -51,6 +87,16 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
    */
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimer = useRef<number | null>(null);
+  /** Which PiP API this browser has, and whether we are currently in it. */
+  const [pipSupport, setPipSupport] = useState<PipSupport>('none');
+  const [inPip, setInPip] = useState(false);
+
+  // Detect PiP once the element exists: the capability lives on the element and
+  // on `document`, not on the component.
+  useEffect(() => {
+    const el = wrapRef.current?.querySelector('video') ?? null;
+    setPipSupport(detectPipSupport(el));
+  }, []);
 
   const clearHideTimer = useCallback(() => {
     if (hideTimer.current !== null) {
@@ -162,16 +208,58 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
+  /**
+   * Float the video in a small window, or bring it back.
+   *
+   * Two APIs, and a real failure path. The standard one is Chromium/Firefox; the
+   * `webkitSetPresentationMode` one is Safari. A rejection is reported rather than
+   * swallowed, because a control that silently does nothing is worse than one
+   * that says why.
+   */
   const togglePip = useCallback(async () => {
-    const el = wrapRef.current?.querySelector('video');
+    const el = wrapRef.current?.querySelector('video') as WebkitVideo | null;
     if (!el) return;
-    try {
-      if (document.pictureInPictureElement) await document.exitPictureInPicture();
-      else await el.requestPictureInPicture();
-    } catch {
-      // PiP is unsupported or blocked; nothing to do.
+
+    if (pipSupport === 'standard') {
+      try {
+        if (document.pictureInPictureElement) await document.exitPictureInPicture();
+        else await el.requestPictureInPicture();
+        setInPip(Boolean(document.pictureInPictureElement));
+      } catch (e) {
+        onError?.(e instanceof Error ? e.message : 'Picture in picture was refused.');
+      }
+      return;
     }
-  }, []);
+
+    if (pipSupport === 'webkit') {
+      try {
+        const next = el.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture';
+        el.webkitSetPresentationMode?.(next);
+        setInPip(next === 'picture-in-picture');
+      } catch {
+        onError?.('Picture in picture was refused.');
+      }
+    }
+  }, [pipSupport, onError]);
+
+  // Track the browser's own state, so the button reflects reality even when the
+  // user leaves PiP with the window's close button rather than ours.
+  useEffect(() => {
+    const el = wrapRef.current?.querySelector('video') as WebkitVideo | null;
+    if (!el) return;
+    const onEnter = () => setInPip(true);
+    const onLeave = () => setInPip(false);
+    const onWebkitChange = () =>
+      setInPip(el.webkitPresentationMode === 'picture-in-picture');
+    el.addEventListener('enterpictureinpicture', onEnter);
+    el.addEventListener('leavepictureinpicture', onLeave);
+    el.addEventListener('webkitpresentationmodechanged', onWebkitChange);
+    return () => {
+      el.removeEventListener('enterpictureinpicture', onEnter);
+      el.removeEventListener('leavepictureinpicture', onLeave);
+      el.removeEventListener('webkitpresentationmodechanged', onWebkitChange);
+    };
+  }, [pipSupport]);
 
   const pct = state.duration > 0 ? (state.currentTime / state.duration) * 100 : 0;
   const bufPct = state.duration > 0 ? (state.buffered / state.duration) * 100 : 0;
@@ -295,9 +383,20 @@ export function VideoPlayer({ src, poster, onError }: VideoPlayerProps) {
                     control rather than a state. */}
                 <IconRotate />
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => void togglePip()} aria-label="Picture in picture">
-                <IconPip />
-              </Button>
+              {/* Only offered where the browser can actually do it. Mobile Chrome
+                  has no PiP API, so a button there would do nothing. */}
+              {pipSupport !== 'none' && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void togglePip()}
+                  aria-label={inPip ? 'Exit picture in picture' : 'Picture in picture'}
+                  aria-pressed={inPip}
+                  title={inPip ? 'Exit picture in picture' : 'Picture in picture'}
+                >
+                  <IconPip />
+                </Button>
+              )}
               <Button variant="ghost" size="sm" onClick={() => void toggleFullscreen()} aria-label="Fullscreen">
                 {fullscreen ? <IconExitFullscreen /> : <IconFullscreen />}
               </Button>
