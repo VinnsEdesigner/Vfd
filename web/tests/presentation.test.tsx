@@ -21,6 +21,7 @@ import {
   useRenderPage,
   useHealth,
   useSystemStorage,
+  useCapabilities,
   useSetStorageLocation,
 } from '../src/hooks';
 import { useConnectionStore, connectionSettings, DEFAULT_CONNECTION } from '../src/stores/connection-store';
@@ -276,6 +277,45 @@ describe('useHealth', () => {
     const { result } = renderHook(() => useHealth(), { wrapper: wrapper(fetchImpl) });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toBe(false);
+  });
+});
+
+describe('useCapabilities', () => {
+  it('reads the engine’s capabilities, including live sessions', async () => {
+    const { fetchImpl } = makeFetch({
+      'GET /api/v1/capabilities': () => ({
+        json: {
+          version: '1',
+          detectors: ['mp4'],
+          hls: true,
+          upload: true,
+          purge: false,
+          interactive: {
+            enabled: true,
+            available: true,
+            max_concurrent: 1,
+            active: 0,
+            idle_timeout_seconds: 180,
+          },
+        },
+      }),
+    });
+    const { result } = renderHook(() => useCapabilities(), { wrapper: wrapper(fetchImpl) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.interactive?.available).toBe(true);
+  });
+
+  it('treats an engine that reports no live sessions as unable to drive', async () => {
+    const { fetchImpl } = makeFetch({
+      'GET /api/v1/capabilities': () => ({
+        json: { version: '1', detectors: [], hls: false, upload: false, purge: false },
+      }),
+    });
+    const { result } = renderHook(() => useCapabilities(), { wrapper: wrapper(fetchImpl) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    // Null, not "available": the console then offers the image view instead of a
+    // live control the engine would refuse.
+    expect(result.current.data?.interactive).toBeNull();
   });
 });
 
