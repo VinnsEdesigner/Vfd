@@ -185,6 +185,14 @@ export interface WireLivePage {
   url: string;
   title: string;
   loading: boolean;
+  /**
+   * Whether the page has an editable element focused.
+   *
+   * The engine reports this because the console cannot see the page's DOM. It is
+   * what decides whether a tap should raise the on-screen keyboard — a tap on a
+   * link must not.
+   */
+  editing?: boolean;
 }
 
 /** A live-session text message from the engine. */

@@ -74,6 +74,8 @@ struct mi_interactive {
     char session_id[64];
     int next_id;
     int shot_id; /* the id of an outstanding captureScreenshot, or 0 */
+    /* The id of an outstanding editable-focus probe, or 0. */
+    int editing_probe_id;
 
     /* The most recent response, kept as text so the synchronous startup
      * exchange can read a result (a target list, a session id) rather than only
@@ -108,6 +110,15 @@ struct mi_interactive {
     char url[1024];
     char title[512];
     int loading;
+    /*
+     * Whether the page has an editable element focused.
+     *
+     * Reported to the console so it only raises the on-screen keyboard when the
+     * page is actually ready to receive text. Without it, every tap opened a
+     * keyboard — including taps on links and blank space, which is not what a
+     * browser does.
+     */
+    int editing;
 
     /* What the last pump turned up. */
     int ev_frame, ev_shot, ev_state;
@@ -348,6 +359,35 @@ static int cdp_command(mi_interactive *it, const char *method, const char *param
     return id;
 }
 
+/*
+ * Ask the page whether an editable element is focused.
+ *
+ * A browser raises the on-screen keyboard only for a focused text field, and the
+ * console cannot see the page's DOM — so the engine asks on the page's behalf and
+ * reports the answer in the state message. This is a tiny expression, evaluated
+ * after each input rather than polled, so a tap that focuses a field reports it
+ * at once and a tap on a link reports nothing.
+ *
+ * A contenteditable element counts, because that is what a modern site's editor
+ * is; so does any input type that takes text (not a checkbox or a button).
+ */
+static void refresh_editing(mi_interactive *it) {
+    if (!it || it->closed) return;
+    static const char *EXPR =
+        "(function(){var a=document.activeElement;if(!a)return false;"
+        "if(a.isContentEditable)return true;"
+        "var t=(a.tagName||'').toLowerCase();"
+        "if(t==='textarea')return true;"
+        "if(t!=='input')return false;"
+        "var ty=(a.type||'text').toLowerCase();"
+        "return ['text','search','url','tel','email','password','number',''].indexOf(ty)>=0;})()";
+    char params[512];
+    snprintf(params, sizeof params, "{\"expression\":\"%s\",\"returnByValue\":true}", EXPR);
+    /* A fire-and-forget command: the answer is read on the next pump, in the
+     * response handler, so this does not block the caller's loop. */
+    it->editing_probe_id = cdp_command(it, "Runtime.evaluate", params);
+}
+
 static void set_state_changed(mi_interactive *it) {
     free(it->state_json);
     mi_json_buf b;
@@ -358,6 +398,10 @@ static void set_state_changed(mi_interactive *it) {
     mi_json_string(&b, it->title);
     mi_json_raw(&b, ",\"loading\":");
     mi_json_bool(&b, it->loading);
+    /* Whether the page is ready for text. The console raises its on-screen
+     * keyboard only when this is true, so a tap on a link does not open one. */
+    mi_json_raw(&b, ",\"editing\":");
+    mi_json_bool(&b, it->editing);
     mi_json_raw(&b, "}");
     it->state_json = mi_strdup(mi_json_data(&b));
     mi_json_free(&b);
@@ -473,6 +517,21 @@ static void handle_message(mi_interactive *it, const char *json) {
             store_frame(it, data, data ? strlen(data) : 0, "png", it->frame_w, it->frame_h);
             it->ev_shot = 1;
             it->shot_id = 0;
+        }
+        /*
+         * The editable-focus probe's answer. A change is a real state change, so
+         * it is published; an unchanged answer is dropped, because this runs after
+         * every tap and would otherwise flood the console with the same message.
+         */
+        if (it->resp_ok && id == it->editing_probe_id) {
+            it->editing_probe_id = 0;
+            const mi_json *result = mi_json_get(root, "result");
+            const mi_json *inner = mi_json_get(result, "result");
+            int now = mi_json_get_bool(inner, "value", 0);
+            if (now != it->editing) {
+                it->editing = now;
+                set_state_changed(it);
+            }
         }
     } else if (method) {
         handle_event(it, method, mi_json_get(root, "params"));
@@ -1051,6 +1110,8 @@ void mi_interactive_mouse(mi_interactive *it, const char *type, double x, double
     cdp_command(it, "Input.dispatchMouseEvent", mi_json_data(&b));
     mi_json_free(&b);
     touched(it);
+    /* A press is what focuses a field, so ask the page what it focused. */
+    if (!strcmp(type, "mousePressed") || !strcmp(type, "mouseReleased")) refresh_editing(it);
 }
 
 void mi_interactive_wheel(mi_interactive *it, double x, double y, double dx, double dy,
@@ -1129,6 +1190,8 @@ void mi_interactive_touch(mi_interactive *it, const char *type, const double *po
     cdp_command(it, "Input.dispatchTouchEvent", mi_json_data(&b));
     mi_json_free(&b);
     touched(it);
+    /* A tap is what focuses a field on a touch device. */
+    if (!strcmp(type, "touchEnd") || !strcmp(type, "touchCancel")) refresh_editing(it);
 }
 
 /* ------------------------------------------------------------------ */

@@ -305,7 +305,7 @@ describe('normalizeLiveMessage', () => {
         type: 'state',
         page: { url: 'https://x/a', title: 'A', loading: true },
       }),
-    ).toEqual({ kind: 'state', page: { url: 'https://x/a', title: 'A', loading: true } });
+    ).toEqual({ kind: 'state', page: { url: 'https://x/a', title: 'A', loading: true, editing: false } });
     expect(normalizeLiveMessage({ type: 'closed', reason: 'idle too long' })).toEqual({
       kind: 'closed',
       reason: 'idle too long',
@@ -325,6 +325,25 @@ describe('normalizeLiveMessage', () => {
       kind: 'error',
       message: 'the session reported an error',
     });
+  });
+
+  it('reports whether the page is ready for text', () => {
+    // The console raises its on-screen keyboard on this flag, so a tap on a link
+    // (editing false) must not open one and a tap on a field (true) must.
+    const editing = normalizeLiveMessage({
+      type: 'state',
+      page: { url: 'https://x/', title: '', loading: false, editing: true },
+    });
+    expect(editing).toEqual({
+      kind: 'state',
+      page: { url: 'https://x/', title: '', loading: false, editing: true },
+    });
+
+    const notEditing = normalizeLiveMessage({
+      type: 'state',
+      page: { url: 'https://x/', title: '', loading: false },
+    });
+    expect(notEditing && notEditing.kind === 'state' && notEditing.page.editing).toBe(false);
   });
 });
 

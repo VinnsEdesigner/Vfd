@@ -4579,15 +4579,20 @@ input[type='range']:focus-visible {
 }
 /*
  * The keyboard target. It has to be a real editable element for a phone to open
- * its keyboard, but it must not be visible: it is parked off-screen at the size
- * of a caret, kept empty, and read only through `beforeinput`/`keydown`.
+ * its keyboard, but it must not be visible and it must not move the page.
+ *
+ * `position: fixed` rather than `absolute`, and at the viewport's own top-left,
+ * because focusing an element that is off-screen makes the browser *scroll to
+ * reveal it* — which on a phone threw the whole console back to the top of the
+ * page every time the keyboard opened. A fixed element at 0,0 is always already
+ * on screen, so there is nothing to scroll to.
  *
  * `opacity: 0` rather than `display: none` or `visibility: hidden`, because a
  * hidden element cannot be focused and would never raise the keyboard.
  */
 .live__kbd {
-  position: absolute;
-  left: -9999px;
+  position: fixed;
+  left: 0;
   top: 0;
   width: 1px;
   height: 1px;
@@ -4596,9 +4601,12 @@ input[type='range']:focus-visible {
   outline: none;
   resize: none;
   opacity: 0;
-  /* The browser's own zoom-on-focus must not fire for a field the user cannot
-     see; the page being driven handles its own layout. */
+  /* A phone zooms in on a focused field whose text is under 16px; this field is
+     invisible, so that zoom must not fire. */
   font-size: 16px;
+  /* Never let the caret's position move the page. */
+  overflow: hidden;
+  pointer-events: none;
 }
 
 .browse__loading {

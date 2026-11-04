@@ -109,6 +109,15 @@ const VIEW_TITLES: Record<ViewId, [string, string]> = {
 const DEFAULT_CLOUD_PATH = 's3://vyzorix-media/downloads';
 const LOCATION_KEY = 'ingest.storage-location';
 const THEME_KEY = 'ingest.theme';
+/**
+ * The last URL typed in Browse, and how much of a page was being read.
+ *
+ * Kept in storage because retyping an address after glancing at another tab is
+ * the kind of small friction that makes a tool annoying to use. The URL is not a
+ * secret and not a credential, so storing it is safe; it is also the user's own
+ * text, so it is read back defensively.
+ */
+const BROWSE_KEY = 'ingest.browse';
 
 export type Theme = 'light' | 'dark';
 
@@ -155,6 +164,39 @@ function persistLocation(value: StorageLocationValue): void {
   localStorage.setItem(LOCATION_KEY, JSON.stringify(value));
 }
 
+/** What Browse remembers between visits. */
+interface BrowseMemory {
+  url: string;
+  mode: BrowseMode;
+  filter: BrowseFilter;
+}
+
+function loadBrowse(): BrowseMemory {
+  const fallback: BrowseMemory = { url: '', mode: 'search', filter: 'media' };
+  if (typeof localStorage === 'undefined') return fallback;
+  try {
+    const raw = localStorage.getItem(BROWSE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<BrowseMemory>;
+    return {
+      url: typeof parsed.url === 'string' ? parsed.url : '',
+      mode: parsed.mode === 'url' || parsed.mode === 'page' ? parsed.mode : 'search',
+      filter: parsed.filter === 'all' ? 'all' : 'media',
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistBrowse(value: BrowseMemory): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(BROWSE_KEY, JSON.stringify(value));
+  } catch {
+    /* storage unavailable; the value still applies for this session */
+  }
+}
+
 export interface AppProps {
   /** Optional initial view; useful for tests and deep links. */
   initialView?: ViewId;
@@ -185,12 +227,13 @@ export function App({ initialView = 'overview' }: AppProps) {
   const [browseKind, setBrowseKind] = useState<BrowseKind | 'all'>('all');
   const [browsePage, setBrowsePage] = useState(1);
   /** Which source Browse is reading: the built-in search, or a URL the user typed. */
-  const [browseMode, setBrowseMode] = useState<BrowseMode>('search');
-  const [browseUrl, setBrowseUrl] = useState('');
+  const [browseMode, setBrowseMode] = useState<BrowseMode>(() => loadBrowse().mode);
+  /** The address, remembered so switching tabs does not cost a retype. */
+  const [browseUrl, setBrowseUrl] = useState(() => loadBrowse().url);
   /** The URL actually submitted, so typing does not fire a request per keystroke. */
   const [browseUrlSubmitted, setBrowseUrlSubmitted] = useState<string | null>(null);
   /** How much of a URL's page to list: only media, or everything on it. */
-  const [browseFilter, setBrowseFilter] = useState<BrowseFilter>('media');
+  const [browseFilter, setBrowseFilter] = useState<BrowseFilter>(() => loadBrowse().filter);
   /**
    * The rendered page and how it went.
    *
@@ -761,6 +804,20 @@ export function App({ initialView = 'overview' }: AppProps) {
     },
     [localMedia, runAction],
   );
+
+  /*
+   * Remember the Browse address, mode and filter as they change.
+   *
+   * Debounced, because this runs on every keystroke of a URL and writing to
+   * storage that often is wasteful. The value is what the user typed, so it is
+   * kept verbatim — trimming it would fight them mid-edit.
+   */
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      persistBrowse({ url: browseUrl, mode: browseMode, filter: browseFilter });
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [browseUrl, browseMode, browseFilter]);
 
   const toggleTheme = useCallback(() => {
     setTheme((prev) => {

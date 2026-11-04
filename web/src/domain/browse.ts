@@ -134,6 +134,13 @@ export interface LivePageState {
   url: string;
   title: string;
   loading: boolean;
+  /**
+   * Whether the page has an editable element focused.
+   *
+   * The console raises its on-screen keyboard only when this is true, so a tap
+   * on a link behaves like a tap on a link rather than opening a keyboard.
+   */
+  editing: boolean;
 }
 
 /** A single decoded image from a live session. */

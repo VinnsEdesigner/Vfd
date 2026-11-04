@@ -264,6 +264,7 @@ export function normalizeLiveMessage(w: WireLiveMessage): LiveMessage | null {
           url: w.page?.url ?? '',
           title: w.page?.title ?? '',
           loading: Boolean(w.page?.loading),
+          editing: Boolean(w.page?.editing),
         },
       };
     case 'closed':

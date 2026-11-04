@@ -120,7 +120,7 @@ describe('LiveSession decoding', () => {
     expect(onMessage).toHaveBeenCalledTimes(2);
     expect(onMessage).toHaveBeenLastCalledWith({
       kind: 'state',
-      page: { url: 'https://example.com/', title: 'Example', loading: false },
+      page: { url: 'https://example.com/', title: 'Example', loading: false, editing: false },
     });
   });
 

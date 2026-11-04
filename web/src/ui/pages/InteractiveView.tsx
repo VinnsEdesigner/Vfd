@@ -205,33 +205,30 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
   );
 
   /*
-   * Focusing from a touch, on a delay.
+   * Raise the on-screen keyboard only when the page is ready for text.
    *
-   * A synchronous `.focus()` inside a touch handler does not stick: the browser's
-   * own handling of the tap runs after it and moves focus back to the body, so a
-   * phone never opens its keyboard (verified — `document.activeElement` was
-   * `BODY` after the tap even though the focus call had run). Deferring to the
-   * next task lets the tap finish first, so the focus is the last word.
+   * A tap focuses whatever is under it — a link, a button, blank space — and a
+   * real browser only opens a keyboard when that was a text field. The console
+   * cannot see the page's DOM, so the engine reports whether an editable element
+   * is focused (`page.editing`) and the keyboard is raised on that answer rather
+   * than on the tap. A tap that focuses nothing therefore does nothing.
    */
-  const focusKeyboardSoon = useCallback(() => {
-    window.setTimeout(() => kbdRef.current?.focus(), 0);
-  }, []);
+  const editing = page?.editing ?? false;
+  useEffect(() => {
+    if (!isLive) return;
+    if (editing) kbdRef.current?.focus();
+  }, [editing, isLive]);
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!isLive) return;
       /*
        * A press on a non-focusable element blurs whatever had focus, so the
-       * keyboard target is re-focused here unconditionally. That matters on a
-       * touch device, where the browser fires a synthetic mouse press *after* the
-       * touch: without this the focus the tap just took is immediately lost and
-       * the keyboard never opens.
-       *
-       * The default is also prevented, which stops the blur happening at all —
-       * the focus call then only has to survive the *first* press.
+       * default is prevented to keep the caret where the page put it. The
+       * keyboard itself is raised from the page's own answer (`page.editing`),
+       * not from the press, so a press on a link does not open one.
        */
       e.preventDefault();
-      focusKeyboardSoon();
       /*
        * On a touch device the browser also synthesises mouse events from a tap,
        * after the touch handlers have already forwarded the tap and its click. Let
@@ -242,7 +239,7 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
       const { x, y } = frameCoords(e.clientX, e.clientY);
       send(mouseMessage('mousePressed', x, y, buttonName(e.button), 1, e.buttons, modifiersFromEvent(e)));
     },
-    [isLive, frameCoords, focusKeyboardSoon, send],
+    [isLive, frameCoords, send],
   );
 
   const onMouseUp = useCallback(
@@ -312,10 +309,8 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
       }
       touchMoved.current = false;
       send(touchMessage('touchStart', pointsOf(), modifiersFromEvent(e)));
-      // Focus the keyboard target, so a phone opens its keyboard.
-      focusKeyboardSoon();
     },
-    [isLive, focusKeyboardSoon, pointsOf, send],
+    [isLive, pointsOf, send],
   );
 
   const onTouchMove = useCallback(
