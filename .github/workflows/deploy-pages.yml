@@ -63,16 +63,27 @@ jobs:
       - name: Build
         working-directory: web
         env:
-          # Repository variable, so the engine URL is not hardcoded in the repo.
-          # Blank is valid: the console then targets its own origin, which is what
-          # a reverse proxy in front of both the console and the engine provides.
-          VITE_API_BASE_URL: ${{ inputs.api_base_url || vars.VITE_API_BASE_URL }}
+          # The engine URL, in priority order:
+          #   1. a manual run's `api_base_url` input;
+          #   2. the repository variable, so an operator can point it elsewhere
+          #      without editing this file;
+          #   3. the URL this project's engine actually runs at, as a default.
+          #
+          # The default matters: with a bare `vars.VITE_API_BASE_URL` and no
+          # variable set, the value is empty and the console silently targets its
+          # own origin — a working-looking deploy that cannot reach an engine.
+          VITE_API_BASE_URL: ${{ inputs.api_base_url || vars.VITE_API_BASE_URL || 'https://work-2-udmvulmbrekbbouh.prod-runtime.all-hands.dev' }}
         run: npm run build
 
+      # Run wrangler directly rather than through cloudflare/wrangler-action.
+      # The action invokes `npx wrangler@latest`, and npm 11 refuses to install
+      # a package it does not have without confirmation, so the action fails in
+      # CI with "npx canceled due to missing packages and no YES option". A
+      # pinned `npx --yes wrangler@<version>` is the same command that works
+      # locally, with the version the repo is tested against.
       - name: Publish
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: web
-          command: pages deploy dist --project-name=vyzorix-file-downloader --branch=main
+        working-directory: web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@3.90.0 pages deploy dist --project-name=vyzorix-file-downloader --branch=main
