@@ -188,7 +188,13 @@ export function InteractiveView({ url, live, video, useVideo }: InteractiveViewP
   const kbdRef = useRef<HTMLTextAreaElement | null>(null);
   /** The last viewport we told the engine about, so we do not repeat ourselves. */
   const sentSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
-  const isLive = status === 'open' || status === 'connecting';
+  /*
+   * Whether the stage is driving a page, which is what enables the input
+   * bridge and the sizing. Either transport counts: the video session does
+   * not set the JPEG status, so deriving this from that alone left the video
+   * stage inert — no input, no sizing, and nothing to see.
+   */
+  const isLive = status === 'open' || status === 'connecting' || videoOn;
 
   /**
    * Tell the engine the size the page should be drawn at.
@@ -583,7 +589,9 @@ export function InteractiveView({ url, live, video, useVideo }: InteractiveViewP
         </div>
       </div>
 
-      {status === 'idle' && (
+      {/* The empty state is about the JPEG session; in video mode there is no
+          JPEG session, so the stage below is the thing to show. */}
+      {status === 'idle' && !videoOn && (
         <EmptyState
           title="Open this page live"
           description="The engine keeps a browser on this page so you can use it — type in it, follow a link, scroll. Press Open to start; nothing runs until you do."

@@ -22,7 +22,7 @@
  */
 const { chromium } = require('playwright-core');
 
-const SITE = process.env.SITE || 'https://vyzorix-file-downloader.pages.dev';
+const SITE = process.env.SITE || 'http://127.0.0.1:8099';
 const PAGE = process.env.PAGE_URL || 'https://example.com/';
 
 function log(...a) { console.log(...a); }
@@ -62,7 +62,7 @@ function ok(name, cond, detail = '') {
   await page.evaluate((engine) => {
     window.localStorage.setItem(
       'vyzorix.media.connection',
-      JSON.stringify({ baseUrl: engine, authToken: '' }),
+      JSON.stringify({ baseUrl: engine || 'http://127.0.0.1:12001', authToken: '' }),
     );
     // The storage chooser is a first-run gate; picking a tier dismisses it.
     window.localStorage.setItem('vyzorix.local-storage', JSON.stringify({ tier: 'opfs' }));
@@ -110,16 +110,16 @@ function ok(name, cond, detail = '') {
   await urlInput.fill(PAGE);
   log('typed the address');
 
-  // In View-a-page mode the submit control is "Open live" when the engine can
-  // drive a page. Video then starts from the stage once that mode is chosen.
-  const openBtn = page.getByRole('button', { name: 'Open live', exact: true }).first();
-  if (await openBtn.count()) {
-    await openBtn.click();
-    log('clicked "Open live"');
+  // Choosing "View a page" is itself the action: the live toolbar appears with
+  // the address, so there is no separate open control to press. Wait for the
+  // toolbar, which is the signal the session is up.
+  const reload = page.getByRole('button', { name: 'Reload', exact: true }).first();
+  if (await reload.count()) {
+    log('the live toolbar is up');
   } else {
-    log('WARN  no "Open live" control');
+    log('WARN  no live toolbar after View a page');
   }
-  await page.waitForTimeout(3500);
+  await page.waitForTimeout(4000);
   log('--- after opening the page ---');
   log((await page.locator('body').innerText().catch(() => '')).slice(-600).replace(/\n{2,}/g, '\n'));
   log('--- after submitting the address ---');
@@ -136,6 +136,24 @@ function ok(name, cond, detail = '') {
     log('WARN  no Video mode button');
   }
   await page.waitForTimeout(2500);
+
+  // --- diagnostic: what is on the page after choosing Video? ----------------
+  await page.waitForTimeout(2500);
+  const diag = await page.evaluate(() => {
+    const q = (sel) => document.querySelectorAll(sel).length;
+    const stage = document.querySelector('.live, [class*="live"]');
+    return {
+      videos: q('video'),
+      imgs: q('img'),
+      liveFrame: q('.live__frame'),
+      liveBlank: q('.live__blank'),
+      pressed: Array.from(document.querySelectorAll('[aria-pressed="true"]')).map(
+        (e) => (e.textContent || '').trim(),
+      ),
+      stageHtml: stage ? stage.outerHTML.slice(0, 400) : '(no .live stage)',
+    };
+  });
+  log('DIAG:', JSON.stringify(diag, null, 1));
 
   // --- 3. media must actually flow -----------------------------------------
   const video = page.locator('video').first();

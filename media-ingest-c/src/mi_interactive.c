@@ -469,6 +469,22 @@ static void on_screencast_frame(mi_interactive *it, const mi_json *params) {
 
 static void on_frame_navigated(mi_interactive *it, const mi_json *params) {
     const mi_json *frame = mi_json_get(params, "frame");
+    if (!frame) return;
+
+    /*
+     * Only the top frame's navigation is the page's address.
+     *
+     * `Page.frameNavigated` fires for every frame in the tree, not just the main
+     * one, so an embedded frame reports its own navigation here too — and those
+     * are very often `about:blank`. Acting on one replaced the real address with
+     * `about:blank`, which is exactly what happened on google.com (consent and
+     * captcha frames) and never on a page with no frames at all.
+     *
+     * A top-level frame is the one with no parent, which is what tells them
+     * apart. Child frames are simply ignored: they are not the page's location.
+     */
+    if (mi_json_get_string(frame, "parentId", NULL) != NULL) return;
+
     const char *url = mi_json_get_string(frame, "url", NULL);
     if (url && strcmp(url, it->url) != 0) {
         snprintf(it->url, sizeof it->url, "%s", url);

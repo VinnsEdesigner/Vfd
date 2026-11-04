@@ -2059,7 +2059,26 @@ static void *rtc_pump_main(void *arg) {
     while (!r->stop) {
         pthread_mutex_lock(&r->lock);
         for (size_t i = 0; i < r->count; i++) {
-            if (r->slots[i].rtc) mi_rtc_pump(r->slots[i].rtc, 5);
+            mi_rtc *rtc = r->slots[i].rtc;
+            if (!rtc) continue;
+            /*
+             * A finished session is closed and removed here, not left for a
+             * client to ask about.
+             *
+             * `mi_rtc_pump` returns -1 once the session has ended — an idle
+             * timeout, a failed connection, a pipeline error — and nothing else
+             * will ever call `mi_rtc_close` on it: the HTTP routes only close a
+             * session the caller names, and a browser that simply navigates away
+             * never does. Ignoring the return value leaked the gate slot *and* a
+             * browser and an X server with it, so the next session was refused
+             * as busy forever.
+             */
+            if (mi_rtc_pump(rtc, 5) != 0) {
+                mi_rtc_close(rtc);
+                r->slots[i] = r->slots[r->count - 1];
+                r->count--;
+                i--; /* the slot now holds the one that was last */
+            }
         }
         pthread_mutex_unlock(&r->lock);
         struct timespec t = {.tv_sec = 0, .tv_nsec = 5 * 1000 * 1000};
