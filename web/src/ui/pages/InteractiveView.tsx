@@ -69,6 +69,25 @@ export interface InteractiveViewProps {
   /** The address being driven, as typed. */
   url: string;
   live: LiveViewProps;
+  /**
+   * A raw-video session, when the engine can host one and the viewer chose
+   * it. Absent means the JPEG path is the only one available, which is the
+   * behaviour this view had before video existed.
+   *
+   * The element is created here and handed to the session, because a
+   * MediaStream can only be attached to an element that is already in the
+   * DOM — so the session cannot own it.
+   */
+  video?: {
+    status: 'idle' | 'connecting' | 'live' | 'ended';
+    viewport: { width: number; height: number } | null;
+    reason: string | null;
+    error: string | null;
+    open: (url: string, video: HTMLVideoElement) => void;
+    close: () => void;
+  };
+  /** Whether to show the video session rather than the JPEG one. */
+  useVideo?: boolean;
 }
 
 /** The label for a failure, in the words a person would use. */
@@ -114,10 +133,50 @@ function buttonName(button: number): 'left' | 'middle' | 'right' | 'none' {
   return 'none';
 }
 
-export function InteractiveView({ url, live }: InteractiveViewProps) {
+export function InteractiveView({ url, live, video, useVideo }: InteractiveViewProps) {
   const { status, frame, page, viewport, stats, failure, reason, onOpen, onClose, send } = live;
+  /* Video replaces the picture when it is chosen and a session is possible.
+   * Everything else — the input bridge, the sizing, the toolbar — is shared,
+   * so only the stage's contents differ. */
+  const videoOn = Boolean(useVideo && video);
+  const videoLive = videoOn && video?.status === 'live';
+
+  /**
+   * Open the video session, once the element it draws into exists.
+   *
+   * This is why the view opens it rather than the caller: a MediaStream can
+   * only be attached to an element already in the DOM, and the element is
+   * created here. `open` replaces any session already running, so a change of
+   * address or a re-mount is handled without a teardown dance.
+   */
+  const videoUrl = url.trim();
+  const videoOpen = video?.open;
+  const videoClose = video?.close;
+  useEffect(() => {
+    if (!videoOn || !videoUrl || !videoOpen) return;
+    const el = videoRef.current;
+    if (!el) return;
+    videoOpen(videoUrl, el);
+  }, [videoOn, videoUrl, videoOpen]);
+
+  // A session left running when the stage goes away would hold the engine's one
+  // slot, so it is closed on unmount.
+  useEffect(
+    () => () => {
+      videoClose?.();
+    },
+    [videoClose],
+  );
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  /**
+   * The <video> the WebRTC stream is drawn into, when one is playing.
+   *
+   * It stands in for the <img> as the thing input is mapped against: the
+   * element's box is the page's box either way, so touch, swipe and wheel
+   * keep working unchanged whichever is showing.
+   */
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   /**
    * The element that actually takes the keyboard.
    *
@@ -183,12 +242,12 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
     if (!el || !isLive) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const img = imgRef.current;
-      if (!img) return;
+      const el = videoRef.current ?? imgRef.current;
+      if (!el) return;
       const { x, y } = toFrameCoords(
         e.clientX,
         e.clientY,
-        img.getBoundingClientRect(),
+        el.getBoundingClientRect(),
         frame?.width ?? 0,
         frame?.height ?? 0,
       );
@@ -200,12 +259,12 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
 
   const frameCoords = useCallback(
     (clientX: number, clientY: number) => {
-      const img = imgRef.current;
-      if (!img) return { x: 0, y: 0 };
+      const el = videoRef.current ?? imgRef.current;
+      if (!el) return { x: 0, y: 0 };
       return toFrameCoords(
         clientX,
         clientY,
-        img.getBoundingClientRect(),
+        el.getBoundingClientRect(),
         frame?.width ?? 0,
         frame?.height ?? 0,
       );
@@ -597,7 +656,28 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
             onTouchEnd={onTouchEnd}
             onTouchCancel={onTouchCancel}
           >
-            {shownFrame ? (
+            {videoOn ? (
+              <>
+                <video
+                  ref={videoRef}
+                  className="live__frame"
+                  autoPlay
+                  playsInline
+                  muted
+                  aria-label={`Live video of ${liveUrl}`}
+                />
+                {!videoLive ? (
+                  <div className="live__blank">
+                    <Spinner />
+                    <span>
+                      {video?.status === 'ended'
+                        ? (video.reason ?? 'The video session ended')
+                        : 'Connecting the video stream…'}
+                    </span>
+                  </div>
+                ) : null}
+              </>
+            ) : shownFrame ? (
               <img
                 ref={imgRef}
                 className="live__frame"

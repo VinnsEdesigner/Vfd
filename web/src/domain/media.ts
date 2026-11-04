@@ -159,6 +159,15 @@ export interface Capabilities {
    * unavailable so the console never offers a control the engine cannot honour.
    */
   interactive: InteractiveCapability | null;
+  /**
+   * Whether a page can be streamed as live video over WebRTC.
+   *
+   * Separate from `interactive` because it is a heavier opt-in: a video
+   * session holds an X server as well as a browser, and the frames are
+   * encoded. Null when the engine predates it, treated the same as
+   * unavailable.
+   */
+  rtc: RtcCapability | null;
 }
 
 /** How the engine can render a page. */
@@ -187,6 +196,20 @@ export interface InteractiveCapability {
   /** How many sessions are open right now. */
   active: number;
   idleTimeoutSeconds: number;
+}
+
+/**
+ * How the engine can stream a page as live video.
+ *
+ * Its own capability because it is its own cost: a video session holds an
+ * Xvfb and a Chromium, and the frames are encoded before they leave.
+ */
+export interface RtcCapability {
+  enabled: boolean;
+  /** Enabled *and* a browser, Xvfb and the GStreamer plugins were found. */
+  available: boolean;
+  maxConcurrent: number;
+  active: number;
 }
 
 export interface StorageConfig {

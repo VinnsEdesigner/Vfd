@@ -230,6 +230,17 @@ export function normalizeCapabilities(w: WireCapabilities): Capabilities {
           viewportHeight: typeof r.viewport_height === 'number' ? r.viewport_height : 900,
         }
       : null,
+    // And for live video, which is the heaviest of the three.
+    rtc: (() => {
+      const v = w.rtc;
+      if (!v) return null;
+      return {
+        enabled: Boolean(v.enabled),
+        available: Boolean(v.available),
+        maxConcurrent: typeof v.max_concurrent === 'number' ? v.max_concurrent : 1,
+        active: typeof v.active === 'number' ? v.active : 0,
+      };
+    })(),
     // The same safe reading for live sessions.
     interactive: (() => {
       const i = w.interactive;

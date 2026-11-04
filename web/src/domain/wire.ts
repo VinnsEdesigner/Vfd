@@ -150,6 +150,8 @@ export interface WireCapabilities {
   render?: WireRenderCapability;
   /** Absent on engines that predate live sessions. */
   interactive?: WireInteractiveCapability;
+  /** Absent on engines that predate live video. */
+  rtc?: WireRtcCapability;
 }
 
 /** Whether a page can be driven live, and within what bounds. */
@@ -228,6 +230,14 @@ export interface WireRtcStatus {
   state?: string;
   connected?: boolean;
   reason?: string;
+}
+
+/** The engine's live-video capability block. */
+export interface WireRtcCapability {
+  enabled?: boolean;
+  available?: boolean;
+  max_concurrent?: number;
+  active?: number;
 }
 
 export interface WireStorageConfig {

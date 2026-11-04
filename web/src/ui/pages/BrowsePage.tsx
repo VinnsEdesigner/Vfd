@@ -103,6 +103,16 @@ export interface BrowsePageProps {
    */
   canGoLive: boolean;
   live: InteractiveViewProps['live'];
+  /**
+   * Whether the engine can stream a page as raw video over WebRTC.
+   *
+   * A third way to look at a page, and the best one when it is available: the
+   * picture path costs a JPEG encode and a CDP acknowledgement per frame, and
+   * video does not. Kept behind its own flag because it is a heavier opt-in on
+   * the engine — a session holds an X server as well as a browser.
+   */
+  canStreamVideo: boolean;
+  video: NonNullable<InteractiveViewProps['video']>;
 }
 
 export type BrowseMode = 'search' | 'url' | 'page';
@@ -231,10 +241,18 @@ export function BrowsePage(props: BrowsePageProps) {
     onClearRender,
     canGoLive,
     live,
+    canStreamVideo,
+    video,
   } = props;
 
-  /** Which page view is showing: the live session, or a rendered picture. */
-  const [pageView, setPageView] = useState<'live' | 'picture'>('live');
+  /**
+   * Which page view is showing: the driveable live session, a rendered
+   * picture, or raw video.
+   *
+   * Video is the best of the three when the engine can do it — no JPEG encode
+   * and no per-frame acknowledgement — so it is preferred when available.
+   */
+  const [pageView, setPageView] = useState<'live' | 'picture' | 'video'>('live');
 
   const debounced = useDebounced(term, 350);
   const searching = term.trim() !== debounced.trim();
@@ -242,6 +260,21 @@ export function BrowsePage(props: BrowsePageProps) {
   const byPage = mode === 'page';
   /** A live session is the default page view when the engine can host one. */
   const liveActive = byPage && canGoLive;
+  /**
+   * Whether the video stage is the one showing.
+   *
+   * The first time capabilities report video, the view moves to it: it is
+   * strictly better than the JPEG stream, so choosing it is not a preference
+   * worth asking about. Once the user picks something else, that wins.
+   */
+  const [videoPreferred, setVideoPreferred] = useState(false);
+  useEffect(() => {
+    if (canStreamVideo && !videoPreferred) {
+      setVideoPreferred(true);
+      setPageView('video');
+    }
+  }, [canStreamVideo, videoPreferred]);
+  const videoActive = byPage && canStreamVideo && pageView === 'video';
   const liveOpen = live.status === 'open' || live.status === 'connecting';
 
   const subtitle = useMemo(() => {
@@ -366,6 +399,10 @@ export function BrowsePage(props: BrowsePageProps) {
               onClick={() => {
                 if (!byPage) {
                   onReadUrl();
+                } else if (videoActive) {
+                  // The video session is opened by the stage when it mounts, so
+                  // there is nothing to start here; showing the stage is enough.
+                  setPageView('video');
                 } else if (liveActive && pageView === 'live') {
                   // A live session is opened at a starting size; the stage then
                   // resizes it to fit.
@@ -468,16 +505,28 @@ export function BrowsePage(props: BrowsePageProps) {
             <>
               {/* When both are possible, let the user choose; when only one is,
                   it is used without ceremony. */}
-              {canGoLive && canRender && (
+              {(canGoLive || canStreamVideo) && canRender && (
                 <div className="browse__modes" role="group" aria-label="How to show the page">
-                  <button
-                    type="button"
-                    className={pageView === 'live' ? 'browse__mode is-active' : 'browse__mode'}
-                    aria-pressed={pageView === 'live'}
-                    onClick={() => setPageView('live')}
-                  >
-                    Live page
-                  </button>
+                  {canGoLive && (
+                    <button
+                      type="button"
+                      className={pageView === 'live' ? 'browse__mode is-active' : 'browse__mode'}
+                      aria-pressed={pageView === 'live'}
+                      onClick={() => setPageView('live')}
+                    >
+                      Live page
+                    </button>
+                  )}
+                  {canStreamVideo && (
+                    <button
+                      type="button"
+                      className={pageView === 'video' ? 'browse__mode is-active' : 'browse__mode'}
+                      aria-pressed={pageView === 'video'}
+                      onClick={() => setPageView('video')}
+                    >
+                      Video
+                    </button>
+                  )}
                   <button
                     type="button"
                     className={pageView === 'picture' ? 'browse__mode is-active' : 'browse__mode'}
@@ -489,7 +538,9 @@ export function BrowsePage(props: BrowsePageProps) {
                 </div>
               )}
 
-              {canGoLive && (pageView === 'live' || !canRender) ? (
+              {videoActive ? (
+                <InteractiveView url={sourceUrl.trim()} live={live} video={video} useVideo />
+              ) : canGoLive && (pageView === 'live' || !canRender) ? (
                 <InteractiveView url={sourceUrl.trim()} live={live} />
               ) : rendering ? (
                 <Card>

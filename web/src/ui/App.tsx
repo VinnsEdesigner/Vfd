@@ -51,6 +51,7 @@ import {
   useBrowseUrl,
   useRenderPage,
   useLiveSession,
+  useLiveVideo,
   useSetStorageLocation,
   useCreateDownload,
   useCancelDownload,
@@ -254,6 +255,14 @@ export function App({ initialView = 'overview' }: AppProps) {
   /** The live page session. Its state is owned here so switching views does not
    *  tear it down; the hook revokes each frame's blob as the next arrives. */
   const live = useLiveSession();
+  /**
+   * The raw-video session, when the viewer chooses it.
+   *
+   * Owned here rather than in the view so switching between the picture and
+   * the video does not tear a session down and open another — the engine's
+   * gate admits one at a time, so a needless churn is a needless refusal.
+   */
+  const video = useLiveVideo();
   const [browseQueueingId, setBrowseQueueingId] = useState<string | null>(null);
   /** A browse result being previewed, if any. */
   const [browsePreview, setBrowsePreview] = useState<BrowseItem | null>(null);
@@ -1337,6 +1346,15 @@ export function App({ initialView = 'overview' }: AppProps) {
             renderedFromCache={renderedFromCache}
             renderedSanitized={renderedSanitized}
             canGoLive={Boolean(capabilities?.interactive?.available)}
+            canStreamVideo={Boolean(capabilities?.rtc?.available)}
+            video={{
+              status: video.status,
+              viewport: video.viewport,
+              reason: video.reason,
+              error: video.error,
+              open: video.open,
+              close: video.close,
+            }}
             live={{
               status: live.status,
               frame: live.frame,
