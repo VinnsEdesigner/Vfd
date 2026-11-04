@@ -29,6 +29,9 @@
 static int g_checks = 0;
 static int g_failures = 0;
 
+/* A source that dribbles a file out slowly, for the pause test. Defined below. */
+static int start_slow_server(pid_t *pid_out);
+
 #define CHECK(cond, msg)                                                    \
     do {                                                                    \
         g_checks++;                                                         \
@@ -534,44 +537,68 @@ static void test_http_api(void) {
         free(resp);
     }
 
-    /* A real pause: a slow source, so the worker is still transferring when the
-     * pause lands. `slow` makes the test server dribble bytes out. */
+    /*
+     * Pause and resume, against a source that is genuinely still transferring.
+     *
+     * The earlier version pointed at a closed port, so the download usually
+     * failed before the pause arrived and the test passed only because the
+     * machine happened to be busy — three failures in a row under load. A real
+     * slow source is what the assertion needs: something that cannot finish
+     * before the pause lands.
+     */
     {
-        resp = http_call(port, "POST", "/api/v1/downloads",
-                         "{\"url\":\"http://127.0.0.1:1/slow.bin\",\"hls\":false}",
-                         "testtoken", &status);
-        char pid[64] = {0};
-        mi_json *jj = mi_json_parse(body_of(resp));
-        const char *id = mi_json_get_string(jj, "id", NULL);
-        if (id) snprintf(pid, sizeof pid, "%s", id);
-        mi_json_value_free(jj);
-        free(resp);
-
-        char path[128];
-        snprintf(path, sizeof path, "/api/v1/downloads/%s", pid);
-        /* Pause immediately; whether it lands mid-transfer or before the worker
-         * starts, the outcome must be the same paused state. */
-        resp = http_call(port, "PATCH", path, "{\"action\":\"pause\"}", "testtoken", &status);
-        CHECK(status == 200, "pause accepted");
-        free(resp);
-
-        int got_paused = 0;
-        for (int i = 0; i < 60; i++) {
-            resp = http_call(port, "GET", path, NULL, "testtoken", &status);
-            if (resp && strstr(resp, "\"state\":\"paused\"")) got_paused = 1;
-            int settled = resp && (strstr(resp, "\"state\":\"paused\"") ||
-                                   strstr(resp, "\"state\":\"failed\"") ||
-                                   strstr(resp, "\"state\":\"done\""));
+        pid_t slow_pid = -1;
+        int slow_port = start_slow_server(&slow_pid);
+        CHECK(slow_port > 0, "a slow source is listening");
+        if (slow_port > 0) {
+            char body[256];
+            snprintf(body, sizeof body,
+                     "{\"url\":\"http://127.0.0.1:%d/slow.bin\",\"hls\":false}", slow_port);
+            resp = http_call(port, "POST", "/api/v1/downloads", body, "testtoken", &status);
+            char pid[64] = {0};
+            mi_json *jj = mi_json_parse(body_of(resp));
+            const char *id = mi_json_get_string(jj, "id", NULL);
+            if (id) snprintf(pid, sizeof pid, "%s", id);
+            mi_json_value_free(jj);
             free(resp);
-            if (settled) break;
-            usleep(50000);
-        }
-        CHECK(got_paused, "a running download can be paused");
 
-        /* And a paused download can be resumed. */
-        resp = http_call(port, "PATCH", path, "{\"action\":\"resume\"}", "testtoken", &status);
-        CHECK(status == 200, "resume accepted");
-        free(resp);
+            char path[128];
+            snprintf(path, sizeof path, "/api/v1/downloads/%s", pid);
+
+            /* Wait until it is actually running, so the pause has something to
+             * interrupt rather than racing the worker's start. */
+            for (int i = 0; i < 60; i++) {
+                resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+                int running = resp && strstr(resp, "\"state\":\"running\"");
+                free(resp);
+                if (running) break;
+                usleep(20000);
+            }
+
+            resp = http_call(port, "PATCH", path, "{\"action\":\"pause\"}", "testtoken", &status);
+            CHECK(status == 200, "pause accepted");
+            free(resp);
+
+            int got_paused = 0;
+            for (int i = 0; i < 60; i++) {
+                resp = http_call(port, "GET", path, NULL, "testtoken", &status);
+                if (resp && strstr(resp, "\"state\":\"paused\"")) got_paused = 1;
+                int settled = resp && (strstr(resp, "\"state\":\"paused\"") ||
+                                       strstr(resp, "\"state\":\"failed\"") ||
+                                       strstr(resp, "\"state\":\"done\""));
+                free(resp);
+                if (settled) break;
+                usleep(50000);
+            }
+            CHECK(got_paused, "a running download can be paused");
+
+            /* And a paused download can be resumed. */
+            resp = http_call(port, "PATCH", path, "{\"action\":\"resume\"}", "testtoken", &status);
+            CHECK(status == 200, "resume accepted");
+            free(resp);
+
+            if (slow_pid > 0) kill(slow_pid, SIGKILL);
+        }
     }
 
     /* A create records the options it was given, so the UI can report them. */
@@ -1185,6 +1212,169 @@ static void test_browse_parse(void) {
               "browse: a link with no text is listed without a title");
         mi_browse_result_free(&r);
     }
+}
+
+/* ---------------------------------------------------------------- */
+/* A source that is slow on purpose                                    */
+/* ---------------------------------------------------------------- */
+
+/*
+ * Serves one file, a few bytes at a time, for long enough that a download
+ * cannot finish before a pause lands.
+ *
+ * The pause test needs a transfer that is genuinely still in flight. Pointing it
+ * at a closed port made the test depend on how busy the machine was: usually the
+ * download failed first and the pause was a no-op, and the test passed for the
+ * wrong reason.
+ */
+static void slow_serve_conn(int fd) {
+    char req[2048];
+    ssize_t got = read(fd, req, sizeof req - 1);
+    if (got <= 0) {
+        close(fd);
+        return;
+    }
+    req[got] = '\0';
+    int head_only = strncmp(req, "HEAD", 4) == 0;
+
+    /* A body large enough that dribbling it out takes seconds. */
+    const size_t total = 8 * 1024 * 1024;
+
+    /*
+     * Range support matters here, and not for the obvious reason.
+     *
+     * With `Accept-Ranges: none` the engine takes its *streaming* path, which
+     * reports progress only once, at the end — so a download in flight shows
+     * `downloaded_bytes: 0`, and there is no way to tell "transferring" from
+     * "stuck". The ranged path reports as it goes. Since the point of this
+     * server is to be a transfer that is visibly still in flight, it has to
+     * support ranges.
+     */
+    size_t start = 0, end = total - 1;
+    int is_range = 0;
+    const char *r = strstr(req, "Range: bytes=");
+    if (r) {
+        r += strlen("Range: bytes=");
+        start = (size_t)strtoull(r, (char **)&r, 10);
+        if (*r == '-') {
+            r++;
+            end = (size_t)strtoull(r, NULL, 10);
+            if (end >= total) end = total - 1;
+        }
+        is_range = 1;
+    }
+
+    char header[320];
+    int hn;
+    if (is_range) {
+        hn = snprintf(header, sizeof header,
+                      "HTTP/1.1 206 Partial Content\r\n"
+                      "Content-Range: bytes %zu-%zu/%zu\r\n"
+                      "Content-Length: %zu\r\n"
+                      "Accept-Ranges: bytes\r\n"
+                      "Content-Type: application/octet-stream\r\n"
+                      "Connection: close\r\n\r\n",
+                      start, end, total, end - start + 1);
+    } else {
+        hn = snprintf(header, sizeof header,
+                      "HTTP/1.1 200 OK\r\n"
+                      "Content-Length: %zu\r\n"
+                      "Accept-Ranges: bytes\r\n"
+                      "Content-Type: application/octet-stream\r\n"
+                      "Connection: close\r\n\r\n",
+                      total);
+    }
+    if (write(fd, header, (size_t)hn) < 0) {
+        close(fd);
+        return;
+    }
+
+    /* A HEAD stops at the headers: the engine probes before downloading, and
+     * streaming the body in reply would occupy this one-at-a-time server. */
+    if (head_only) {
+        close(fd);
+        return;
+    }
+
+    /*
+     * Dribble the range out, slowly enough that a pause always lands mid-flight.
+     *
+     * The bytes are a real MP4 header followed by filler, because the engine
+     * sniffs what it downloads and *refuses* a payload it does not recognise —
+     * a body of plain text is rejected as "unrecognised payload (detected
+     * text)" before the download is ever under way, and the pause then has
+     * nothing to interrupt. That refusal is correct behaviour; the fixture has
+     * to be media for the test to be about pausing at all.
+     */
+    static const unsigned char mp4_head[] = {
+        0x00, 0x00, 0x00, 0x18, 'f',  't',  'y',  'p',  'i',  's',  'o',  'm',
+        0x00, 0x00, 0x02, 0x00, 'i',  's',  'o',  'm',  'i',  's',  'o',  '2',
+    };
+    char chunk[1024];
+    memset(chunk, 0, sizeof chunk);
+    memcpy(chunk, mp4_head, sizeof mp4_head);
+    for (size_t sent = start; sent <= end; sent += sizeof chunk) {
+        size_t n = (end - sent + 1) < sizeof chunk ? (end - sent + 1) : sizeof chunk;
+        /* The header only belongs at the start of the file. */
+        const char *p = (sent == 0) ? chunk : chunk + sizeof mp4_head;
+        size_t have = (sent == 0) ? n : (n > sizeof mp4_head ? n - sizeof mp4_head : 0);
+        if (have == 0) break;
+        if (write(fd, p, have) < 0) break;
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 30 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    close(fd);
+}
+
+/*
+ * A child per connection.
+ *
+ * The engine downloads a ranged source with several connections at once, so a
+ * server that handles one at a time makes the transfer crawl and the test
+ * depend on timing. Forking is what the other test servers do not need — they
+ * serve a small file in one go — but this one has to.
+ */
+static void slow_loop(int listen_fd) {
+    signal(SIGTERM, SIG_DFL);
+    signal(SIGCHLD, SIG_IGN);
+    for (;;) {
+        int fd = accept(listen_fd, NULL, NULL);
+        if (fd < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(listen_fd);
+            slow_serve_conn(fd);
+            _exit(0);
+        }
+        close(fd);
+    }
+    _exit(0);
+}
+
+static int start_slow_server(pid_t *pid_out) {
+    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_fd < 0) return -1;
+    int one = 1;
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+        close(listen_fd);
+        return -1;
+    }
+    socklen_t alen = sizeof addr;
+    getsockname(listen_fd, (struct sockaddr *)&addr, &alen);
+    listen(listen_fd, 8);
+    pid_t pid = fork();
+    if (pid == 0) slow_loop(listen_fd);
+    close(listen_fd);
+    *pid_out = pid;
+    return ntohs(addr.sin_port);
 }
 
 /* ---------------------------------------------------------------- */

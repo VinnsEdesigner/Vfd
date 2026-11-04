@@ -25,6 +25,7 @@
 #include "mi_hls.h"
 #include "mi_json.h"
 #include "mi_render.h"
+#include "mi_sanitize.h"
 #include "mi_util.h"
 
 /* ------------------------------------------------------------------ */
@@ -2130,7 +2131,9 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
 
         mi_render_result res;
         mi_render_status st = mi_render_run(srv->renderer, url, mode, &res);
-        free(decoded);
+        /* The URL is needed for the sanitiser's link rewriting, so it is kept
+         * until after that runs. */
+        int sanitized = 0;
 
         if (st != MI_RENDER_OK) {
             /* Each failure says what happened and what to do about it. A 503
@@ -2165,6 +2168,31 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             }
         }
 
+        /*
+         * A rendered DOM is the page's own markup, so it is sanitised before it
+         * is served: scripts, event handlers, frames and the rest are removed,
+         * links are routed back through the renderer so a click stays in the
+         * app, and a strict policy is injected.
+         *
+         * This is hygiene, not the security boundary — that is the console's
+         * sandboxed frame, which the browser enforces. But serving the raw DOM
+         * would be handing the console a document full of script, and relying on
+         * one attribute for safety is a single point of failure.
+         */
+        if (mode == MI_RENDER_DOM && res.data) {
+            mi_sanitize_config scfg;
+            memset(&scfg, 0, sizeof scfg);
+            scfg.link_prefix = "/api/v1/render?url=";
+            scfg.base_url = url;
+            char *clean = mi_sanitize_html((const char *)res.data, res.len, &scfg);
+            if (clean) {
+                free(res.data);
+                res.data = (unsigned char *)clean;
+                res.len = strlen(clean);
+                sanitized = 1;
+            }
+        }
+
         /* The response is hand-built, so the CORS headers have to be sent by
          * hand too — omitting them is how a route that works under curl fails
          * in the browser. */
@@ -2174,9 +2202,11 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                  "X-Vyzorix-Render: %s\r\n"
                  "X-Vyzorix-Render-Ms: %.0f\r\n"
                  "X-Vyzorix-Render-Cache: %s\r\n"
+                 "%s"
                  "%s",
                  mi_render_status_name(st), res.elapsed_seconds * 1000.0,
                  res.from_cache ? "hit" : "miss",
+                 sanitized ? "X-Vyzorix-Sanitized: yes\r\n" : "",
                  res.truncated ? "X-Vyzorix-Render-Truncated: yes\r\n" : "");
         if (res.title) {
             /* The page's own title travels as a header so a client can label a
@@ -2198,12 +2228,13 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                           res.content_type, res.len, meta,
                           cors ? "Access-Control-Allow-Origin: " : "",
                           cors ? cors : "",
-                          cors ? "\r\nAccess-Control-Expose-Headers: X-Vyzorix-Render,X-Vyzorix-Render-Ms,X-Vyzorix-Render-Cache,X-Vyzorix-Title,X-Vyzorix-Render-Truncated\r\n"
+                          cors ? "\r\nAccess-Control-Expose-Headers: X-Vyzorix-Render,X-Vyzorix-Render-Ms,X-Vyzorix-Render-Cache,X-Vyzorix-Sanitized,X-Vyzorix-Title,X-Vyzorix-Render-Truncated\r\n"
                                  "Vary: Origin\r\n"
                                : "");
         send_all(fd, header, (size_t)hn);
         if (res.data && res.len > 0) send_all(fd, (const char *)res.data, res.len);
         mi_render_result_free(&res);
+        free(decoded);
         return;
     }
 

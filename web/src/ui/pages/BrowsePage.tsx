@@ -84,6 +84,8 @@ export interface BrowsePageProps {
   renderMs: number | null;
   /** True when the engine served this from its cache rather than rendering. */
   renderedFromCache: boolean;
+  /** True when the engine cleaned the page's markup before serving it. */
+  renderedSanitized: boolean;
   /** Ask for a render in the given mode. */
   onRender: (mode: RenderMode) => void;
   /** Clear the rendered result, so the address can be changed. */
@@ -193,6 +195,7 @@ export function BrowsePage(props: BrowsePageProps) {
     renderedTitle,
     renderMs,
     renderedFromCache,
+    renderedSanitized,
     onRender,
     onClearRender,
   } = props;
@@ -463,16 +466,28 @@ export function BrowsePage(props: BrowsePageProps) {
                   alt={`Rendered view of ${sourceUrl}`}
                 />
               ) : (
-                <iframe
-                  className="browse__frame"
-                  src={rendered.url}
-                  title={`Rendered text of ${sourceUrl}`}
-                  // The rendered DOM still contains the page's own markup, so it
-                  // is framed without same-origin: it can draw itself but cannot
-                  // reach into the console.
-                  sandbox=""
-                  referrerPolicy="no-referrer"
-                />
+                <>
+                  {/* The page text is a *cleaned* copy, not the live site: its
+                      scripts, handlers and frames are gone. Saying so matters,
+                      because it looks like the page and is not. */}
+                  {renderedSanitized && (
+                    <Note className="browse__sanitized-note">
+                      A cleaned copy of the page. Scripts, forms and embedded frames are
+                      removed, and links open here rather than navigating away.
+                    </Note>
+                  )}
+                  <iframe
+                    className="browse__frame"
+                    src={rendered.url}
+                    title={`Rendered text of ${sourceUrl}`}
+                    // The strongest sandbox: an opaque origin, no scripts, no
+                    // forms, no popups, no top-level navigation. This — not the
+                    // engine's sanitiser — is the boundary that makes rendering
+                    // someone else's markup safe.
+                    sandbox=""
+                    referrerPolicy="no-referrer"
+                  />
+                </>
               )}
             </div>
           ) : (

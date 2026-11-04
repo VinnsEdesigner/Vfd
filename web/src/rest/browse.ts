@@ -233,6 +233,12 @@ export function createRenderResource(client: ApiClient) {
           /** True when the engine served this from its cache rather than
            *  rendering again, so the UI can say why it was instant. */
           fromCache: res.headers['x-vyzorix-render-cache'] === 'hit',
+          /**
+           * True when the engine stripped the page's scripts, handlers and
+           * frames before serving it. Worth saying, because "Page text" looks
+           * like the site and is not: it is a cleaned copy of it.
+           */
+          sanitized: res.headers['x-vyzorix-sanitized'] === 'yes',
         };
       } catch (e) {
         return { ok: false as const, failure: renderFailureFor(e) };

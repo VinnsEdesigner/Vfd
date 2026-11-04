@@ -4449,6 +4449,9 @@ input[type='range']:focus-visible {
   border-radius: var(--r-lg);
   background: var(--surface-2);
 }
+.browse__sanitized-note {
+  margin-bottom: 8px;
+}
 .browse__rendering {
   display: flex;
   flex-direction: column;
