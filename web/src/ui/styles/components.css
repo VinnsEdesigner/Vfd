@@ -95,6 +95,12 @@
   gap: 14px;
   padding: 16px 20px;
   border-bottom: 1px solid var(--border);
+  /*
+   * A header's text column must be allowed to shrink, or a long word in it —
+   * a URL, a filename — sets the card's minimum width and the card then widens
+   * the page. See `.card__sub` for why that matters on a phone.
+   */
+  min-width: 0;
 }
 .card__title {
   font-size: 14px;
@@ -104,6 +110,14 @@
 .card__sub {
   font-size: 12.5px;
   color: var(--text-3);
+  /*
+   * The subtitle often holds a URL, which has no spaces to break at. Without
+   * `anywhere` a long address is unbreakable, so it widens the card — and on a
+   * phone the browser then expands the layout viewport to fit, which is what
+   * made the whole app jump into a desktop-sized layout.
+   */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .card__body {
   padding: 20px;
