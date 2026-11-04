@@ -19,6 +19,30 @@
  * media: SRTP over UDP with congestion control, rather than a TCP stream that
  * head-of-line blocks.
  *
+ * NO WEBSOCKET
+ *
+ * WebRTC has no signalling of its own — it deliberately leaves that to the
+ * application, because the two peers have to agree on *something* before a peer
+ * connection exists. That something cannot be WebRTC.
+ *
+ * Here it is plain HTTP, one request per step, so there is no long-lived socket
+ * anywhere:
+ *
+ *   POST   /api/v1/rtc              -> { token, sdp, viewport }   (the offer)
+ *   POST   /api/v1/rtc/{token}/answer { sdp }                     (the answer)
+ *   GET    /api/v1/rtc/{token}      -> { state, connected, ice }   (poll)
+ *   DELETE /api/v1/rtc/{token}                                    (close)
+ *
+ * Input does not need a socket either: it rides a WebRTC data channel, which is
+ * a channel inside the same peer connection the video already uses. So the whole
+ * session — media and control — is one WebRTC connection, and HTTP is used only
+ * for the handful of messages that establish it.
+ *
+ * That also removes the need to trickle ICE. Trickle exists to avoid waiting for
+ * gathering, but with no socket to trickle *on*, waiting is simpler: the offer is
+ * returned only once gathering has finished, so its candidates are in the SDP and
+ * the browser needs no separate candidate messages at all.
+ *
  * THE TWO THINGS THAT MAKE IT POSSIBLE, BOTH MEASURED
  *
  *   - Chromium must run on a real display, NOT `--headless`. Headless composites
@@ -69,6 +93,16 @@ typedef struct {
     /* STUN server for ICE, e.g. "stun://stun.l.google.com:19302". NULL uses
      * host candidates only, which works on a LAN and not across one. */
     const char *stun_server;
+    /*
+     * How long to wait for ICE gathering to finish before returning the offer.
+     *
+     * Gathering is not instant: the browser has to try each interface and, with
+     * a STUN server, wait for a reply. Because there is no socket to trickle on,
+     * the offer is only handed over once this has settled, so the wait is the
+     * price of a single-request handshake. A host with no STUN gathers in
+     * milliseconds; one behind a NAT may use the whole budget.
+     */
+    int gather_timeout_ms;
 } mi_rtc_config;
 
 void mi_rtc_config_init(mi_rtc_config *cfg);
@@ -90,37 +124,50 @@ int mi_rtc_pool_active(const mi_rtc_pool *pool);
 typedef struct mi_rtc mi_rtc;
 
 /*
- * Start a session on `url` and return its first local description.
+ * Start a session on `url` and return immediately with a handle.
  *
- * Blocks until the browser is up, the pipeline is playing, and an offer has been
- * produced, or the startup deadline passes. On failure returns a status other
- * than MI_RTC_OK with `err` filled in.
+ * This spawns the X server, the browser and the pipeline, which takes a moment;
+ * the offer is not ready yet. Call `mi_rtc_wait_offer` to block until it is. The
+ * split exists because the HTTP layer wants to answer "starting" separately from
+ * "here is the offer", rather than holding a request open for the whole startup.
  *
- * `offer_out` receives the SDP as a NUL-terminated string, owned by the caller.
  * The session takes a gate slot for its whole life.
  */
 mi_rtc_status mi_rtc_open(mi_rtc_pool *pool, const char *url, mi_rtc **out,
-                          char **offer_out, char *err, size_t errcap);
+                          char *err, size_t errcap);
+
+/*
+ * Pump until the offer is ready or `timeout_ms` passes. Returns 0 when the offer
+ * is ready, -1 otherwise (ended, or the deadline passed).
+ *
+ * The offer is only complete once ICE gathering has finished, so this waits for
+ * both — see `gather_timeout_ms`.
+ */
+int mi_rtc_wait_offer(mi_rtc *rtc, int timeout_ms);
+
+/* The local description, complete with its gathered candidates. Allocated;
+ * free it. NULL until `mi_rtc_wait_offer` has returned 0. */
+char *mi_rtc_offer(mi_rtc *rtc);
+
+/* Whether ICE gathering has finished, so the offer is final. */
+int mi_rtc_gathering_done(mi_rtc *rtc);
 
 /*
  * Apply the browser's answer.
  *
- * Returns 0, or -1 when the SDP could not be parsed. After this the connection
- * negotiates DTLS and media starts flowing; ICE candidates are exchanged with
- * `mi_rtc_add_ice` as they arrive (trickle), so this does not block on
- * connectivity.
+ * Returns 0, or -1 when the SDP could not be parsed. With gathering complete on
+ * both sides this is the last signalling step: after it the connection negotiates
+ * DTLS and media starts flowing.
  */
 int mi_rtc_set_answer(mi_rtc *rtc, const char *sdp);
-
-/* Add one remote ICE candidate. `mid` and `mline` may be -1 when unset. */
-int mi_rtc_add_ice(mi_rtc *rtc, const char *candidate, int mline);
 
 /*
  * Pump the pipeline for up to `ms`.
  *
  * Returns 0 while the session is alive, -1 once it has ended. Must be called
  * regularly: this is what runs the GStreamer main loop, so a session that is not
- * pumped does not negotiate and does not send.
+ * pumped does not negotiate, does not send, and never notices that its browser
+ * has gone.
  */
 int mi_rtc_pump(mi_rtc *rtc, int ms);
 
@@ -134,11 +181,40 @@ int mi_rtc_connected(mi_rtc *rtc);
 /* Why the session ended, for a farewell. Never NULL. */
 const char *mi_rtc_close_reason(mi_rtc *rtc);
 
+/* ------------------------------------------------------------------ */
+/* The input channel                                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Called with one JSON command from the browser, on the pumping thread.
+ *
+ * The command is the console's own vocabulary (navigate, mouse, key, text,
+ * touch), the same one the WebSocket carried. The engine owns the mapping from
+ * there to CDP, so the console never speaks CDP.
+ */
+typedef void (*mi_rtc_input_fn)(void *user, const char *json);
+
+void mi_rtc_set_input_handler(mi_rtc *rtc, mi_rtc_input_fn fn, void *user);
+
+/*
+ * Open the `input` data channel, if it is not open already.
+ *
+ * Called once the connection is up. Idempotent: the browser may also create the
+ * channel itself, in which case this finds it already there.
+ */
+int mi_rtc_channel_open(mi_rtc *rtc);
+
+/* Whether the input channel is open and can carry commands. */
+int mi_rtc_channel_ready(mi_rtc *rtc);
+
+/* Send one JSON message to the browser. A no-op when the channel is not open. */
+void mi_rtc_channel_send(mi_rtc *rtc, const char *json);
+
 /* Local ICE candidates gathered so far, as a JSON array. Owned by the caller.
- * Used when not trickling, or to send what was gathered before the answer. */
+ * Empty once gathering is complete and the offer carries them. */
 char *mi_rtc_local_ice_json(mi_rtc *rtc);
 
-/* Frames captured and frames dropped by the encoder, for reporting. */
+/* Frames captured and bytes encoded, for reporting. */
 void mi_rtc_stats(mi_rtc *rtc, uint64_t *frames_captured, uint64_t *bytes_encoded);
 
 /* The browser's viewport, which is the X display's size. */

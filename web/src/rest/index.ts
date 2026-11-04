@@ -13,6 +13,7 @@ import {
   type RenderResource,
   type LiveResource,
 } from './browse';
+import { createRtcResource, type RtcResource } from './rtc';
 import { createDownloadsResource, type DownloadsResource } from './downloads';
 import { createMediaResource, type MediaResource } from './media';
 import { createSystemResource, type SystemResource } from './system';
@@ -30,6 +31,8 @@ export interface RestApi {
   render: RenderResource;
   /** Drive a page live with the engine's browser, over a WebSocket. */
   live: LiveResource;
+  /** Stream a page as live video over WebRTC, signalled over HTTP. */
+  rtc: RtcResource;
 }
 
 export function createRestApi(config: TransportConfig): RestApi {
@@ -43,11 +46,14 @@ export function createRestApi(config: TransportConfig): RestApi {
     page: createPageResource(client),
     render: createRenderResource(client),
     live: createLiveResource(client),
+    rtc: createRtcResource(client),
   };
 }
 
 export type { TransportConfig } from '../api-client';
 export type { BrowseResource, PageResource, RenderResource, LiveResource } from './browse';
+export type { RtcResource } from './rtc';
+export type { LiveVideoSession, LiveVideoHandlers, RtcSignalling } from './rtc-session';
 export type { DownloadsResource } from './downloads';
 export type { MediaResource } from './media';
 export type { SystemResource } from './system';

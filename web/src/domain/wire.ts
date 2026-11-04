@@ -208,6 +208,28 @@ export interface WireLiveMessage {
   seq?: number;
 }
 
+/**
+ * The engine's answer to `POST /api/v1/rtc`: the session token and the offer.
+ *
+ * There is no media here — this is the signalling, and the media arrives on the
+ * RTCPeerConnection the console builds from `sdp`.
+ */
+export interface WireRtcOffer {
+  token?: string;
+  sdp?: string;
+  width?: number;
+  height?: number;
+  /** Whether the engine finished gathering, so the offer is final. */
+  gathered?: boolean;
+}
+
+/** The engine's answer to `GET /api/v1/rtc/{token}`. */
+export interface WireRtcStatus {
+  state?: string;
+  connected?: boolean;
+  reason?: string;
+}
+
 export interface WireStorageConfig {
   endpoint: string | null;
   bucket: string | null;

@@ -2005,298 +2005,338 @@ static int ws_queue_text(mi_outbox *box, const char *json, size_t len, int dropp
  * what makes the concurrency gate meaningful.
  */
 /* ------------------------------------------------------------------ */
-/* Live video sessions (raw video over WebRTC, signalled on the WS)     */
+/* Live video sessions (raw video over WebRTC, signalled over HTTP)     */
 /* ------------------------------------------------------------------ */
 
-/* Queue one already-built JSON text message; never droppable, because a
- * signalling message carries information rather than a moment. */
-static void rtc_queue_json(mi_outbox *out, const char *json) {
-    ws_queue_text(out, json, strlen(json), 0);
+/*
+ * A session registry.
+ *
+ * The signalling is HTTP, so a session has to survive between requests — the
+ * offer is one request, the answer is another, and the poll that watches it is a
+ * third. This maps a token to the session, and it is the token that keeps a
+ * request from steering somebody else's stream.
+ *
+ * One mutex around the table. The sessions themselves are only ever touched by
+ * the pump thread (below) and by a request while it holds the lock, which is what
+ * makes a lock this coarse safe: nothing else runs GStreamer.
+ */
+typedef struct {
+    char token[40];
+    mi_rtc *rtc;
+} rtc_slot;
+
+typedef struct rtc_registry {
+    pthread_mutex_t lock;
+    rtc_slot *slots;
+    size_t count, cap;
+    pthread_t pump;
+    int pump_running;
+    int stop;
+} rtc_registry;
+
+static rtc_registry *g_rtc_reg = NULL;
+
+static rtc_registry *rtc_registry_get(void) {
+    if (g_rtc_reg) return g_rtc_reg;
+    rtc_registry *r = mi_calloc(1, sizeof *r);
+    if (!r) return NULL;
+    pthread_mutex_init(&r->lock, NULL);
+    g_rtc_reg = r;
+    return r;
 }
 
 /*
- * GET /api/v1/rtc?url=…  (WebSocket upgrade)
+ * The pump thread.
  *
- * The transport is WebRTC, but the *signalling* rides the WebSocket the engine
- * already speaks: one offer out, one answer in, and ICE candidates both ways.
- * Reusing the socket means no second protocol, no second port, and the same
- * Origin and token checks that already guard a live session.
- *
- * The browser paints into Xvfb; ximagesrc reads that display; the frames are
- * encoded and handed to webrtcbin. Nothing here touches JPEG or CDP for video.
+ * `mi_rtc_pump` runs the session's GLib main context, which is what delivers
+ * webrtcbin's signals and the data channel's messages. Nothing else does, and a
+ * session that is not pumped does not negotiate, does not process input, and
+ * never notices its browser has gone. Since the requests are short and
+ * intermittent, this has to be a thread rather than something a request does.
  */
-static void serve_rtc_ws(mi_server *srv, int fd, http_request *req) {
-    const char *key = request_header(req, "Sec-WebSocket-Key");
-    const char *upgrade = request_header(req, "Upgrade");
-    const char *connection = request_header(req, "Connection");
-    if (!mi_ws_is_upgrade(upgrade, connection, key)) {
-        send_error(fd, 400, "Bad Request", "expected a WebSocket upgrade", NULL);
-        return;
+static void *rtc_pump_main(void *arg) {
+    rtc_registry *r = arg;
+    while (!r->stop) {
+        pthread_mutex_lock(&r->lock);
+        for (size_t i = 0; i < r->count; i++) {
+            if (r->slots[i].rtc) mi_rtc_pump(r->slots[i].rtc, 5);
+        }
+        pthread_mutex_unlock(&r->lock);
+        struct timespec t = {.tv_sec = 0, .tv_nsec = 5 * 1000 * 1000};
+        nanosleep(&t, NULL);
     }
-    /* A WebSocket handshake is not subject to CORS, so the Origin is checked
-     * here: without it any page a user visits could open a stream. */
-    const char *origin = request_header(req, "Origin");
-    if (srv->cfg.allow_origins && origin && !origin_allowed(srv->cfg.allow_origins, origin)) {
-        send_error(fd, 403, "Forbidden", "origin is not allowed", NULL);
-        return;
-    }
+    return NULL;
+}
 
-    char *url = query_str(req->query, "url");
-    if (!url || !*url) {
-        free(url);
-        send_error(fd, 400, "Bad Request", "missing 'url'", NULL);
+static void rtc_registry_start(rtc_registry *r) {
+    if (!r || r->pump_running) return;
+    r->stop = 0;
+    if (pthread_create(&r->pump, NULL, rtc_pump_main, r) == 0) r->pump_running = 1;
+}
+
+static void rtc_registry_stop(rtc_registry *r) {
+    if (!r || !r->pump_running) return;
+    r->stop = 1;
+    pthread_join(r->pump, NULL);
+    r->pump_running = 0;
+}
+
+/* Stop the pump thread and drop every session. Called on server shutdown. */
+void rtc_registry_shutdown(void);
+void rtc_registry_shutdown(void) {
+    rtc_registry *r = g_rtc_reg;
+    if (!r) return;
+    rtc_registry_stop(r);
+    pthread_mutex_lock(&r->lock);
+    for (size_t i = 0; i < r->count; i++) {
+        if (r->slots[i].rtc) mi_rtc_close(r->slots[i].rtc);
+    }
+    r->count = 0;
+    pthread_mutex_unlock(&r->lock);
+}
+
+/* Add a session under a fresh token. Returns the token, or NULL. */
+static char *rtc_registry_add(rtc_registry *r, mi_rtc *rtc) {
+    if (!r) return NULL;
+    pthread_mutex_lock(&r->lock);
+    if (r->count == r->cap) {
+        size_t cap = r->cap ? r->cap * 2 : 4;
+        rtc_slot *grown = mi_realloc(r->slots, cap * sizeof *grown);
+        if (!grown) { pthread_mutex_unlock(&r->lock); return NULL; }
+        r->slots = grown;
+        r->cap = cap;
+    }
+    char token[40];
+    gen_id(token);
+    snprintf(r->slots[r->count].token, sizeof r->slots[r->count].token, "%s", token);
+    r->slots[r->count].rtc = rtc;
+    r->count++;
+    pthread_mutex_unlock(&r->lock);
+    return mi_strdup(token);
+}
+
+/*
+ * Look a session up, and remove it in the same breath.
+ *
+ * `take` is 1 for a close (the caller owns the session and must free it) and 0
+ * for a peek (the caller only reads state, under the lock). Removing on close is
+ * what keeps the table from growing without bound.
+ */
+static mi_rtc *rtc_registry_take(rtc_registry *r, const char *token, int take) {
+    if (!r || !token) return NULL;
+    mi_rtc *found = NULL;
+    pthread_mutex_lock(&r->lock);
+    for (size_t i = 0; i < r->count; i++) {
+        if (strcmp(r->slots[i].token, token) != 0) continue;
+        found = r->slots[i].rtc;
+        if (take) {
+            r->slots[i] = r->slots[r->count - 1];
+            r->count--;
+        }
+        break;
+    }
+    pthread_mutex_unlock(&r->lock);
+    return found;
+}
+
+/* Read a session's state under the lock, for a poll. */
+static void rtc_registry_state(rtc_registry *r, const char *token, const char **state,
+                               int *connected, const char **reason) {
+    *state = "closed";
+    *connected = 0;
+    *reason = "";
+    if (!r || !token) return;
+    pthread_mutex_lock(&r->lock);
+    for (size_t i = 0; i < r->count; i++) {
+        if (strcmp(r->slots[i].token, token) != 0) continue;
+        mi_rtc *rtc = r->slots[i].rtc;
+        if (rtc) {
+            *state = mi_rtc_state(rtc);
+            *connected = mi_rtc_connected(rtc);
+            *reason = mi_rtc_close_reason(rtc);
+        }
+        break;
+    }
+    pthread_mutex_unlock(&r->lock);
+}
+
+/* Read a request body as JSON, capped. Returns NULL on anything unusable. */
+static mi_json *read_json_body(http_request *req) {
+    if (!req->body || req->body_len == 0) return NULL;
+    return mi_json_parse(req->body);
+}
+
+/*
+ * POST /api/v1/rtc  {url}
+ *
+ * Opens a session and returns its offer once ICE gathering has finished. The
+ * wait is the price of having no socket to trickle candidates on; see mi_rtc.h.
+ */
+static void handle_rtc_open(mi_server *srv, int fd, http_request *req, const char *cors) {
+    mi_json *body = read_json_body(req);
+    if (!body) {
+        send_error(fd, 400, "Bad Request", "expected a JSON body with a url", cors);
         return;
     }
-    if (!mi_rtc_url_allowed(url)) {
-        free(url);
-        send_error(fd, 400, "Bad Request", "url is not streamable", NULL);
+    const char *url = mi_json_get_string(body, "url", NULL);
+    if (!url || !*url) {
+        mi_json_value_free(body);
+        send_error(fd, 400, "Bad Request", "missing 'url'", cors);
         return;
     }
     if (!srv->rtc) {
+        mi_json_value_free(body);
         send_error(fd, 503, "Service Unavailable",
-                   "live video is not enabled on this engine", NULL);
-        free(url);
+                   "live video is not enabled on this engine", cors);
         return;
     }
     if (!mi_rtc_pool_available(srv->rtc)) {
+        mi_json_value_free(body);
         send_error(fd, 503, "Service Unavailable",
-                   "no browser, Xvfb or GStreamer webrtc plugins on the engine host", NULL);
-        free(url);
+                   "no browser, Xvfb or GStreamer webrtc plugins on the engine host", cors);
         return;
     }
 
     char err[200];
     mi_rtc *rtc = NULL;
-    char *offer = NULL;
-    mi_rtc_status st = mi_rtc_open(srv->rtc, url, &rtc, &offer, err, sizeof err);
+    mi_rtc_status st = mi_rtc_open(srv->rtc, url, &rtc, err, sizeof err);
     if (st != MI_RTC_OK) {
+        mi_json_value_free(body);
         int code = 502;
         const char *text = "Bad Gateway";
         if (st == MI_RTC_BUSY) { code = 503; text = "Service Unavailable"; }
         else if (st == MI_RTC_BAD_URL) { code = 400; text = "Bad Request"; }
         else if (st == MI_RTC_NO_PLUGIN) { code = 503; text = "Service Unavailable"; }
-        send_error(fd, code, text, err[0] ? err : "could not start a live video session", NULL);
-        free(url);
+        send_error(fd, code, text, err[0] ? err : "could not start a live video session", cors);
         return;
     }
 
-    /* Upgrade only once the browser is up and an offer exists, so a failure is
-     * an HTTP status the console can read rather than a socket that dies. */
-    char *accept = mi_ws_accept_key(key);
-    if (!accept) {
+    /* The offer is only final once gathering has settled, so wait for it here. */
+    if (mi_rtc_wait_offer(rtc, 0) != 0) {
+        const char *why = mi_rtc_close_reason(rtc);
         mi_rtc_close(rtc);
-        free(offer);
-        free(url);
-        send_error(fd, 500, "Internal Server Error", "out of memory", NULL);
+        mi_json_value_free(body);
+        send_error(fd, 504, "Gateway Timeout",
+                   (why && *why) ? why : "the browser produced no offer in time", cors);
         return;
     }
-    char handshake[512];
-    int hn = snprintf(handshake, sizeof handshake,
-                      "HTTP/1.1 101 Switching Protocols\r\n"
-                      "Upgrade: websocket\r\n"
-                      "Connection: Upgrade\r\n"
-                      "Sec-WebSocket-Accept: %s\r\n\r\n",
-                      accept);
-    free(accept);
-    send_all(fd, handshake, (size_t)hn);
 
-    mi_outbox *out = mi_outbox_new(0);
-    if (!out) {
+    char *offer = mi_rtc_offer(rtc);
+    if (!offer) {
         mi_rtc_close(rtc);
-        free(offer);
-        free(url);
+        mi_json_value_free(body);
+        send_error(fd, 502, "Bad Gateway", "the offer was empty", cors);
         return;
     }
 
-    /* A per-session token the console must echo. A stray message from another
-     * tab, or a replayed one, cannot steer this stream. */
-    char token[40];
-    gen_id(token);
+    rtc_registry *reg = rtc_registry_get();
+    char *token = rtc_registry_add(reg, rtc);
+    if (!token) {
+        free(offer);
+        mi_rtc_close(rtc);
+        mi_json_value_free(body);
+        send_error(fd, 500, "Internal Server Error", "out of memory", cors);
+        return;
+    }
+    /* The pump has to be running before the answer arrives, or the connection
+     * would not be driven. */
+    rtc_registry_start(reg);
 
     int vw = 0, vh = 0;
     mi_rtc_viewport(rtc, &vw, &vh);
 
-    {
-        mi_json_buf b;
-        mi_json_init(&b);
-        mi_json_raw(&b, "{\"type\":\"offer\",\"token\":");
-        mi_json_string(&b, token);
-        mi_json_raw(&b, ",\"url\":");
-        mi_json_string(&b, url);
-        mi_json_raw(&b, ",\"sdp\":");
-        mi_json_string(&b, offer ? offer : "");
-        mi_json_raw(&b, ",\"width\":");
-        mi_json_int(&b, vw);
-        mi_json_raw(&b, ",\"height\":");
-        mi_json_int(&b, vh);
-        mi_json_raw(&b, "}");
-        rtc_queue_json(out, mi_json_data(&b));
-        mi_json_free(&b);
-    }
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"token\":");
+    mi_json_string(&b, token);
+    mi_json_raw(&b, ",\"sdp\":");
+    mi_json_string(&b, offer);
+    mi_json_raw(&b, ",\"width\":");
+    mi_json_int(&b, vw);
+    mi_json_raw(&b, ",\"height\":");
+    mi_json_int(&b, vh);
+    mi_json_raw(&b, ",\"gathered\":");
+    mi_json_bool(&b, mi_rtc_gathering_done(rtc));
+    mi_json_raw(&b, "}");
+    send_json(fd, 200, "OK", &b, cors);
+    mi_json_free(&b);
+
+    free(token);
     free(offer);
+    mi_json_value_free(body);
+}
 
-    int fl = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-
-    unsigned char rbuf[65536];
-    size_t rlen = 0;
-    int alive = 1;
-    int sent_ice = 0;
-    char last_state[32] = "";
-
-    while (alive) {
-        short want = POLLIN;
-        if (!mi_outbox_empty(out)) want |= POLLOUT;
-        struct pollfd p = {.fd = fd, .events = want};
-        int pr = poll(&p, 1, 10);
-        if (pr > 0 && (p.revents & (POLLIN | POLLHUP))) {
-            ssize_t n = recv(fd, rbuf + rlen, sizeof rbuf - rlen, 0);
-            if (n > 0) rlen += (size_t)n;
-            else if (n == 0) alive = 0;
-            else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) alive = 0;
-        }
-        if (alive && mi_outbox_flush(out, fd) != 0) alive = 0;
-
-        /* The console's half of the handshake: the answer, remote ICE, goodbye. */
-        size_t consumed = 0;
-        while (rlen - consumed >= 2) {
-            mi_ws_frame f;
-            ssize_t used = mi_ws_parse(rbuf + consumed, rlen - consumed, &f);
-            if (used == 0) break;
-            if (used < 0) { alive = 0; break; }
-            consumed += (size_t)used;
-
-            if (f.opcode == MI_WS_CLOSE) {
-                /* Tear down before acknowledging, so the slot is free by the
-                 * time the console's close event fires. */
-                mi_rtc_close(rtc);
-                rtc = NULL;
-                mi_ws_send(fd, MI_WS_CLOSE, NULL, 0);
-                mi_ws_frame_free(&f);
-                alive = 0;
-                break;
-            } else if (f.opcode == MI_WS_PING) {
-                mi_ws_send(fd, MI_WS_PONG, f.payload, f.len);
-            } else if (f.opcode == MI_WS_PONG) {
-                /* Liveness only. */
-            } else if (f.opcode == MI_WS_TEXT) {
-                mi_json *m = mi_json_parse((const char *)f.payload);
-                if (!m) {
-                    rtc_queue_json(out, "{\"type\":\"error\",\"message\":\"a message was not valid JSON\"}");
-                } else {
-                    const char *t = mi_json_get_string(m, "token", "");
-                    if (strcmp(t, token) != 0) {
-                        rtc_queue_json(out, "{\"type\":\"error\",\"message\":\"bad session token\"}");
-                    } else {
-                        const char *kind = mi_json_get_string(m, "type", "");
-                        if (!strcmp(kind, "answer")) {
-                            const char *sdp = mi_json_get_string(m, "sdp", NULL);
-                            if (!sdp || !*sdp) {
-                                rtc_queue_json(out, "{\"type\":\"error\",\"message\":\"an answer needs an sdp\"}");
-                            } else if (mi_rtc_set_answer(rtc, sdp) != 0) {
-                                rtc_queue_json(out, "{\"type\":\"error\",\"message\":\"the answer was not valid SDP\"}");
-                            }
-                        } else if (!strcmp(kind, "ice")) {
-                            const char *cand = mi_json_get_string(m, "candidate", NULL);
-                            int mline = (int)mi_json_get_int(m, "mline", -1);
-                            if (cand && *cand) mi_rtc_add_ice(rtc, cand, mline);
-                        } else if (!strcmp(kind, "bye")) {
-                            mi_rtc_close(rtc);
-                            rtc = NULL;
-                            alive = 0;
-                        }
-                    }
-                    mi_json_value_free(m);
-                }
-            }
-            mi_ws_frame_free(&f);
-        }
-        if (consumed > 0) {
-            memmove(rbuf, rbuf + consumed, rlen - consumed);
-            rlen -= consumed;
-        }
-        if (!alive) break;
-
-        /* Pumping is what runs the GStreamer main loop: without it nothing
-         * negotiates and no media leaves. */
-        if (mi_rtc_pump(rtc, 10) != 0) {
-            const char *why = mi_rtc_close_reason(rtc);
-            mi_json_buf b;
-            mi_json_init(&b);
-            mi_json_raw(&b, "{\"type\":\"ended\",\"reason\":");
-            mi_json_string(&b, (why && *why) ? why : "the stream ended");
-            mi_json_raw(&b, "}");
-            rtc_queue_json(out, mi_json_data(&b));
-            mi_json_free(&b);
-            break;
-        }
-
-        /* Trickle the local candidates gathered since the last pass. webrtcbin
-         * starts gathering as soon as the local description is set, which is
-         * during the offer, so some exist before the answer arrives. */
-        char *ice = mi_rtc_local_ice_json(rtc);
-        if (ice) {
-            mi_json *arr = mi_json_parse(ice);
-            if (arr && arr->type == MI_JSON_ARRAY) {
-                for (size_t i = (size_t)sent_ice; i < arr->count; i++) {
-                    const mi_json *e = arr->items[i];
-                    const char *cand = mi_json_get_string(e, "candidate", NULL);
-                    if (!cand) continue;
-                    mi_json_buf b;
-                    mi_json_init(&b);
-                    mi_json_raw(&b, "{\"type\":\"ice\",\"token\":");
-                    mi_json_string(&b, token);
-                    mi_json_raw(&b, ",\"candidate\":");
-                    mi_json_string(&b, cand);
-                    mi_json_raw(&b, ",\"mline\":");
-                    mi_json_int(&b, mi_json_get_int(e, "mline", 0));
-                    mi_json_raw(&b, "}");
-                    rtc_queue_json(out, mi_json_data(&b));
-                    mi_json_free(&b);
-                    sent_ice++;
-                }
-            }
-            if (arr) mi_json_value_free(arr);
-            free(ice);
-        }
-
-        /* Report a state change once, not on every tick. */
-        const char *state = mi_rtc_state(rtc);
-        if (state && strcmp(state, last_state) != 0) {
-            snprintf(last_state, sizeof last_state, "%s", state);
-            mi_json_buf b;
-            mi_json_init(&b);
-            mi_json_raw(&b, "{\"type\":\"state\",\"token\":");
-            mi_json_string(&b, token);
-            mi_json_raw(&b, ",\"state\":");
-            mi_json_string(&b, state);
-            mi_json_raw(&b, ",\"connected\":");
-            mi_json_bool(&b, mi_rtc_connected(rtc));
-            mi_json_raw(&b, "}");
-            rtc_queue_json(out, mi_json_data(&b));
-            mi_json_free(&b);
-        }
+/* POST /api/v1/rtc/{token}/answer  {sdp} */
+static void handle_rtc_answer(mi_server *srv, int fd, http_request *req,
+                              const char *token, const char *cors) {
+    (void)srv;
+    mi_json *body = read_json_body(req);
+    if (!body) {
+        send_error(fd, 400, "Bad Request", "expected a JSON body with an sdp", cors);
+        return;
+    }
+    const char *sdp = mi_json_get_string(body, "sdp", NULL);
+    if (!sdp || !*sdp) {
+        mi_json_value_free(body);
+        send_error(fd, 400, "Bad Request", "missing 'sdp'", cors);
+        return;
     }
 
-    if (rtc) {
-        const char *why = mi_rtc_close_reason(rtc);
-        mi_json_buf b;
-        mi_json_init(&b);
-        mi_json_raw(&b, "{\"type\":\"ended\",\"reason\":");
-        mi_json_string(&b, (why && *why) ? why : "the session closed");
-        mi_json_raw(&b, "}");
-        rtc_queue_json(out, mi_json_data(&b));
-        mi_json_free(&b);
-        mi_rtc_close(rtc);
+    rtc_registry *reg = rtc_registry_get();
+    mi_rtc *rtc = rtc_registry_take(reg, token, 0);
+    if (!rtc) {
+        mi_json_value_free(body);
+        send_error(fd, 404, "Not Found", "no such session", cors);
+        return;
     }
-    /* A farewell is worth a short grace period to reach the console. */
-    for (int i = 0; i < 40 && !mi_outbox_empty(out); i++) {
-        if (mi_outbox_flush(out, fd) != 0) break;
-        struct timespec t = {.tv_sec = 0, .tv_nsec = 5 * 1000 * 1000};
-        nanosleep(&t, NULL);
+
+    pthread_mutex_lock(&reg->lock);
+    int ok = mi_rtc_set_answer(rtc, sdp) == 0;
+    pthread_mutex_unlock(&reg->lock);
+    mi_json_value_free(body);
+
+    if (!ok) {
+        send_error(fd, 400, "Bad Request", "the answer was not valid SDP", cors);
+        return;
     }
-    mi_outbox_free(out);
-    free(url);
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"ok\":true}");
+    send_json(fd, 200, "OK", &b, cors);
+    mi_json_free(&b);
+}
+
+/* GET /api/v1/rtc/{token} */
+static void handle_rtc_status(mi_server *srv, int fd, const char *token, const char *cors) {
+    (void)srv;
+    rtc_registry *reg = rtc_registry_get();
+    const char *state = "closed", *reason = "";
+    int connected = 0;
+    rtc_registry_state(reg, token, &state, &connected, &reason);
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"state\":");
+    mi_json_string(&b, state);
+    mi_json_raw(&b, ",\"connected\":");
+    mi_json_bool(&b, connected);
+    mi_json_raw(&b, ",\"reason\":");
+    mi_json_string(&b, reason);
+    mi_json_raw(&b, "}");
+    send_json(fd, 200, "OK", &b, cors);
+    mi_json_free(&b);
+}
+
+/* DELETE /api/v1/rtc/{token} */
+static void handle_rtc_close(mi_server *srv, int fd, const char *token, const char *cors) {
+    (void)srv;
+    rtc_registry *reg = rtc_registry_get();
+    mi_rtc *rtc = rtc_registry_take(reg, token, 1);
+    if (rtc) mi_rtc_close(rtc); /* closes the browser, the display and the pipeline */
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"ok\":true}");
+    send_json(fd, 200, "OK", &b, cors);
+    mi_json_free(&b);
 }
 
 static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
@@ -2604,6 +2644,61 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
     }
 
     /*
+     * Live video over WebRTC, signalled over plain HTTP.
+     *
+     * There is no WebSocket here on purpose: the offer, the answer and the
+     * state are one request each, and input rides a WebRTC data channel. A
+     * session is identified by a token the engine mints, which is why these
+     * routes are handled before the bearer check — a browser cannot put an
+     * Authorization header on a WebRTC connection's setup, and the token is
+     * the credential.
+     */
+    if (!strcmp(req->path, "/api/v1/rtc")) {
+        if (srv->cfg.auth_token && !authorized(srv, req)) {
+            send_error(fd, 401, "Unauthorized", "missing or invalid token", cors);
+            return;
+        }
+        if (!strcmp(req->method, "POST")) {
+            handle_rtc_open(srv, fd, req, cors);
+            return;
+        }
+        send_error(fd, 405, "Method Not Allowed", "use POST to open a session", cors);
+        return;
+    }
+    if (!strncmp(req->path, "/api/v1/rtc/", 12)) {
+        if (srv->cfg.auth_token && !authorized(srv, req)) {
+            send_error(fd, 401, "Unauthorized", "missing or invalid token", cors);
+            return;
+        }
+        /* /api/v1/rtc/{token} and /api/v1/rtc/{token}/answer */
+        const char *rest = req->path + 12;
+        const char *slash = strchr(rest, '/');
+        char token[64];
+        size_t tlen = slash ? (size_t)(slash - rest) : strlen(rest);
+        if (tlen == 0 || tlen >= sizeof token) {
+            send_error(fd, 404, "Not Found", "unknown path", cors);
+            return;
+        }
+        memcpy(token, rest, tlen);
+        token[tlen] = '\0';
+        const char *sub = slash ? slash + 1 : "";
+        if (!strcmp(sub, "answer") && !strcmp(req->method, "POST")) {
+            handle_rtc_answer(srv, fd, req, token, cors);
+            return;
+        }
+        if (!*sub && !strcmp(req->method, "GET")) {
+            handle_rtc_status(srv, fd, token, cors);
+            return;
+        }
+        if (!*sub && !strcmp(req->method, "DELETE")) {
+            handle_rtc_close(srv, fd, token, cors);
+            return;
+        }
+        send_error(fd, 405, "Method Not Allowed", "unsupported method", cors);
+        return;
+    }
+
+    /*
      * GET /api/v1/interactive?url=…  (WebSocket upgrade)
      *
      * Handled before the generic bearer check, because a browser cannot put an
@@ -2625,30 +2720,6 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             }
         }
         serve_interactive_ws(srv, fd, req);
-        return;
-    }
-
-    /*
-     * GET /api/v1/rtc?url=…  (WebSocket upgrade, WebRTC media)
-     *
-     * Same reasoning as the interactive route above: a browser cannot put an
-     * Authorization header on a WebSocket, so the token may arrive as a query
-     * parameter and the Origin check inside the handler is the other half.
-     */
-    if (!strcmp(req->path, "/api/v1/rtc") && !strcmp(req->method, "GET")) {
-        if (srv->cfg.auth_token) {
-            const char *auth = request_header(req, "Authorization");
-            char *qtok = query_str(req->query, "token");
-            int ok = (auth && !strncmp(auth, "Bearer ", 7) &&
-                      !strcmp(auth + 7, srv->cfg.auth_token)) ||
-                     (qtok && !strcmp(qtok, srv->cfg.auth_token));
-            free(qtok);
-            if (!ok) {
-                send_error(fd, 401, "Unauthorized", "missing or invalid token", cors);
-                return;
-            }
-        }
-        serve_rtc_ws(srv, fd, req);
         return;
     }
 
@@ -3804,6 +3875,9 @@ int mi_server_can_drive(const mi_server *srv) {
 
 void mi_server_free(mi_server *srv) {
     if (!srv) return;
+    /* The pump thread touches sessions; it must be stopped before the pool
+     * that owns them is freed. */
+    rtc_registry_shutdown();
     for (size_t i = 0; i < srv->download_count; i++) download_free(srv->downloads[i]);
     free(srv->downloads);
     free(srv->threads);

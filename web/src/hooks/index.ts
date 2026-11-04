@@ -24,6 +24,9 @@ export { useBrowse, useBrowseUrl, usePageFrame, useRenderPage } from './use-brow
 export type { UseBrowseArgs } from './use-browse';
 export { useLiveSession } from './use-live';
 export type { UseLiveSession } from './use-live';
+export { useLiveVideo } from './use-live-video';
+export type { UseLiveVideo, LiveVideoStatus } from './use-live-video';
+export type { LiveVideoState, LiveVideoViewport } from '../domain/rtc';
 export type { LiveStreamStats } from '../rest/browse';
 export type {
   FetchedPage,

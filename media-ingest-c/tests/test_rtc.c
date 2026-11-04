@@ -5,8 +5,10 @@
  * session, and it says so when they are missing rather than passing silently.
  *
  * The behaviours worth pinning are the ones a regression would break quietly:
- * a refused URL must cost nothing, the gate must refuse rather than queue, and a
- * real session must produce an SDP offer that a browser could answer.
+ * a refused URL must cost nothing, the gate must refuse rather than queue, a
+ * real session must produce an SDP offer a browser could answer, and the offer
+ * must be complete before it is handed over — because with no signalling socket
+ * there is no second chance to send the candidates.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -59,6 +61,9 @@ static void test_config(void) {
     CHECK(cfg.fps >= 20 && cfg.fps <= 30, "the default frame rate is a live one");
     CHECK(cfg.bitrate_kbps > 0, "a bitrate is set by default");
     CHECK(cfg.idle_timeout_seconds > 0, "an idle timeout is set by default");
+    /* Gathering has to be bounded, or a host with a STUN server that never
+     * answers would wait forever for an offer. */
+    CHECK(cfg.gather_timeout_ms > 0, "gathering has a deadline by default");
 
     mi_rtc_pool *pool = mi_rtc_pool_new(&cfg);
     CHECK(pool != NULL, "a pool can be made");
@@ -89,16 +94,15 @@ static void test_live(void) {
 
     char err[200];
     mi_rtc *rtc = NULL;
-    char *offer = NULL;
 
     /* A refused URL costs nothing and takes no slot. */
-    mi_rtc_status s = mi_rtc_open(pool, "file:///etc/passwd", &rtc, &offer, err, sizeof err);
+    mi_rtc_status s = mi_rtc_open(pool, "file:///etc/passwd", &rtc, err, sizeof err);
     CHECK(s == MI_RTC_BAD_URL, "a file:// session is refused");
     CHECK(rtc == NULL, "a refused session yields no handle");
     CHECK(mi_rtc_pool_active(pool) == 0, "a refused session took no slot");
 
     /* A real session: it must produce an offer a browser could answer. */
-    s = mi_rtc_open(pool, "https://example.com/", &rtc, &offer, err, sizeof err);
+    s = mi_rtc_open(pool, "https://example.com/", &rtc, err, sizeof err);
     CHECK(s == MI_RTC_OK, "a WebRTC session opens");
     if (s != MI_RTC_OK) {
         fprintf(stderr, "  (open failed: status=%d err=%s)\n", (int)s, err);
@@ -107,8 +111,25 @@ static void test_live(void) {
     }
     CHECK(mi_rtc_pool_active(pool) == 1, "the session holds a slot");
 
-    /* The offer is the contract with the browser: a v= line, a video m-line, and
-     * ICE credentials. Without any of those a browser cannot connect at all. */
+    /* The handle is returned before the offer exists; that is the point of the
+     * split, because startup is not instant. */
+    CHECK(mi_rtc_offer(rtc) == NULL, "no offer yet, immediately after open");
+
+    /* Waiting is what produces it. */
+    int ok = mi_rtc_wait_offer(rtc, 0);
+    CHECK(ok == 0, "the offer arrives within the deadline");
+    if (ok != 0) {
+        fprintf(stderr, "  (wait failed: %s)\n", mi_rtc_close_reason(rtc));
+        mi_rtc_close(rtc);
+        mi_rtc_pool_free(pool);
+        return;
+    }
+
+    /* With no socket to trickle on, the offer has to be final: gathering must
+     * have completed so the candidates are already in the SDP. */
+    CHECK(mi_rtc_gathering_done(rtc), "gathering finished before the offer was returned");
+
+    char *offer = mi_rtc_offer(rtc);
     CHECK(offer != NULL, "an offer was produced");
     if (offer) {
         CHECK(strstr(offer, "v=0") != NULL, "the offer is SDP");
@@ -117,6 +138,8 @@ static void test_live(void) {
         CHECK(strstr(offer, "a=ice-pwd") != NULL, "and an ICE password");
         CHECK(strstr(offer, "VP8") != NULL, "and names the VP8 codec");
         CHECK(strstr(offer, "UDP/TLS/RTP/SAVPF") != NULL, "over DTLS-SRTP");
+        /* A candidate in the SDP is what makes the handshake socket-free. */
+        CHECK(strstr(offer, "a=candidate") != NULL, "and its gathered candidates");
     }
 
     /* The viewport is the X display's size, which is what the browser sees. */
@@ -133,14 +156,16 @@ static void test_live(void) {
     CHECK(mi_rtc_state(rtc) != NULL, "the connection state is reportable");
     CHECK(!mi_rtc_connected(rtc), "it is not connected without a browser answering");
 
-    /* Local ICE candidates are gathered before an answer arrives, because
-     * webrtcbin starts as soon as the local description is set. This is what the
-     * console needs to send to the browser. */
+    /* The input channel is not open until a browser answers, and sending on a
+     * channel that is not open must be a no-op rather than a crash. */
+    CHECK(!mi_rtc_channel_ready(rtc), "the input channel is closed before an answer");
+    mi_rtc_channel_send(rtc, "{\"type\":\"reload\"}"); /* must not crash */
+    CHECK(1, "sending on a closed channel is harmless");
+
+    /* Local ICE is still reportable, for a caller that wants to log it. */
     char *ice = mi_rtc_local_ice_json(rtc);
     CHECK(ice != NULL, "local ICE can be reported");
     if (ice) {
-        /* Either a host candidate was gathered, or gathering has not started. An
-         * empty array is valid; malformed JSON is not. */
         CHECK(ice[0] == '[', "and it is a JSON array");
         free(ice);
     }

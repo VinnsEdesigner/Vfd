@@ -1,16 +1,27 @@
-/* mi_rtc.c - a live page as raw video over WebRTC.
+/* mi_rtc.c - a live page as raw video over WebRTC, with input on a data channel.
  *
- * The pipeline is built here and driven by a GLib main loop that `mi_rtc_pump`
- * runs. That is the shape GStreamer wants: `webrtcbin` signals (negotiation
- * needed, ICE candidate) are delivered on the main context, so a session that is
- * not pumped does not negotiate and does not send.
+ * THE SHAPE
  *
- * Chromium runs on a real X display rather than headless, because headless
- * composites internally and never touches X — so there would be nothing for
- * `ximagesrc` to read. It is launched with `--use-gl=swiftshader` because the
- * virtual display has no GPU, and with `--remote-debugging-pipe` because the CDP
- * pipe is still how input is driven. Two channels, two jobs: X for pixels, the
- * pipe for input.
+ *   chromium on Xvfb --paints--> X display --ximagesrc--> vp8enc --> webrtcbin
+ *                                                                     |
+ *   input (navigate/mouse/key/touch) <-- data channel <---------------+
+ *                                     --> CDP pipe --> chromium
+ *
+ * Two channels, two jobs, and neither is a WebSocket: X carries pixels out, the
+ * WebRTC data channel carries input in, and the CDP pipe is how that input
+ * reaches the page. Signalling is plain HTTP (see mi_rtc.h) because WebRTC
+ * cannot bootstrap itself.
+ *
+ * The pipeline is driven by a GLib main loop that `mi_rtc_pump` runs. That is the
+ * shape GStreamer wants: `webrtcbin`'s signals (negotiation needed, ICE candidate,
+ * data channel) are delivered on the main context, so a session that is not
+ * pumped does not negotiate, does not send, and never notices a browser has gone.
+ *
+ * WHY GATHERING IS AWAITED
+ *
+ * With no socket there is nothing to trickle ICE on, so the offer is only handed
+ * over once gathering has finished and its candidates are in the SDP. That is one
+ * request instead of a stream of them, at the cost of a short wait at startup.
  */
 #define _GNU_SOURCE
 #include "mi_rtc.h"
@@ -34,16 +45,26 @@
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
 
+#include "mi_json.h"
 #include "mi_render.h" /* the shared URL rules */
 #include "mi_util.h"
-
-#define GST_USE_UNSTABLE_API_WAS_SET 1
 
 /* Chromium's names, in the order they are usually found. */
 static const char *const BROWSERS[] = {
     "chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
     "chrome", NULL,
 };
+
+/* The label of the data channel that carries input. One name, agreed by both
+ * ends, so the engine can find the right channel whichever end opened it. */
+static const char *const INPUT_LABEL = "input";
+
+/* The CDP pipe: chromium reads fd 3 and writes fd 4. */
+#define CDP_READ_FD 3
+#define CDP_WRITE_FD 4
+/* A cap on queued CDP bytes, so a console that floods input cannot grow the
+ * engine's memory without bound. */
+#define CDP_WRITE_MAX (1024u * 1024u)
 
 struct mi_rtc_pool {
     mi_rtc_config cfg;
@@ -67,20 +88,34 @@ struct mi_rtc {
     char *profile;
     char *url;
 
+    /* The CDP pipe: how input reaches the page. */
+    int wfd; /* parent -> browser (the child's fd 3) */
+    int rfd; /* browser -> parent (the child's fd 4) */
+    char cdp_session[64];
+    int cdp_next_id;
+    int cdp_attached;
+    int cdp_resp_id;
+    int cdp_resp_ok;
+    char *cdp_resp_json;
+    unsigned char *rbuf;
+    size_t rbuf_len, rbuf_cap;
+    unsigned char *wbuf;
+    size_t wbuf_len, wbuf_cap;
+
     /* The GStreamer side. */
     GstElement *pipeline;
     GstElement *webrtc;
     GMainContext *context;
-    GMainLoop *loop;
     guint bus_watch;
 
     /* Negotiation. */
     char *offer;
     int offer_ready;
+    int gathering_done;
     int answer_set;
     int connected;
     int failed;
-    /* Local candidates, kept so they can be reported to the console. */
+    /* Local candidates, kept so they can be reported. */
     char *local_ice;
     size_t local_ice_len;
     size_t local_ice_cap;
@@ -88,6 +123,12 @@ struct mi_rtc {
     /* Counters, so the stream can be reported rather than guessed at. */
     uint64_t frames;
     uint64_t bytes;
+
+    /* The input data channel. */
+    GstWebRTCDataChannel *channel;
+    int channel_ready;
+    mi_rtc_input_fn input_fn;
+    void *input_user;
 
     int width, height;
     double last_activity;
@@ -104,9 +145,6 @@ int mi_rtc_url_allowed(const char *url) {
 
 void mi_rtc_config_init(mi_rtc_config *cfg) {
     memset(cfg, 0, sizeof *cfg);
-    cfg->chromium_path = NULL;
-    cfg->xvfb_path = NULL;
-    cfg->display = NULL;
     cfg->max_concurrent = 1;
     cfg->v8_heap_mb = 256;
     cfg->width = 1280;
@@ -116,11 +154,11 @@ void mi_rtc_config_init(mi_rtc_config *cfg) {
     cfg->fps = 25;
     /* VP8 at 1280x800 needs a few hundred kbit/s to look right. */
     cfg->bitrate_kbps = 2500;
-    cfg->user_agent = NULL;
-    cfg->profile_root = NULL;
     cfg->idle_timeout_seconds = 180;
     cfg->startup_timeout_seconds = 25;
-    cfg->stun_server = NULL;
+    /* Gathering without STUN is instant; with one it waits for a reply. Three
+     * seconds is generous for a reply and short enough not to stall a start. */
+    cfg->gather_timeout_ms = 3000;
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,6 +230,7 @@ mi_rtc_pool *mi_rtc_pool_new(const mi_rtc_config *cfg) {
     if (pool->cfg.fps <= 0) pool->cfg.fps = 25;
     if (pool->cfg.bitrate_kbps <= 0) pool->cfg.bitrate_kbps = 2500;
     if (pool->cfg.startup_timeout_seconds <= 0) pool->cfg.startup_timeout_seconds = 25;
+    if (pool->cfg.gather_timeout_ms <= 0) pool->cfg.gather_timeout_ms = 3000;
     pool->next_display = 90;
 
     pool->browser = find_browser(cfg->chromium_path);
@@ -199,10 +238,7 @@ mi_rtc_pool *mi_rtc_pool_new(const mi_rtc_config *cfg) {
                      ? (file_is_executable(cfg->xvfb_path) ? mi_strdup(cfg->xvfb_path) : NULL)
                      : (mi_which("Xvfb") ? mi_strdup("Xvfb") : NULL);
 
-    /* GStreamer is initialised once for the process. */
-    if (!gst_is_initialized()) {
-        gst_init(NULL, NULL);
-    }
+    if (!gst_is_initialized()) gst_init(NULL, NULL);
     pool->gst_ready = gst_stack_ready();
 
     if (!pool->browser) {
@@ -272,8 +308,7 @@ static void reap_children(mi_rtc_pool *pool) {
     pthread_mutex_lock(&pool->reap_lock);
     for (;;) {
         int status = 0;
-        pid_t got = waitpid(-1, &status, WNOHANG);
-        if (got <= 0) break;
+        if (waitpid(-1, &status, WNOHANG) <= 0) break;
     }
     pthread_mutex_unlock(&pool->reap_lock);
 }
@@ -290,10 +325,438 @@ static void set_close_reason(mi_rtc *rtc, const char *why) {
 }
 
 /* ------------------------------------------------------------------ */
+/* The CDP pipe (input)                                                */
+/* ------------------------------------------------------------------ */
+
+static void cdp_queue(mi_rtc *rtc, const char *json, size_t len) {
+    if (rtc->closed) return;
+    if (rtc->wbuf_len + len + 1 > CDP_WRITE_MAX) {
+        set_close_reason(rtc, "the console sent more commands than the browser could take");
+        return;
+    }
+    if (rtc->wbuf_len + len + 1 > rtc->wbuf_cap) {
+        size_t cap = (rtc->wbuf_len + len + 1) * 2;
+        unsigned char *grown = mi_realloc(rtc->wbuf, cap);
+        if (!grown) return;
+        rtc->wbuf = grown;
+        rtc->wbuf_cap = cap;
+    }
+    memcpy(rtc->wbuf + rtc->wbuf_len, json, len);
+    rtc->wbuf_len += len;
+    rtc->wbuf[rtc->wbuf_len++] = '\0'; /* CDP frames messages with a NUL */
+}
+
+static void cdp_flush(mi_rtc *rtc) {
+    while (!rtc->closed && rtc->wbuf_len > 0 && rtc->wfd >= 0) {
+        ssize_t n = write(rtc->wfd, rtc->wbuf, rtc->wbuf_len);
+        if (n > 0) {
+            memmove(rtc->wbuf, rtc->wbuf + n, rtc->wbuf_len - (size_t)n);
+            rtc->wbuf_len -= (size_t)n;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n < 0 && errno == EINTR) continue;
+        set_close_reason(rtc, "the browser stopped reading");
+        return;
+    }
+}
+
+/* Send one command. `params` is a raw JSON object or NULL. Returns its id. */
+static int cdp_command(mi_rtc *rtc, const char *method, const char *params) {
+    if (rtc->closed) return 0;
+    int id = ++rtc->cdp_next_id;
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"id\":");
+    mi_json_int(&b, id);
+    mi_json_raw(&b, ",\"method\":");
+    mi_json_string(&b, method);
+    if (rtc->cdp_session[0]) {
+        mi_json_raw(&b, ",\"sessionId\":");
+        mi_json_string(&b, rtc->cdp_session);
+    }
+    if (params) {
+        mi_json_raw(&b, ",\"params\":");
+        mi_json_raw(&b, params);
+    }
+    mi_json_raw(&b, "}");
+    cdp_queue(rtc, mi_json_data(&b), b.len);
+    mi_json_free(&b);
+    cdp_flush(rtc);
+    return id;
+}
+
+/* Drain the pipe, splitting on NUL, and remember the last response. */
+static void cdp_read(mi_rtc *rtc) {
+    if (rtc->rfd < 0) return;
+    unsigned char chunk[16384];
+    for (;;) {
+        ssize_t n = read(rtc->rfd, chunk, sizeof chunk);
+        if (n > 0) {
+            if (rtc->rbuf_len + (size_t)n > rtc->rbuf_cap) {
+                size_t cap = (rtc->rbuf_len + (size_t)n) * 2;
+                unsigned char *grown = mi_realloc(rtc->rbuf, cap);
+                if (!grown) return;
+                rtc->rbuf = grown;
+                rtc->rbuf_cap = cap;
+            }
+            memcpy(rtc->rbuf + rtc->rbuf_len, chunk, (size_t)n);
+            rtc->rbuf_len += (size_t)n;
+            continue;
+        }
+        if (n == 0) { set_close_reason(rtc, "the browser closed the connection"); return; }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+        if (errno == EINTR) continue;
+        set_close_reason(rtc, "the browser connection failed");
+        return;
+    }
+    /* Split complete NUL-terminated messages out of the buffer. */
+    size_t start = 0;
+    for (size_t i = 0; i < rtc->rbuf_len; i++) {
+        if (rtc->rbuf[i] != '\0') continue;
+        const char *msg = (const char *)rtc->rbuf + start;
+        mi_json *root = mi_json_parse(msg);
+        if (root) {
+            int64_t id = mi_json_get_int(root, "id", 0);
+            if (id > 0) {
+                rtc->cdp_resp_id = (int)id;
+                const mi_json *err = mi_json_get(root, "error");
+                rtc->cdp_resp_ok = err == NULL;
+                free(rtc->cdp_resp_json);
+                rtc->cdp_resp_json = mi_strdup(msg);
+            }
+            mi_json_value_free(root);
+        }
+        start = i + 1;
+    }
+    if (start > 0) {
+        memmove(rtc->rbuf, rtc->rbuf + start, rtc->rbuf_len - start);
+        rtc->rbuf_len -= start;
+    }
+}
+
+/* Read until the response with `id` arrives, or the deadline passes.
+ * Returns 1 on success, 0 on an error response, -1 on timeout. */
+static int cdp_wait(mi_rtc *rtc, int id, int timeout_ms) {
+    double deadline = mono_seconds() + timeout_ms / 1000.0;
+    while (mono_seconds() < deadline && !rtc->closed) {
+        cdp_read(rtc);
+        if (rtc->cdp_resp_id == id) return rtc->cdp_resp_ok ? 1 : 0;
+        struct timespec t = {.tv_sec = 0, .tv_nsec = 5 * 1000 * 1000};
+        nanosleep(&t, NULL);
+    }
+    return -1;
+}
+
+/* A string member of the last response's `result`. Allocated; free it. */
+static char *cdp_result_string(mi_rtc *rtc, const char *key) {
+    if (!rtc->cdp_resp_json) return NULL;
+    mi_json *root = mi_json_parse(rtc->cdp_resp_json);
+    if (!root) return NULL;
+    const char *v = mi_json_get_string(mi_json_get(root, "result"), key, NULL);
+    char *out = v ? mi_strdup(v) : NULL;
+    mi_json_value_free(root);
+    return out;
+}
+
+/* The page target's id, from a Target.getTargets result. */
+static int cdp_page_target(mi_rtc *rtc, char *out, size_t outcap) {
+    if (!rtc->cdp_resp_json) return -1;
+    mi_json *root = mi_json_parse(rtc->cdp_resp_json);
+    if (!root) return -1;
+    const mi_json *infos = mi_json_get(mi_json_get(root, "result"), "targetInfos");
+    int found = -1;
+    if (infos && infos->type == MI_JSON_ARRAY) {
+        for (size_t i = 0; i < infos->count; i++) {
+            const mi_json *t = infos->items[i];
+            const char *type = mi_json_get_string(t, "type", NULL);
+            const char *tid = mi_json_get_string(t, "targetId", NULL);
+            if (type && tid && !strcmp(type, "page")) {
+                snprintf(out, outcap, "%s", tid);
+                found = 0;
+                break;
+            }
+        }
+    }
+    mi_json_value_free(root);
+    return found;
+}
+
+/*
+ * Attach to the page, once, and enable the domains input needs.
+ *
+ * Retried by the caller until the browser is up: the startup page does not exist
+ * the instant the process is forked. Flattened, so commands carry a sessionId and
+ * this page's events arrive on the same pipe without a target-routing dance.
+ */
+static int rtc_cdp_attach(mi_rtc *rtc) {
+    if (rtc->cdp_attached) return 0;
+
+    char target[64] = {0};
+    int rid = cdp_command(rtc, "Target.getTargets", NULL);
+    if (cdp_wait(rtc, rid, 500) < 0) return -1;
+    if (cdp_page_target(rtc, target, sizeof target) != 0 || !target[0]) return -1;
+
+    char params[256];
+    snprintf(params, sizeof params, "{\"targetId\":\"%s\",\"flatten\":true}", target);
+    rid = cdp_command(rtc, "Target.attachToTarget", params);
+    if (cdp_wait(rtc, rid, 2000) != 1) return -1;
+    char *sid = cdp_result_string(rtc, "sessionId");
+    if (!sid || !*sid) { free(sid); return -1; }
+    snprintf(rtc->cdp_session, sizeof rtc->cdp_session, "%s", sid);
+    free(sid);
+
+    /* Page for navigation, Runtime so a page's own scripts run. */
+    rid = cdp_command(rtc, "Page.enable", NULL);
+    cdp_wait(rtc, rid, 2000);
+    rid = cdp_command(rtc, "Runtime.enable", NULL);
+    cdp_wait(rtc, rid, 2000);
+
+    /* The viewport, so the page lays itself out at the size being captured. */
+    char vp[160];
+    snprintf(vp, sizeof vp,
+             "{\"width\":%d,\"height\":%d,\"deviceScaleFactor\":1,\"mobile\":false}",
+             rtc->width, rtc->height);
+    rid = cdp_command(rtc, "Emulation.setDeviceMetricsOverride", vp);
+    cdp_wait(rtc, rid, 2000);
+
+    /*
+     * Focus emulation.
+     *
+     * A browser with no window manager reports the page as unfocused and a
+     * clicked field never takes the caret, so typing goes nowhere. This tells the
+     * page it is focused, which is what a real window would do.
+     */
+    rid = cdp_command(rtc, "Emulation.setFocusEmulationEnabled", "{\"enabled\":true}");
+    cdp_wait(rtc, rid, 2000);
+
+    rtc->cdp_attached = 1;
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Input dispatch (console vocabulary -> CDP)                          */
+/* ------------------------------------------------------------------ */
+
+static void rtc_input(mi_rtc *rtc, const mi_json *m) {
+    const char *type = mi_json_get_string(m, "type", "");
+    if (!type || !*type) return;
+
+    if (!strcmp(type, "navigate")) {
+        const char *url = mi_json_get_string(m, "url", NULL);
+        /* A navigation is a fetch on the caller's behalf, so it obeys the same
+         * rules as opening one. */
+        if (!url || !mi_rtc_url_allowed(url)) return;
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"url\":");
+        mi_json_string(&b, url);
+        mi_json_raw(&b, "}");
+        cdp_command(rtc, "Page.navigate", mi_json_data(&b));
+        mi_json_free(&b);
+        free(rtc->url);
+        rtc->url = mi_strdup(url);
+    } else if (!strcmp(type, "reload")) {
+        cdp_command(rtc, "Page.reload", NULL);
+    } else if (!strcmp(type, "resize")) {
+        int w = (int)mi_json_get_number(m, "width", rtc->width);
+        int h = (int)mi_json_get_number(m, "height", rtc->height);
+        if (w < 64) w = 64;
+        if (h < 64) h = 64;
+        if (w > 4096) w = 4096;
+        if (h > 4096) h = 4096;
+        char params[160];
+        snprintf(params, sizeof params,
+                 "{\"width\":%d,\"height\":%d,\"deviceScaleFactor\":1,\"mobile\":false}", w, h);
+        cdp_command(rtc, "Emulation.setDeviceMetricsOverride", params);
+    } else if (!strcmp(type, "mouse") || !strcmp(type, "wheel")) {
+        int wheel = !strcmp(type, "wheel");
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"type\":");
+        mi_json_string(&b, wheel ? "mouseWheel" : mi_json_get_string(m, "event", "mouseMoved"));
+        mi_json_raw(&b, ",\"x\":");
+        mi_json_double(&b, mi_json_get_number(m, "x", 0));
+        mi_json_raw(&b, ",\"y\":");
+        mi_json_double(&b, mi_json_get_number(m, "y", 0));
+        if (wheel) {
+            mi_json_raw(&b, ",\"deltaX\":");
+            mi_json_double(&b, mi_json_get_number(m, "deltaX", 0));
+            mi_json_raw(&b, ",\"deltaY\":");
+            mi_json_double(&b, mi_json_get_number(m, "deltaY", 0));
+        } else {
+            const char *button = mi_json_get_string(m, "button", NULL);
+            if (button && *button) {
+                mi_json_raw(&b, ",\"button\":");
+                mi_json_string(&b, button);
+            }
+            mi_json_raw(&b, ",\"clickCount\":");
+            mi_json_int(&b, mi_json_get_int(m, "clickCount", 0));
+            mi_json_raw(&b, ",\"buttons\":");
+            mi_json_int(&b, mi_json_get_int(m, "buttons", 0));
+        }
+        mi_json_raw(&b, ",\"modifiers\":");
+        mi_json_int(&b, mi_json_get_int(m, "modifiers", 0));
+        mi_json_raw(&b, "}");
+        cdp_command(rtc, "Input.dispatchMouseEvent", mi_json_data(&b));
+        mi_json_free(&b);
+    } else if (!strcmp(type, "key")) {
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"type\":");
+        mi_json_string(&b, mi_json_get_string(m, "event", "keyDown"));
+        const char *key = mi_json_get_string(m, "key", NULL);
+        const char *code = mi_json_get_string(m, "code", NULL);
+        const char *text = mi_json_get_string(m, "text", NULL);
+        if (key) { mi_json_raw(&b, ",\"key\":"); mi_json_string(&b, key); }
+        if (code) { mi_json_raw(&b, ",\"code\":"); mi_json_string(&b, code); }
+        int vk = (int)mi_json_get_int(m, "vk", 0);
+        if (vk > 0) { mi_json_raw(&b, ",\"windowsVirtualKeyCode\":"); mi_json_int(&b, vk); }
+        if (text) { mi_json_raw(&b, ",\"text\":"); mi_json_string(&b, text); }
+        mi_json_raw(&b, ",\"modifiers\":");
+        mi_json_int(&b, mi_json_get_int(m, "modifiers", 0));
+        mi_json_raw(&b, "}");
+        cdp_command(rtc, "Input.dispatchKeyEvent", mi_json_data(&b));
+        mi_json_free(&b);
+    } else if (!strcmp(type, "text")) {
+        const char *text = mi_json_get_string(m, "text", NULL);
+        if (!text) return;
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"text\":");
+        mi_json_string(&b, text);
+        mi_json_raw(&b, "}");
+        cdp_command(rtc, "Input.insertText", mi_json_data(&b));
+        mi_json_free(&b);
+    } else if (!strcmp(type, "touch")) {
+        const mi_json *pts = mi_json_get(m, "points");
+        if (!pts || pts->type != MI_JSON_ARRAY) return;
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"type\":");
+        mi_json_string(&b, mi_json_get_string(m, "event", "touchStart"));
+        mi_json_raw(&b, ",\"touchPoints\":[");
+        int count = 0;
+        for (size_t i = 0; i < pts->count; i++) {
+            const mi_json *p = pts->items[i];
+            if (!p || p->type != MI_JSON_OBJECT) continue;
+            if (count) mi_json_raw(&b, ",");
+            mi_json_raw(&b, "{\"x\":");
+            mi_json_double(&b, mi_json_get_number(p, "x", 0));
+            mi_json_raw(&b, ",\"y\":");
+            mi_json_double(&b, mi_json_get_number(p, "y", 0));
+            mi_json_raw(&b, ",\"id\":");
+            mi_json_int(&b, count);
+            mi_json_raw(&b, "}");
+            count++;
+        }
+        mi_json_raw(&b, "],\"modifiers\":");
+        mi_json_int(&b, mi_json_get_int(m, "modifiers", 0));
+        mi_json_raw(&b, "}");
+        if (count > 0) cdp_command(rtc, "Input.dispatchTouchEvent", mi_json_data(&b));
+        mi_json_free(&b);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* The input data channel                                              */
+/* ------------------------------------------------------------------ */
+
+static void on_channel_message(GstWebRTCDataChannel *channel, gchar *data, gpointer user_data) {
+    mi_rtc *rtc = user_data;
+    (void)channel;
+    if (!rtc || !data) return;
+    rtc->last_activity = mono_seconds();
+    /* The console speaks its own vocabulary, not CDP; the mapping is above. */
+    if (rtc->input_fn) {
+        rtc->input_fn(rtc->input_user, data);
+        return;
+    }
+    mi_json *m = mi_json_parse(data);
+    if (m) {
+        rtc_input(rtc, m);
+        mi_json_value_free(m);
+    }
+}
+
+static void on_channel_open(GstWebRTCDataChannel *channel, gpointer user_data) {
+    mi_rtc *rtc = user_data;
+    (void)channel;
+    if (!rtc) return;
+    rtc->channel_ready = 1;
+    rtc->last_activity = mono_seconds();
+    mi_logf(MI_LOG_INFO, "rtc: input channel open");
+}
+
+static void on_channel_close(GstWebRTCDataChannel *channel, gpointer user_data) {
+    mi_rtc *rtc = user_data;
+    (void)channel;
+    if (!rtc) return;
+    rtc->channel_ready = 0;
+    rtc->last_activity = mono_seconds();
+}
+
+static void attach_channel(mi_rtc *rtc, GstWebRTCDataChannel *channel) {
+    if (rtc->channel && rtc->channel != channel) gst_object_unref(rtc->channel);
+    rtc->channel = g_object_ref(channel);
+    g_signal_connect(channel, "on-message-string", G_CALLBACK(on_channel_message), rtc);
+    g_signal_connect(channel, "on-open", G_CALLBACK(on_channel_open), rtc);
+    g_signal_connect(channel, "on-close", G_CALLBACK(on_channel_close), rtc);
+    gboolean ready = FALSE;
+    g_object_get(channel, "ready-state", &ready, NULL);
+    if (ready) rtc->channel_ready = 1;
+}
+
+/* The browser opened a channel on the peer connection. */
+static void on_data_channel(GstElement *webrtc, GstWebRTCDataChannel *channel,
+                            gpointer user_data) {
+    mi_rtc *rtc = user_data;
+    (void)webrtc;
+    if (!rtc || !channel) return;
+    gchar *label = NULL;
+    g_object_get(channel, "label", &label, NULL);
+    /* Only the input channel is ours; a browser may open others. */
+    if (label && !strcmp(label, INPUT_LABEL)) attach_channel(rtc, channel);
+    g_free(label);
+}
+
+void mi_rtc_set_input_handler(mi_rtc *rtc, mi_rtc_input_fn fn, void *user) {
+    if (!rtc) return;
+    rtc->input_fn = fn;
+    rtc->input_user = user;
+}
+
+int mi_rtc_channel_open(mi_rtc *rtc) {
+    if (!rtc || !rtc->webrtc) return -1;
+    if (rtc->channel) return 0;
+    GstWebRTCDataChannel *ch = NULL;
+    g_signal_emit_by_name(rtc->webrtc, "create-data-channel", INPUT_LABEL, NULL, &ch);
+    if (!ch) return -1;
+    attach_channel(rtc, ch);
+    gst_object_unref(ch); /* attach_channel holds its own reference */
+    return 0;
+}
+
+int mi_rtc_channel_ready(mi_rtc *rtc) { return rtc && rtc->channel_ready; }
+
+void mi_rtc_channel_send(mi_rtc *rtc, const char *json) {
+    if (!rtc || !rtc->channel || !json) return;
+    GError *err = NULL;
+    if (!gst_webrtc_data_channel_send_string_full(rtc->channel, json, &err)) {
+        if (err) {
+            mi_logf(MI_LOG_INFO, "rtc: channel send failed: %s", err->message);
+            g_error_free(err);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* GStreamer callbacks                                                 */
 /* ------------------------------------------------------------------ */
 
-/* A local ICE candidate: keep it for the console, which needs it to connect. */
+/* A local ICE candidate: keep it for the record. With gathering awaited before
+ * the offer, these end up in the SDP, so this is for reporting rather than for
+ * sending. */
 static void on_ice_candidate(GstElement *webrtc, guint mline_index, gchar *candidate,
                              gpointer user_data) {
     mi_rtc *rtc = user_data;
@@ -318,13 +781,26 @@ static void on_ice_candidate(GstElement *webrtc, guint mline_index, gchar *candi
 }
 
 /*
- * The connection state, which is how "media is flowing" is known.
+ * The gathering state, which is what makes a socket-free handshake possible.
  *
- * This is a *property*, not a signal — webrtcbin has no
- * `on-connection-state-changed` signal, and connecting to one logs a GLib
- * critical and silently never fires. GObject's `notify::` is how a property
+ * `COMPLETE` means every candidate this host can offer is already in the SDP, so
+ * the offer is final and can be sent as one document with no follow-up messages.
+ *
+ * A *property*, not a signal: there is no `on-ice-gathering-state-changed` to
+ * connect to, and doing so logs a GLib critical. `notify::` is how a property
  * change is watched.
  */
+static void on_gathering_state(GObject *object, GParamSpec *pspec, gpointer user_data) {
+    mi_rtc *rtc = user_data;
+    (void)pspec;
+    GstWebRTCICEGatheringState st = GST_WEBRTC_ICE_GATHERING_STATE_NEW;
+    g_object_get(object, "ice-gathering-state", &st, NULL);
+    if (st == GST_WEBRTC_ICE_GATHERING_STATE_COMPLETE) rtc->gathering_done = 1;
+    rtc->last_activity = mono_seconds();
+}
+
+/* The connection state, which is how "media is flowing" is known. Also a
+ * property, for the same reason. */
 static void on_connection_state(GObject *object, GParamSpec *pspec, gpointer user_data) {
     mi_rtc *rtc = user_data;
     (void)pspec;
@@ -333,6 +809,9 @@ static void on_connection_state(GObject *object, GParamSpec *pspec, gpointer use
     rtc->last_activity = mono_seconds();
     if (state == GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED) {
         rtc->connected = 1;
+        /* The connection is up, so the channel can be opened if the browser has
+         * not already made it. */
+        if (!rtc->channel) mi_rtc_channel_open(rtc);
         mi_logf(MI_LOG_INFO, "rtc: connected (%s)", rtc->url);
     } else if (state == GST_WEBRTC_PEER_CONNECTION_STATE_FAILED) {
         set_close_reason(rtc, "the WebRTC connection failed");
@@ -341,9 +820,6 @@ static void on_connection_state(GObject *object, GParamSpec *pspec, gpointer use
     }
 }
 
-static void on_negotiation_needed(GstElement *webrtc, gpointer user_data);
-
-/* The offer is ready: keep the SDP so the caller can hand it to a browser. */
 static void on_offer_created(GstPromise *promise, gpointer user_data) {
     mi_rtc *rtc = user_data;
     const GstStructure *reply = gst_promise_get_reply(promise);
@@ -371,7 +847,6 @@ static void on_negotiation_needed(GstElement *webrtc, gpointer user_data) {
     g_signal_emit_by_name(rtc->webrtc, "create-offer", NULL, promise);
 }
 
-/* A bus message: an error, an EOS, or a warning worth logging. */
 static gboolean on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data) {
     mi_rtc *rtc = user_data;
     (void)bus;
@@ -408,32 +883,28 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data)
 /* Spawning the display and the browser                                */
 /* ------------------------------------------------------------------ */
 
-/* Close every inherited descriptor above the ones the child is handed. */
 static void close_extra_fds(void) {
-    struct rlimit rl;
     long max = 1024;
+    struct rlimit rl;
     if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
         max = (long)rl.rlim_cur;
     if (max > 65536) max = 65536;
     for (long fd = 5; fd < max; fd++) close((int)fd);
 }
 
-/* An X server on a display of its own, so two sessions cannot collide. */
+/* A virtual display for the browser to paint into. */
 static pid_t spawn_xvfb(const char *xvfb, const char *display, int w, int h) {
+    char screen[32];
+    snprintf(screen, sizeof screen, "%dx%dx24", w, h);
+
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
+        close_extra_fds();
         setpgid(0, 0);
         int dn = open("/dev/null", O_RDWR);
         if (dn >= 0) { dup2(dn, 0); dup2(dn, 1); dup2(dn, 2); }
-        close_extra_fds();
-        char screen[64];
-        snprintf(screen, sizeof screen, "%dx%dx24", w, h);
-        char *argv[] = {
-            (char *)xvfb, (char *)display, "-screen", "0", screen,
-            "-nolisten", "tcp", "-noreset", NULL,
-        };
-        execvp(argv[0], argv);
+        execlp(xvfb, xvfb, display, "-screen", "0", screen, "-nolisten", "tcp", (char *)NULL);
         _exit(127);
     }
     setpgid(pid, pid);
@@ -441,18 +912,17 @@ static pid_t spawn_xvfb(const char *xvfb, const char *display, int w, int h) {
 }
 
 /*
- * Chromium on that display, NOT headless.
+ * Launch Chromium on the virtual display, with the CDP pipe for input.
  *
- * This is the change that makes raw capture possible: headless Chromium
- * composites internally and never touches X, so `ximagesrc` would have nothing to
- * read. `--use-gl=swiftshader` is required because the virtual display has no GPU
- * — without a software GL path Chromium paints nothing.
+ * `--use-gl=swiftshader` is required because the display has no GPU; without a
+ * software GL path Chromium paints nothing, and `ximagesrc` would read a blank
+ * screen.
  *
- * The CDP pipe is kept, because input is still driven over it. X is for pixels,
- * the pipe is for input; two channels, two jobs.
+ * `--remote-debugging-pipe` is how input is driven: the browser reads fd 3 and
+ * writes fd 4, NUL-terminated JSON. X is for pixels, the pipe for input.
  */
 static pid_t spawn_chrome(const mi_rtc_config *cfg, const char *browser, const char *profile,
-                          const char *display, const char *url) {
+                          const char *display, const char *url, int *wfd_out, int *rfd_out) {
     int p2c[2], c2p[2];
     if (pipe(p2c) != 0 || pipe(c2p) != 0) return -1;
 
@@ -462,15 +932,16 @@ static pid_t spawn_chrome(const mi_rtc_config *cfg, const char *browser, const c
         return -1;
     }
     if (pid == 0) {
-        /* Relocate first so the dup2 targets cannot collide with a source fd. */
+        /* Relocate to high fds first so the dup2 targets cannot collide with a
+         * source fd — fds 3 and 4 are exactly what the pipes were given. */
         int hr = fcntl(p2c[0], F_DUPFD, 100);
         int hw = fcntl(c2p[1], F_DUPFD, 101);
         close(p2c[0]); close(p2c[1]); close(c2p[0]); close(c2p[1]);
         if (hr < 0 || hw < 0) _exit(120);
-        if (dup2(hr, 3) < 0) _exit(121);
-        if (dup2(hw, 4) < 0) _exit(122);
-        if (hr != 3 && hr != 4) close(hr);
-        if (hw != 3 && hw != 4) close(hw);
+        if (dup2(hr, CDP_READ_FD) < 0) _exit(121);
+        if (dup2(hw, CDP_WRITE_FD) < 0) _exit(122);
+        if (hr != CDP_READ_FD && hr != CDP_WRITE_FD) close(hr);
+        if (hw != CDP_READ_FD && hw != CDP_WRITE_FD) close(hw);
         close_extra_fds();
         setpgid(0, 0);
         setenv("DISPLAY", display, 1);
@@ -521,10 +992,8 @@ static pid_t spawn_chrome(const mi_rtc_config *cfg, const char *browser, const c
     close(p2c[0]);
     close(c2p[1]);
     setpgid(pid, pid);
-    /* The pipe ends are closed here: this module drives input elsewhere, and
-     * leaking them would keep the browser alive after the session ends. */
-    close(p2c[1]);
-    close(c2p[0]);
+    *wfd_out = p2c[1];
+    *rfd_out = c2p[0];
     return pid;
 }
 
@@ -532,23 +1001,6 @@ static pid_t spawn_chrome(const mi_rtc_config *cfg, const char *browser, const c
 /* The pipeline                                                        */
 /* ------------------------------------------------------------------ */
 
-/*
- * Build and start the capture pipeline.
- *
- * The order matters and each element is here for a reason:
- *
- *   ximagesrc   reads the X display. Its caps are deliberately NOT fixed — it
- *               advertises `video/x-raw` with no format and negotiates, and
- *               demanding one at the source fails with "can't handle caps".
- *   videoconvert converts whatever X gave us into I420, which VP8 wants.
- *   vp8enc      encodes. `deadline` makes it keep up with real time rather than
- *               trying to be pretty, and `cpu-used` trades a little quality for
- *               speed, because this shares a host with the browser.
- *   rtpvp8pay   packetises for RTP.
- *   webrtcbin   the transport: ICE, DTLS, SRTP.
- *
- * `appsrc` is not used: the frames come from X, not from us.
- */
 static int build_pipeline(mi_rtc *rtc) {
     const mi_rtc_config *cfg = &rtc->pool->cfg;
     GError *gerr = NULL;
@@ -589,14 +1041,16 @@ static int build_pipeline(mi_rtc *rtc) {
     g_signal_connect(rtc->webrtc, "on-ice-candidate", G_CALLBACK(on_ice_candidate), rtc);
     g_signal_connect(rtc->webrtc, "notify::connection-state",
                      G_CALLBACK(on_connection_state), rtc);
+    g_signal_connect(rtc->webrtc, "notify::ice-gathering-state",
+                     G_CALLBACK(on_gathering_state), rtc);
+    /* The input channel arrives here, whichever end opened it. */
+    g_signal_connect(rtc->webrtc, "on-data-channel", G_CALLBACK(on_data_channel), rtc);
 
-    /* The bus carries errors and EOS; without draining it a failure is silent. */
     GstBus *bus = gst_element_get_bus(rtc->pipeline);
     gst_bus_add_watch_full(bus, G_PRIORITY_DEFAULT, on_bus_message, rtc, NULL);
     gst_object_unref(bus);
 
-    GstStateChangeReturn ret = gst_element_set_state(rtc->pipeline, GST_STATE_PLAYING);
-    if (ret == GST_STATE_CHANGE_FAILURE) {
+    if (gst_element_set_state(rtc->pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         mi_logf(MI_LOG_ERROR, "rtc: the pipeline would not start");
         return -1;
     }
@@ -612,9 +1066,6 @@ static void pump_context(mi_rtc *rtc, int ms) {
             g_main_context_iteration(rtc->context, FALSE);
         }
         if (mono_seconds() >= deadline) break;
-        /* Wait for something to happen, but not past the deadline. */
-        int left = (int)((deadline - mono_seconds()) * 1000.0);
-        if (left <= 0) break;
         g_main_context_iteration(rtc->context, FALSE);
         struct timespec t = {.tv_sec = 0, .tv_nsec = 5 * 1000 * 1000};
         nanosleep(&t, NULL);
@@ -635,9 +1086,8 @@ static char *make_profile_dir(const mi_rtc_config *cfg, const char *id) {
 }
 
 mi_rtc_status mi_rtc_open(mi_rtc_pool *pool, const char *url, mi_rtc **out,
-                          char **offer_out, char *err, size_t errcap) {
+                          char *err, size_t errcap) {
     *out = NULL;
-    if (offer_out) *offer_out = NULL;
     if (err && errcap) err[0] = '\0';
     if (!pool) {
         if (err) snprintf(err, errcap, "no session pool");
@@ -666,6 +1116,8 @@ mi_rtc_status mi_rtc_open(mi_rtc_pool *pool, const char *url, mi_rtc **out,
     rtc->pool = pool;
     rtc->width = pool->cfg.width;
     rtc->height = pool->cfg.height;
+    rtc->wfd = -1;
+    rtc->rfd = -1;
     rtc->url = mi_strdup(url);
     rtc->last_activity = mono_seconds();
     rtc->local_ice_cap = 1024;
@@ -701,11 +1153,17 @@ mi_rtc_status mi_rtc_open(mi_rtc_pool *pool, const char *url, mi_rtc **out,
         nanosleep(&t, NULL);
     }
 
-    rtc->chrome_pid = spawn_chrome(&pool->cfg, pool->browser, rtc->profile, rtc->display, url);
+    rtc->chrome_pid = spawn_chrome(&pool->cfg, pool->browser, rtc->profile, rtc->display, url,
+                                   &rtc->wfd, &rtc->rfd);
     if (rtc->chrome_pid < 0) {
         if (err) snprintf(err, errcap, "could not start the browser");
         goto fail;
     }
+    /* Non-blocking both ways: a stalled browser must not block the engine. */
+    int fl = fcntl(rtc->wfd, F_GETFL, 0);
+    fcntl(rtc->wfd, F_SETFL, fl | O_NONBLOCK);
+    fl = fcntl(rtc->rfd, F_GETFL, 0);
+    fcntl(rtc->rfd, F_SETFL, fl | O_NONBLOCK);
 
     /*
      * A private main context for this session's pipeline.
@@ -721,28 +1179,8 @@ mi_rtc_status mi_rtc_open(mi_rtc_pool *pool, const char *url, mi_rtc **out,
         goto fail;
     }
 
-    /*
-     * Wait for the browser to paint and the offer to appear.
-     *
-     * Both take time: chromium has to start, create its window and paint before
-     * `ximagesrc` has anything to read, and the offer is produced by a signal that
-     * only arrives while the context is pumped.
-     */
-    int tmo = pool->cfg.startup_timeout_seconds * 1000;
-    double deadline = mono_seconds() + tmo / 1000.0;
-    while (mono_seconds() < deadline) {
-        pump_context(rtc, 100);
-        if (rtc->offer_ready) break;
-        if (rtc->closed) break;
-    }
-    if (!rtc->offer_ready || !rtc->offer) {
-        if (err) snprintf(err, errcap, "the pipeline produced no offer");
-        goto fail;
-    }
-
-    if (offer_out) {
-        *offer_out = mi_strdup(rtc->offer);
-    }
+    /* Return at once; the offer is awaited separately, because startup is not
+     * instant and the HTTP layer should not hold a request open for all of it. */
     *out = rtc;
     return MI_RTC_OK;
 
@@ -751,34 +1189,88 @@ fail:
     return MI_RTC_FAILED;
 }
 
-/* ------------------------------------------------------------------ */
-/* Driving a session                                                   */
-/* ------------------------------------------------------------------ */
+static void refresh_offer(mi_rtc *rtc);
+
+int mi_rtc_wait_offer(mi_rtc *rtc, int timeout_ms) {
+    if (!rtc) return -1;
+    if (timeout_ms <= 0) timeout_ms = rtc->pool->cfg.startup_timeout_seconds * 1000;
+    double deadline = mono_seconds() + timeout_ms / 1000.0;
+
+    g_main_context_push_thread_default(rtc->context);
+
+    /* Attach CDP while the browser is still coming up. Retried, because the
+     * startup page does not exist the instant the process is forked. */
+    while (!rtc->cdp_attached && mono_seconds() < deadline && !rtc->closed) {
+        pump_context(rtc, 100);
+        if (rtc_cdp_attach(rtc) == 0) break;
+    }
+
+    /* Then wait for the offer, and for gathering so its candidates are in it. */
+    double gather_deadline = 0;
+    while (mono_seconds() < deadline && !rtc->closed) {
+        pump_context(rtc, 100);
+        if (!rtc->offer_ready) continue;
+        if (rtc->gathering_done) break;
+        if (gather_deadline == 0)
+            gather_deadline = mono_seconds() + rtc->pool->cfg.gather_timeout_ms / 1000.0;
+        if (mono_seconds() >= gather_deadline) break;
+    }
+
+    /* The offer text has to be re-read now that gathering has put the
+     * candidates into the local description. */
+    if (rtc->offer_ready && !rtc->closed) refresh_offer(rtc);
+
+    g_main_context_pop_thread_default(rtc->context);
+    return (rtc->offer_ready && !rtc->closed) ? 0 : -1;
+}
+
+char *mi_rtc_offer(mi_rtc *rtc) {
+    if (!rtc || !rtc->offer) return NULL;
+    return mi_strdup(rtc->offer);
+}
+
+int mi_rtc_gathering_done(mi_rtc *rtc) { return rtc && rtc->gathering_done; }
+
+/*
+ * Re-read the local description and re-serialize it.
+ *
+ * `on_offer_created` captures the SDP the moment the offer is made, which is
+ * *before* ICE has gathered — so the text it stored has no candidates in it.
+ * Since there is no signalling socket to trickle them on, the offer has to carry
+ * them, and that means taking a fresh copy once gathering has finished rather
+ * than reusing the one from the signal.
+ */
+static void refresh_offer(mi_rtc *rtc) {
+    if (!rtc || !rtc->webrtc) return;
+    GstWebRTCSessionDescription *local = NULL;
+    g_object_get(rtc->webrtc, "local-description", &local, NULL);
+    if (!local || !local->sdp) {
+        if (local) gst_webrtc_session_description_free(local);
+        return;
+    }
+    gchar *text = gst_sdp_message_as_text(local->sdp);
+    if (text) {
+        free(rtc->offer);
+        rtc->offer = mi_strdup(text);
+        g_free(text);
+    }
+    gst_webrtc_session_description_free(local);
+}
 
 int mi_rtc_set_answer(mi_rtc *rtc, const char *sdp) {
     if (!rtc || !rtc->webrtc || !sdp) return -1;
     GstSDPMessage *msg = NULL;
     if (gst_sdp_message_new(&msg) != GST_SDP_OK) return -1;
-    if (gst_sdp_message_parse_buffer((const guint8 *)sdp, (guint)strlen(sdp), msg) != GST_SDP_OK) {
+    if (gst_sdp_message_parse_buffer((const guint8 *)sdp, strlen(sdp), msg) != GST_SDP_OK) {
         gst_sdp_message_free(msg);
         return -1;
     }
     GstWebRTCSessionDescription *answer =
         gst_webrtc_session_description_new(GST_WEBRTC_SDP_TYPE_ANSWER, msg);
-    if (!answer) {
-        gst_sdp_message_free(msg);
-        return -1;
-    }
+    if (!answer) return -1;
     g_signal_emit_by_name(rtc->webrtc, "set-remote-description", answer, NULL);
     gst_webrtc_session_description_free(answer);
     rtc->answer_set = 1;
-    rtc->last_activity = mono_seconds();
-    return 0;
-}
-
-int mi_rtc_add_ice(mi_rtc *rtc, const char *candidate, int mline) {
-    if (!rtc || !rtc->webrtc || !candidate || !*candidate) return -1;
-    g_signal_emit_by_name(rtc->webrtc, "add-ice-candidate", mline < 0 ? 0 : mline, candidate);
     rtc->last_activity = mono_seconds();
     return 0;
 }
@@ -790,6 +1282,10 @@ int mi_rtc_pump(mi_rtc *rtc, int ms) {
     g_main_context_push_thread_default(rtc->context);
     pump_context(rtc, ms);
     g_main_context_pop_thread_default(rtc->context);
+
+    /* Drain any CDP the browser has sent, so its responses do not pile up. */
+    cdp_read(rtc);
+    cdp_flush(rtc);
 
     /* Age the session: a browser left open is a leak the size of a browser. */
     if (rtc->pool && rtc->pool->cfg.idle_timeout_seconds > 0 &&
@@ -859,25 +1355,27 @@ void mi_rtc_close(mi_rtc *rtc) {
     if (!rtc) return;
     /* Stop the pipeline before the display goes away, or GStreamer reports an
      * error against a dead X connection. */
-    if (rtc->pipeline) {
-        gst_element_set_state(rtc->pipeline, GST_STATE_NULL);
-    }
+    if (rtc->pipeline) gst_element_set_state(rtc->pipeline, GST_STATE_NULL);
+    if (rtc->channel) gst_object_unref(rtc->channel);
     if (rtc->webrtc) gst_object_unref(rtc->webrtc);
     if (rtc->pipeline) gst_object_unref(rtc->pipeline);
     if (rtc->context) g_main_context_unref(rtc->context);
-    if (rtc->loop) g_main_loop_unref(rtc->loop);
 
     kill_group(rtc->chrome_pid);
     kill_group(rtc->xvfb_pid);
+    if (rtc->wfd >= 0) close(rtc->wfd);
+    if (rtc->rfd >= 0) close(rtc->rfd);
     if (rtc->profile) mi_rm_rf(rtc->profile);
     free(rtc->profile);
     free(rtc->url);
     free(rtc->offer);
     free(rtc->local_ice);
+    free(rtc->rbuf);
+    free(rtc->wbuf);
+    free(rtc->cdp_resp_json);
     if (rtc->pool) {
         reap_children(rtc->pool);
         pool_release(rtc->pool);
     }
     free(rtc);
 }
-
