@@ -130,6 +130,101 @@ and Wasabi. Highlights:
   mocks). This was a real bug caught by the test suite.
 - Optional Cloudflare zone cache purge (`purge_cache`) after upload.
 
+## Page rendering
+
+`serve --render` turns on a second job: drawing a page with a real browser.
+
+A page is not its bytes. A site that builds itself with JavaScript arrives as a
+document whose script must run before there is anything to show, and a site that
+forbids being framed cannot be embedded at all. So the engine runs headless
+Chromium and returns either a PNG of the page or its rendered DOM:
+
+```
+GET /api/v1/render?url=https://example.com/&mode=image   # a picture
+GET /api/v1/render?url=https://example.com/&mode=html    # the rendered DOM
+```
+
+`mode=html` is sanitised before it is served — an allowlist of tags and
+attributes, no script or frame content, escaped attribute values, and a strict
+`default-src 'none'` policy injected. Links are rewritten to route back through
+the renderer so following one stays in the app. `X-Vyzorix-Sanitized: yes` says
+whether that happened.
+
+### What it costs, and what it needs
+
+A render is a browser, so it is not cheap:
+
+| | |
+|---|---|
+| Peak memory | ~500 MB (proportional set size; measured on example.com, Google and Wikipedia) |
+| Time | ~1–1.5 s for a typical page |
+| Concurrency | 1 by default. Two renders need roughly twice the memory. |
+
+**It needs at least 2 GB of RAM.** On a 512 MB instance it will be killed
+mid-render. `--render-concurrent` is the knob that decides the requirement.
+
+It also needs a browser and fonts. Without Chromium the renderer reports itself
+unavailable and `/api/v1/capabilities` says so, so a console can hide the control
+rather than offering one that fails. Without fonts, pages render as boxes —
+which is why the image installs them.
+
+### Bounds, and what is not one
+
+A render is a **resource-bounded subprocess, not a security sandbox**. An
+unprivileged container cannot use Chromium's namespace sandbox, so it runs with
+`--no-sandbox`. What is enforced:
+
+- a hard wall-clock kill. Chromium's own `--virtual-time-budget` bounds *page*
+  time and does nothing about a page that never settles, so the engine kills the
+  child's whole process group at its own deadline;
+- a per-render V8 heap cap (`ulimit -v` cannot be used — Chromium reserves a huge
+  virtual address space and dies at once under it);
+- a concurrency gate that refuses with `503` and `Retry-After` rather than
+  queueing, because a queue behind a slow page grows without bound;
+- an output size cap, a throwaway browser profile per render, and the process
+  being a child subreaper so orphaned helpers are reaped rather than accumulating;
+- only public `http(s)` pages are rendered: `file://` would read this host's disk,
+  and loopback and link-local addresses are refused so a render cannot reach the
+  engine's own port or a cloud metadata endpoint.
+
+Run the engine where nothing sensitive lives.
+
+### The cache
+
+Rendered pages are cached under the work dir, keyed by URL and mode. It is
+bounded — a byte budget and an entry count, least-recently-used eviction, and a
+TTL — because an unbounded cache is a slow disk leak. A hit is served before the
+concurrency slot is taken, so a repeat view does not compete with a fresh one:
+measured, the same page goes from a 760 ms miss to a 0 ms hit. `--no-render-cache`
+turns it off; `/api/v1/capabilities` reports entries, bytes, hits and misses.
+
+## Deployment
+
+```bash
+docker compose up --build
+```
+
+The image carries Chromium and fonts, runs as a non-root user, and puts downloads
+and the render cache on a volume at `/data`. See `docker-compose.yml` for the
+memory limit and why it is set where it is.
+
+Configuration comes from the environment, which is how a container is configured
+— a flag still wins where both are given:
+
+| Variable | Meaning |
+|---|---|
+| `MI_HOST` / `MI_PORT` | where to listen |
+| `MI_WORK_DIR` | downloads and the render cache |
+| `MI_ALLOW_ORIGINS` | comma-separated origins the console may call from |
+| `MI_AUTH_TOKEN` | bearer token required on every route but `/healthz` |
+| `MI_USER_AGENT` | what the engine calls itself when fetching |
+| `MI_RENDER` | set to anything to turn rendering on |
+| `MI_S3_*`, `MI_CF_*` | storage and CDN credentials |
+
+`MI_ALLOW_ORIGINS` matters more than it looks: without the console's origin on it
+the browser blocks every request and the console reports "Disconnected", which
+reads like the engine is down when it is not.
+
 ## Tests
 
 `make test` runs real in-process servers (HTTP with and without range support,

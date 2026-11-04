@@ -1,0 +1,54 @@
+# Run the engine locally, with a browser it can render with.
+#
+#   docker compose up --build
+#
+# The console is a static build and is not served here — it deploys to
+# Cloudflare Pages (see .github/workflows/deploy-pages.yml). Point it at this
+# engine through Settings, or by baking VITE_API_BASE_URL into the build.
+#
+# WHY THE LIMITS ARE SET EXPLICITLY
+#
+# A render runs a real browser and peaks around 500 MB of proportional set size
+# (measured). The memory limit below is the smallest that comfortably holds one
+# render plus the engine; the render concurrency is one for the same reason. A
+# 512 MB instance cannot run this — it will be killed mid-render.
+services:
+  engine:
+    build: ./media-ingest-c
+    image: media-ingest:local
+    # The port the console should be pointed at.
+    ports:
+      - "8787:8787"
+    volumes:
+      # Downloads, rendered-page cache and browser profiles. Named, so they
+      # survive `docker compose down`; the operator chooses the real size.
+      - engine-data:/data
+    environment:
+      # Comma-separated origins the console may call from. Set this to wherever
+      # the console is served — without it the browser blocks every request and
+      # the console reports "Disconnected".
+      MI_ALLOW_ORIGINS: "https://vyzorix-file-downloader.pages.dev,http://localhost:5173"
+      # Some sites refuse a request that does not look like a browser.
+      MI_USER_AGENT: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      # Rendering is on, and one at a time: each costs about 500 MB.
+      MI_RENDER: "1"
+    # The image's CMD already supplies serve, the host, the port and --render;
+    # these only add what cannot be a compiled-in default. The engine reads them
+    # from the environment, which is how a container is configured.
+    command:
+      - serve
+      - --render-concurrent=1
+    deploy:
+      resources:
+        limits:
+          # The floor for one render plus the engine. Raise it only alongside
+          # --render-concurrent: two renders need roughly twice this.
+          memory: 2g
+    # A browser needs more than the 64 MB a container gets by default for
+    # /dev/shm. The engine passes --disable-dev-shm-usage as well, so this is a
+    # second allowance rather than the only one.
+    shm_size: "512m"
+    restart: unless-stopped
+
+volumes:
+  engine-data:

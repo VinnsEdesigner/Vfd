@@ -630,11 +630,23 @@ int main(int argc, char **argv) {
     char **headers = NULL;
     size_t header_count = 0;
     int do_upload = 0;
-    const char *serve_host = NULL;
+    /*
+     * The serve settings, with environment fallbacks.
+     *
+     * A container is configured through its environment, not through a command
+     * line assembled by hand — and a documented variable that nothing reads is
+     * worse than no variable at all, because it looks like it worked. A flag
+     * still wins, so the command line stays the more specific thing.
+     */
+    const char *serve_host = getenv("MI_HOST");
     int serve_port = -1;
-    const char *serve_work_dir = NULL;
+    const char *serve_work_dir = getenv("MI_WORK_DIR");
     const char *serve_token = getenv("MI_AUTH_TOKEN");
-    const char *serve_allow_origins = NULL;
+    const char *serve_allow_origins = getenv("MI_ALLOW_ORIGINS");
+    {
+        const char *p = getenv("MI_PORT");
+        if (p && *p) serve_port = atoi(p);
+    }
     /* Some hosts refuse a request that does not look like a browser, so what the
      * engine calls itself is settable rather than compiled in. */
     const char *serve_user_agent = getenv("MI_USER_AGENT");
