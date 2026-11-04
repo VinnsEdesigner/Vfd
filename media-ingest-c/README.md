@@ -265,6 +265,32 @@ session to their engine. The bearer token cannot travel as a header on a
 WebSocket, so it is accepted as a `token` query parameter — the Origin check is
 what makes that safe.
 
+### Input, and the two things that are easy to get wrong
+
+The console sends `mouse`, `wheel`, `key`, `text` and `touch` commands; the engine
+forwards each to the matching CDP input method. Two details matter more than they
+look:
+
+- **Touch is not mouse.** A phone sends a finger, so the console forwards
+  `touch` events, and `?touch=1` tells the engine to emulate a touch device (the
+  page then lays itself out the way it would in any other browser on that
+  device). The console also sends the click a tap implies, because a field takes
+  focus from that click and the on-screen keyboard follows the focus. Without
+  this the stage is inert on a touch device: no scroll, and no keyboard.
+- **Focus emulation.** A headless browser has no window, so the page is treated
+  as unfocused and a clicked field never takes the caret — typing then goes
+  nowhere. `Emulation.setFocusEmulationEnabled` is what makes a live page
+  typeable, and it is set for every session, not only touch ones.
+
+### A vanished client
+
+A tab closed behind a proxy can leave a connection that never reports EOF, and
+the page may keep painting, so the idle timeout would never fire and the session
+would hold its concurrency slot forever. The engine therefore pings an idle
+socket and drops a client that has been silent too long
+(`keepalive_ping_seconds` / `keepalive_timeout_seconds`), which is what keeps the
+gate from filling with sessions nobody can use.
+
 ## Deployment
 
 ```bash

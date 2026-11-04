@@ -91,6 +91,9 @@ typedef struct {
     int interactive_max_concurrent;
     int interactive_idle_seconds;
     int interactive_v8_heap_mb;
+    /* Keepalive for a live session, in seconds. 0 uses the built-in default. */
+    int interactive_keepalive_ping_seconds;
+    int interactive_keepalive_timeout_seconds;
 } mi_server_config;
 
 typedef struct mi_server mi_server;

@@ -103,7 +103,24 @@ struct mi_interactive {
     /* What the last pump turned up. */
     int ev_frame, ev_shot, ev_state;
 
+    /*
+     * Two different clocks, and the difference matters.
+     *
+     * `last_activity` moves whenever anything happens, including a frame the
+     * page painted on its own. The idle timeout reads it, so a session is closed
+     * only when the page is *both* untouched and still — a user reading a page
+     * that animates is not idle, and cutting them off would be wrong.
+     *
+     * That rule cannot catch a client that has vanished, because such a page
+     * keeps painting and keeps the clock moving. The keepalive does that instead:
+     * see `mi_interactive_should_ping` and the silence check in the server loop.
+     */
     double last_activity;
+    /* When a heartbeat was last sent, and when anything at all was last heard
+     * from the client. A client that disappears without a close (a tab closed
+     * behind a proxy that keeps the connection) is found this way. */
+    double last_ping;
+    double last_heard;
     int closed;
     char close_reason[200];
 };
@@ -119,6 +136,11 @@ void mi_interactive_config_init(mi_interactive_config *cfg) {
     cfg->profile_root = NULL;
     cfg->idle_timeout_seconds = 180;
     cfg->startup_timeout_seconds = 15;
+    /* A ping every 20 s, and a client silent for 45 s is gone. Both well above
+     * any plausible round trip, and both short enough that a leaked session does
+     * not hold the gate for long. */
+    cfg->keepalive_ping_seconds = 20;
+    cfg->keepalive_timeout_seconds = 45;
 }
 
 int mi_interactive_url_allowed(const char *url) {
@@ -172,6 +194,8 @@ mi_interactive_pool *mi_interactive_pool_new(const mi_interactive_config *cfg) {
     if (pool->cfg.viewport_height <= 0) pool->cfg.viewport_height = 800;
     if (pool->cfg.v8_heap_mb <= 0) pool->cfg.v8_heap_mb = 256;
     if (pool->cfg.startup_timeout_seconds <= 0) pool->cfg.startup_timeout_seconds = 15;
+    if (pool->cfg.keepalive_ping_seconds <= 0) pool->cfg.keepalive_ping_seconds = 20;
+    if (pool->cfg.keepalive_timeout_seconds <= 0) pool->cfg.keepalive_timeout_seconds = 45;
     pool->browser = find_browser(cfg->chromium_path);
     if (!pool->browser) {
         mi_logf(MI_LOG_INFO, "interactive: no browser found; live sessions are unavailable");
@@ -649,7 +673,7 @@ static int parse_page_target(const char *json, char *out, size_t outcap) {
 }
 
 mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
-                                 int width, int height, mi_interactive **out,
+                                 int width, int height, int touch, mi_interactive **out,
                                  char *err, size_t errcap) {
     *out = NULL;
     if (err && errcap) err[0] = '\0';
@@ -679,7 +703,12 @@ mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
     it->pool = pool;
     it->wfd = it->rfd = -1;
     snprintf(it->frame_format, sizeof it->frame_format, "jpeg");
-    it->last_activity = mono_seconds();
+    {
+        double now = mono_seconds();
+        it->last_activity = now;
+        it->last_ping = now;
+        it->last_heard = now;
+    }
 
     int tmo = pool->cfg.startup_timeout_seconds * 1000;
 
@@ -758,12 +787,34 @@ mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
     {
         char params[160];
         snprintf(params, sizeof params,
-                 "{\"width\":%d,\"height\":%d,\"deviceScaleFactor\":1,\"mobile\":false}",
-                 width, height);
+                 "{\"width\":%d,\"height\":%d,\"deviceScaleFactor\":1,\"mobile\":%s}",
+                 width, height, touch ? "true" : "false");
         int rid = cdp_command(it, "Emulation.setDeviceMetricsOverride", params);
         wait_for_id(it, rid, tmo);
         it->frame_w = width;
         it->frame_h = height;
+    }
+
+    /* 4b. Touch, when the console is on a touch device. A phone sends a finger,
+     * not a pointer, and a page lays itself out differently for touch — so the
+     * emulation has to match the input that will arrive. */
+    if (touch) {
+        int rid = cdp_command(it, "Emulation.setTouchEmulationEnabled",
+                              "{\"enabled\":true,\"maxTouchPoints\":5}");
+        wait_for_id(it, rid, tmo);
+    }
+
+    /*
+     * Focus emulation, always.
+     *
+     * A headless browser has no window, so the page is treated as unfocused and
+     * a clicked field does not take the caret — typing then goes nowhere. This
+     * tells the page it is focused, which is what a real window would do, and is
+     * the difference between a page you can type in and one you cannot.
+     */
+    {
+        int rid = cdp_command(it, "Emulation.setFocusEmulationEnabled", "{\"enabled\":true}");
+        wait_for_id(it, rid, tmo);
     }
 
     /* 5. Start the stream. The page itself was the browser's startup argument,
@@ -803,7 +854,17 @@ mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
     set_state_changed(it);
     pump_io(it, 400);
 
-    it->last_activity = mono_seconds();
+    /*
+     * Start the clocks here, not at allocation. The startup exchange takes
+     * seconds, during which the client has nothing to say, so counting that time
+     * as silence would drop a perfectly healthy session the moment it opened.
+     */
+    {
+        double now = mono_seconds();
+        it->last_activity = now;
+        it->last_ping = now;
+        it->last_heard = now;
+    }
     *out = it;
     return MI_IT_OK;
 
@@ -821,18 +882,58 @@ mi_it_event mi_interactive_pump(mi_interactive *it, int ms) {
     it->ev_frame = it->ev_shot = it->ev_state = 0;
     if (!it->closed) pump_io(it, ms);
 
-    /* Age the session. A live browser left open is a leak the size of a browser,
-     * so one nobody is watching is closed here rather than left to the OS. */
-    if (!it->closed && it->pool && it->pool->cfg.idle_timeout_seconds > 0 &&
-        mono_seconds() - it->last_activity > it->pool->cfg.idle_timeout_seconds) {
+    if (it->closed) return MI_IT_EV_CLOSED;
+
+    double now = mono_seconds();
+
+    /*
+     * A live browser left open is a leak the size of a browser, so a session
+     * nobody is using is closed here rather than left to the OS. "Not in use"
+     * means both untouched and still: the clock is the last frame or command, so
+     * a user reading a page that animates is not cut off.
+     *
+     * A client that has vanished is a different problem — its page may keep
+     * painting — and is found by the keepalive, not here.
+     */
+    if (it->pool && it->pool->cfg.idle_timeout_seconds > 0 &&
+        now - it->last_activity > it->pool->cfg.idle_timeout_seconds) {
         set_close_reason(it, "the session was idle for too long");
+        return MI_IT_EV_CLOSED;
     }
 
     if (it->ev_frame) return MI_IT_EV_FRAME;
     if (it->ev_shot) return MI_IT_EV_SHOT;
     if (it->ev_state) return MI_IT_EV_STATE;
-    if (it->closed) return MI_IT_EV_CLOSED;
     return MI_IT_EV_NONE;
+}
+
+/*
+ * Whether the client has gone quiet long enough that the session should be
+ * probed. The server sends a ping, so a peer that has vanished without a close
+ * is found and its session released rather than holding the gate.
+ */
+int mi_interactive_should_ping(mi_interactive *it) {
+    if (!it || it->closed) return 0;
+    return mono_seconds() - it->last_ping >= (double)it->pool->cfg.keepalive_ping_seconds;
+}
+
+void mi_interactive_note_ping(mi_interactive *it) {
+    if (it) it->last_ping = mono_seconds();
+}
+
+/* Anything at all from the client, including a pong, means it is still there. */
+void mi_interactive_note_heard(mi_interactive *it) {
+    if (it) it->last_heard = mono_seconds();
+}
+
+/* How long since the client was last heard from, in seconds. */
+double mi_interactive_silence(mi_interactive *it) {
+    if (!it) return 0;
+    return mono_seconds() - it->last_heard;
+}
+
+int mi_interactive_silence_limit(const mi_interactive *it) {
+    return it ? it->pool->cfg.keepalive_timeout_seconds : 45;
 }
 
 const unsigned char *mi_interactive_frame(mi_interactive *it, size_t *len) {
@@ -861,6 +962,7 @@ const char *mi_interactive_close_reason(mi_interactive *it) {
 /* Input                                                               */
 /* ------------------------------------------------------------------ */
 
+/* A command from the user's console, which is activity. */
 static void touched(mi_interactive *it) {
     if (it) it->last_activity = mono_seconds();
 }

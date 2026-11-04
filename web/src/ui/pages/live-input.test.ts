@@ -16,6 +16,7 @@ import {
   resizeMessage,
   textMessage,
   toFrameCoords,
+  touchMessage,
   wheelMessage,
 } from './live-input';
 
@@ -118,5 +119,28 @@ describe('message builders', () => {
   it('build text and navigate messages', () => {
     expect(textMessage('hi')).toEqual({ type: 'text', text: 'hi' });
     expect(navigateMessage('https://x/')).toEqual({ type: 'navigate', url: 'https://x/' });
+  });
+});
+
+describe('touchMessage', () => {
+  it('flattens points into the engine’s x,y list', () => {
+    expect(touchMessage('touchStart', [{ x: 10, y: 20 }], 0)).toEqual({
+      type: 'touch',
+      event: 'touchStart',
+      points: [10, 20],
+      modifiers: 0,
+    });
+  });
+
+  it('carries two fingers as four numbers', () => {
+    // A pinch needs both points in one message; the engine reads them pairwise.
+    const m = touchMessage('touchMove', [{ x: 1, y: 2 }, { x: 3, y: 4 }], 0);
+    expect(m.points).toEqual([1, 2, 3, 4]);
+  });
+
+  it('names the event the engine expects', () => {
+    for (const e of ['touchStart', 'touchMove', 'touchEnd', 'touchCancel'] as const) {
+      expect(touchMessage(e, [{ x: 0, y: 0 }], 0).event).toBe(e);
+    }
   });
 });

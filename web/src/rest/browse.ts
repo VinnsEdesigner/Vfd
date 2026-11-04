@@ -267,11 +267,12 @@ export type RenderResource = ReturnType<typeof createRenderResource>;
 export function createLiveResource(client: ApiClient) {
   return {
     /** The ws:// URL for a session, for a caller that wants to open it itself. */
-    url(url: string, width: number, height: number): string {
+    url(url: string, width: number, height: number, touch = false): string {
       return client.transport.socketUrl('/api/v1/interactive', {
         url,
         w: Math.round(width),
         h: Math.round(height),
+        ...(touch ? { touch: 1 } : {}),
       });
     },
 
@@ -281,6 +282,9 @@ export function createLiveResource(client: ApiClient) {
      * The callbacks are called from the socket's own event handlers; the caller
      * is responsible for revoking frame blob URLs when it replaces them, which
      * `onFrame` is told about through the `LiveFrame` it receives.
+     *
+     * `touch` tells the engine to emulate a touch device, so the page lays itself
+     * out the way it would on this device and a forwarded finger behaves as one.
      */
     open(
       url: string,
@@ -292,11 +296,13 @@ export function createLiveResource(client: ApiClient) {
         onOpen?: () => void;
         onClose?: (failure: LiveFailure, reason: string) => void;
       },
+      touch = false,
     ): LiveSession {
       return new LiveSession(client.transport.socketUrl('/api/v1/interactive', {
         url,
         w: Math.round(width),
         h: Math.round(height),
+        ...(touch ? { touch: 1 } : {}),
       }), handlers);
     },
   };

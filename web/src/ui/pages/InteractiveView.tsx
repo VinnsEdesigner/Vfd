@@ -37,6 +37,7 @@ import {
   resizeMessage,
   textMessage,
   toFrameCoords,
+  touchMessage,
   wheelMessage,
   type LiveKeyMessage,
 } from './live-input';
@@ -187,6 +188,13 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!isLive) return;
+      /*
+       * On a touch device the browser also synthesises mouse events from a tap,
+       * after the touch handlers have already forwarded the tap and its click. Let
+       * those through and the page receives every press twice — a double click,
+       * which selects a word instead of placing a caret.
+       */
+      if (suppressMouseAfterTouch.current) return;
       const { x, y } = frameCoords(e.clientX, e.clientY);
       send(mouseMessage('mousePressed', x, y, buttonName(e.button), 1, e.buttons, modifiersFromEvent(e)));
       // The stage needs focus for keys to reach the page.
@@ -197,7 +205,7 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
 
   const onMouseUp = useCallback(
     (e: React.MouseEvent) => {
-      if (!isLive) return;
+      if (!isLive || suppressMouseAfterTouch.current) return;
       const { x, y } = frameCoords(e.clientX, e.clientY);
       send(mouseMessage('mouseReleased', x, y, buttonName(e.button), 1, e.buttons, modifiersFromEvent(e)));
     },
@@ -206,11 +214,127 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
 
   const onMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      if (!isLive || e.buttons === 0) return; // only forward a drag, not idle motion
+      if (!isLive || suppressMouseAfterTouch.current || e.buttons === 0) return; // only a drag
       const { x, y } = frameCoords(e.clientX, e.clientY);
       send(mouseMessage('mouseMoved', x, y, buttonName(e.button), 0, e.buttons, modifiersFromEvent(e)));
     },
     [isLive, frameCoords, send],
+  );
+
+  /*
+   * Touch, for a touch device.
+   *
+   * Mouse events are not enough on a phone or tablet: a finger produces pointer
+   * events, and the stage sets `touch-action: none` so the browser does not
+   * scroll it. Without forwarding the touches, the stage is inert — no scroll,
+   * and no tap to focus a field, so the on-screen keyboard never appears.
+   *
+   * The mapping is deliberately simple: one or two fingers, tracked by id, sent
+   * as the engine's flat point list. A tap goes through as touchStart/touchEnd
+   * *and* as a mouse click, because a page's field focus follows the click that
+   * Chrome synthesises from a tap, and that synthesis does not always happen for
+   * injected touches.
+   */
+  const activeTouches = useRef<Map<number, { x: number; y: number }>>(new Map());
+  /** Where the first touch went down, to tell a tap from a drag. */
+  const touchStartAt = useRef<{ x: number; y: number } | null>(null);
+  const touchMoved = useRef(false);
+  /** Set briefly after a touch, so the mouse events the browser synthesises from
+   *  it are ignored rather than forwarded a second time. */
+  const suppressMouseAfterTouch = useRef(false);
+
+  const pointsOf = useCallback(() => {
+    const img = imgRef.current;
+    const pts: Array<{ x: number; y: number }> = [];
+    if (!img) return pts;
+    const rect = img.getBoundingClientRect();
+    for (const p of activeTouches.current.values()) {
+      pts.push(toFrameCoords(p.x, p.y, rect, frame?.width ?? 0, frame?.height ?? 0));
+    }
+    return pts;
+  }, [frame?.width, frame?.height]);
+
+  const onTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      if (!isLive) return;
+      // No preventDefault: React's touch handlers are passive, and the stage
+      // already sets `touch-action: none`, which is what actually stops the
+      // browser from scrolling it. Calling it here only logs a warning.
+      suppressMouseAfterTouch.current = true;
+      for (const t of Array.from(e.changedTouches)) {
+        activeTouches.current.set(t.identifier, { x: t.clientX, y: t.clientY });
+      }
+      if (touchStartAt.current === null) {
+        const first = e.changedTouches[0];
+        if (first) touchStartAt.current = { x: first.clientX, y: first.clientY };
+      }
+      touchMoved.current = false;
+      send(touchMessage('touchStart', pointsOf(), modifiersFromEvent(e)));
+      // Focus the stage so a hardware keyboard also works, and so the page's own
+      // on-screen keyboard has something to attach to.
+      stageRef.current?.focus();
+    },
+    [isLive, pointsOf, send],
+  );
+
+  const onTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      if (!isLive) return;
+      for (const t of Array.from(e.changedTouches)) {
+        activeTouches.current.set(t.identifier, { x: t.clientX, y: t.clientY });
+      }
+      // A finger that travels more than a few pixels is a drag, not a tap, so the
+      // synthetic click at the end must not be sent.
+      const start = touchStartAt.current;
+      const first = e.changedTouches[0];
+      if (start && first) {
+        const dx = first.clientX - start.x;
+        const dy = first.clientY - start.y;
+        if (dx * dx + dy * dy > 64) touchMoved.current = true;
+      }
+      send(touchMessage('touchMove', pointsOf(), modifiersFromEvent(e)));
+    },
+    [isLive, pointsOf, send],
+  );
+
+  const onTouchEnd = useCallback(
+    (e: React.TouchEvent) => {
+      if (!isLive) return;
+      const wasTap = !touchMoved.current;
+      const start = touchStartAt.current;
+      send(touchMessage('touchEnd', pointsOf(), modifiersFromEvent(e)));
+      for (const t of Array.from(e.changedTouches)) {
+        activeTouches.current.delete(t.identifier);
+      }
+      if (activeTouches.current.size === 0) {
+        touchStartAt.current = null;
+        // A tap: also send the click Chrome would have made, so a field focuses
+        // and the on-screen keyboard opens.
+        if (wasTap && start) {
+          const { x, y } = frameCoords(start.x, start.y);
+          send(mouseMessage('mouseMoved', x, y, 'none', 0, 0, 0));
+          send(mouseMessage('mousePressed', x, y, 'left', 1, 1, 0));
+          send(mouseMessage('mouseReleased', x, y, 'left', 1, 0, 0));
+        }
+        // The browser fires its synthetic mouse events just after the touch
+        // sequence; ignore them for a moment so the press is not sent twice.
+        window.setTimeout(() => {
+          suppressMouseAfterTouch.current = false;
+        }, 400);
+      }
+    },
+    [isLive, frameCoords, pointsOf, send],
+  );
+
+  const onTouchCancel = useCallback(
+    (e: React.TouchEvent) => {
+      if (!isLive) return;
+      send(touchMessage('touchCancel', pointsOf(), modifiersFromEvent(e)));
+      activeTouches.current.clear();
+      touchStartAt.current = null;
+      touchMoved.current = false;
+    },
+    [isLive, pointsOf, send],
   );
 
   const onKeyDown = useCallback(
@@ -344,6 +468,10 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
             onMouseDown={onMouseDown}
             onMouseUp={onMouseUp}
             onMouseMove={onMouseMove}
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEnd}
+            onTouchCancel={onTouchCancel}
             onKeyDown={onKeyDown}
             onKeyUp={onKeyUp}
             onPaste={onPaste}

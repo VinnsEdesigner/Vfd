@@ -30,6 +30,19 @@ export type LiveStatus = 'idle' | 'connecting' | 'open' | 'closed';
  *  next one anyway. */
 const REPLACE_FALLBACK_MS = 1200;
 
+/**
+ * Whether this device is driven by touch.
+ *
+ * Used to tell the engine to emulate a touch device, so the page lays itself out
+ * the way it would in any other browser on this device and a forwarded finger
+ * behaves as one. A coarse pointer is the reliable signal: a phone and a tablet
+ * report it, a desktop with a mouse does not.
+ */
+export function isTouchDevice(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+}
+
 export interface UseLiveSession {
   status: LiveStatus;
   /** The latest frame. A still (from a screenshot) replaces a stream frame. */
@@ -112,7 +125,7 @@ export function useLiveSession(): UseLiveSession {
             startRef.current?.(pending.url, pending.width, pending.height);
           }
         },
-      });
+      }, isTouchDevice());
       sessionRef.current = session;
       session.connect();
     },

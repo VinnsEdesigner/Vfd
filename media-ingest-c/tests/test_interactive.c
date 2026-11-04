@@ -81,17 +81,30 @@ static void test_live(void) {
     mi_interactive *it = NULL;
 
     /* A refused URL costs nothing and does not take a slot. */
-    mi_it_status s = mi_interactive_open(pool, "file:///etc/passwd", 800, 600, &it, err, sizeof err);
+    mi_it_status s = mi_interactive_open(pool, "file:///etc/passwd", 800, 600, 0, &it, err, sizeof err);
     CHECK(s == MI_IT_BAD_URL, "a file:// session is refused");
     CHECK(it == NULL, "a refused session yields no handle");
     CHECK(mi_interactive_pool_active(pool) == 0, "a refused session took no slot");
 
     /* A real session: open, pump for a frame, then close. */
-    s = mi_interactive_open(pool, "https://example.com/", 800, 600, &it, err, sizeof err);
+    s = mi_interactive_open(pool, "https://example.com/", 800, 600, 0, &it, err, sizeof err);
     CHECK(s == MI_IT_OK, "a live session opens");
     if (s != MI_IT_OK) fprintf(stderr, "  (open failed: status=%d err=%s)\n", (int)s, err);
     if (s == MI_IT_OK) {
         CHECK(mi_interactive_pool_active(pool) == 1, "the session holds a slot");
+
+        /*
+         * The keepalive, which is what frees the slot of a client that vanished
+         * without a close. A session that has just opened has been heard from, so
+         * it must not be considered silent — if the clock started at allocation
+         * instead, the startup exchange itself would count as silence and a
+         * healthy session would be dropped the moment it opened.
+         */
+        CHECK(mi_interactive_silence_limit(it) > 0, "a silence limit is configured");
+        CHECK(mi_interactive_silence(it) < 1.0, "a fresh session is not silent");
+        CHECK(mi_interactive_should_ping(it) == 0, "a fresh session is not pinged at once");
+        mi_interactive_note_heard(it);
+        CHECK(mi_interactive_silence(it) < 1.0, "being heard resets the silence clock");
 
         /* Pump until a frame arrives or the deadline passes. example.com is
          * small and static, so a frame should come within a few seconds. */
@@ -142,10 +155,10 @@ static void test_live(void) {
      * the second must be refused, not made to wait. */
     {
         mi_interactive *a = NULL, *b = NULL;
-        mi_it_status sa = mi_interactive_open(pool, "https://example.com/", 320, 240, &a,
+        mi_it_status sa = mi_interactive_open(pool, "https://example.com/", 320, 240, 0, &a,
                                               err, sizeof err);
         if (sa == MI_IT_OK) {
-            mi_it_status sb = mi_interactive_open(pool, "https://example.com/", 320, 240, &b,
+            mi_it_status sb = mi_interactive_open(pool, "https://example.com/", 320, 240, 0, &b,
                                                   err, sizeof err);
             CHECK(sb == MI_IT_BUSY, "a second session is refused, not queued");
             CHECK(b == NULL, "the refused session yields no handle");

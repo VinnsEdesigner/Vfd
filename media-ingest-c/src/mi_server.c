@@ -1950,10 +1950,13 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
 
     int width = query_int(req->query, "w", srv->cfg.render_viewport_width);
     int height = query_int(req->query, "h", srv->cfg.render_viewport_height);
+    /* A touch device says so, and the browser emulates touch to match. */
+    int touch = query_int(req->query, "touch", 0) != 0;
 
     char err[200];
     mi_interactive *it = NULL;
-    mi_it_status st = mi_interactive_open(srv->driver, url, width, height, &it, err, sizeof err);
+    mi_it_status st = mi_interactive_open(srv->driver, url, width, height, touch, &it,
+                                          err, sizeof err);
     if (st != MI_IT_OK) {
         int code = 502;
         const char *text = "Bad Gateway";
@@ -2018,11 +2021,29 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
             ssize_t n = recv(fd, rbuf + rlen, sizeof rbuf - rlen, 0);
             if (n > 0) {
                 rlen += (size_t)n;
+                /* Any bytes at all — a pong included — mean the console is still
+                 * there. This is what the keepalive below is judged against. */
+                mi_interactive_note_heard(it);
             } else if (n == 0) {
                 alive = 0;
             } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
                 alive = 0;
             }
+        }
+
+        /*
+         * The keepalive. A tab closed behind a proxy can leave a connection that
+         * never reports EOF, and a session held by a console that is gone is a
+         * browser nobody can use and a gate nobody can pass. Ping when the socket
+         * has been quiet, and give up on a client that has not answered for a
+         * while — a peer that is really there answers a ping promptly.
+         */
+        if (mi_interactive_should_ping(it)) {
+            mi_interactive_note_ping(it);
+            if (mi_ws_send(fd, MI_WS_PING, NULL, 0) != 0) alive = 0;
+        }
+        if (mi_interactive_silence(it) > (double)mi_interactive_silence_limit(it)) {
+            alive = 0;
         }
 
         /* Consume whole frames from the buffer. */
@@ -3259,6 +3280,10 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
         icfg.viewport_height = cfg->render_viewport_height;
         icfg.user_agent = cfg->user_agent;
         icfg.profile_root = cfg->render_profile_root;
+        if (cfg->interactive_keepalive_ping_seconds > 0)
+            icfg.keepalive_ping_seconds = cfg->interactive_keepalive_ping_seconds;
+        if (cfg->interactive_keepalive_timeout_seconds > 0)
+            icfg.keepalive_timeout_seconds = cfg->interactive_keepalive_timeout_seconds;
         srv->driver = mi_interactive_pool_new(&icfg);
     }
     return srv;

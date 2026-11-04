@@ -57,6 +57,15 @@ typedef struct {
     int idle_timeout_seconds;
     /* How long the startup exchange (attach, enable, navigate) may take. */
     int startup_timeout_seconds;
+    /*
+     * The keepalive, which catches a client that vanished without a close — a
+     * tab closed behind a proxy leaves a connection that never reports EOF, and
+     * that session would otherwise hold the gate for as long as its page keeps
+     * painting. Ping when the socket has been quiet this long, and drop the
+     * client once it has been silent this long. 0 uses the built-in default.
+     */
+    int keepalive_ping_seconds;
+    int keepalive_timeout_seconds;
 } mi_interactive_config;
 
 void mi_interactive_config_init(mi_interactive_config *cfg);
@@ -91,9 +100,14 @@ typedef enum {
  * startup deadline passes. On failure returns a status other than MI_IT_OK and,
  * when `err` is given, a sentence explaining it. The session takes a gate slot
  * for its whole life; release it with mi_interactive_close.
+ *
+ * `touch` says the client is a touch device, so the browser emulates touch and
+ * the page renders its touch layout. Without it the page believes it is on a
+ * desktop and a forwarded finger reads as a mouse, which is not what a phone
+ * user sees in any other browser.
  */
 mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
-                                 int width, int height, mi_interactive **out,
+                                 int width, int height, int touch, mi_interactive **out,
                                  char *err, size_t errcap);
 
 /*
@@ -111,6 +125,24 @@ const unsigned char *mi_interactive_frame(mi_interactive *it, size_t *len);
 const char *mi_interactive_frame_format(mi_interactive *it);
 int mi_interactive_frame_width(mi_interactive *it);
 int mi_interactive_frame_height(mi_interactive *it);
+
+/*
+ * The keepalive, for a caller that owns the client socket.
+ *
+ * A browser that closes a tab does not always send a WebSocket close, and a
+ * proxy between it and the engine can hold the connection open regardless — so
+ * the engine cannot rely on the close to learn the user is gone. It pings, and a
+ * client that never answers is dropped, which is what stops a vanished tab from
+ * holding the concurrency gate forever.
+ */
+int mi_interactive_should_ping(mi_interactive *it);
+void mi_interactive_note_ping(mi_interactive *it);
+/* Record that anything arrived from the client, a pong included. */
+void mi_interactive_note_heard(mi_interactive *it);
+/* Seconds since the client was last heard from. */
+double mi_interactive_silence(mi_interactive *it);
+/* How long a silent client is tolerated, for the caller's own check. */
+int mi_interactive_silence_limit(const mi_interactive *it);
 
 /* The page's state as a JSON object, or NULL when it has not changed. Valid
  * until the next pump. */

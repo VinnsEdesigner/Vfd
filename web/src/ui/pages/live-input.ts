@@ -129,6 +129,26 @@ export function textMessage(text: string): LiveTextMessage {
   return { type: 'text', text };
 }
 
+export interface LiveTouchMessage {
+  type: 'touch';
+  event: 'touchStart' | 'touchMove' | 'touchEnd' | 'touchCancel';
+  /** Flat x,y pairs, which is the shape the engine's parser reads. */
+  points: number[];
+  modifiers: number;
+}
+
+export function touchMessage(
+  event: LiveTouchMessage['event'],
+  points: ReadonlyArray<{ x: number; y: number }>,
+  modifiers: number,
+): LiveTouchMessage {
+  const flat: number[] = [];
+  for (const p of points) {
+    flat.push(p.x, p.y);
+  }
+  return { type: 'touch', event, points: flat, modifiers };
+}
+
 export interface LiveNavigateMessage {
   type: 'navigate';
   url: string;
