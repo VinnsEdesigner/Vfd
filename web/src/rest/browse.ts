@@ -230,6 +230,9 @@ export function createRenderResource(client: ApiClient) {
           title: res.headers['x-vyzorix-title'] ?? null,
           elapsedMs: Number(res.headers['x-vyzorix-render-ms'] ?? 0),
           truncated: res.headers['x-vyzorix-render-truncated'] === 'yes',
+          /** True when the engine served this from its cache rather than
+           *  rendering again, so the UI can say why it was instant. */
+          fromCache: res.headers['x-vyzorix-render-cache'] === 'hit',
         };
       } catch (e) {
         return { ok: false as const, failure: renderFailureFor(e) };

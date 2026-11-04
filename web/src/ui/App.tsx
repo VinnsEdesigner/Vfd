@@ -202,6 +202,8 @@ export function App({ initialView = 'overview' }: AppProps) {
   const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
   const [renderMs, setRenderMs] = useState<number | null>(null);
   const [renderFailure, setRenderFailure] = useState<RenderFailure | null>(null);
+  /** True when the last render came from the engine's cache, not a fresh draw. */
+  const [renderedFromCache, setRenderedFromCache] = useState(false);
   const renderPage = useRenderPage();
   const [browseQueueingId, setBrowseQueueingId] = useState<string | null>(null);
   /** A browse result being previewed, if any. */
@@ -424,6 +426,7 @@ export function App({ initialView = 'overview' }: AppProps) {
             setRendered({ url: result.objectUrl, mode });
             setRenderedTitle(result.title);
             setRenderMs(result.elapsedMs);
+            setRenderedFromCache(result.fromCache);
             if (result.truncated) {
               toast.info('The page was large, so the result was cut short');
             }
@@ -1267,11 +1270,13 @@ export function App({ initialView = 'overview' }: AppProps) {
             renderedTitle={renderedTitle}
             renderMs={renderMs}
             onRender={renderBrowsedPage}
+            renderedFromCache={renderedFromCache}
             onClearRender={() => {
               setRendered(null);
               setRenderedTitle(null);
               setRenderMs(null);
               setRenderFailure(null);
+              setRenderedFromCache(false);
             }}
           />
         )}

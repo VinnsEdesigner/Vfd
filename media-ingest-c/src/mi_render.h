@@ -62,6 +62,19 @@ typedef struct {
     const char *user_agent;
     /* Where throwaway browser profiles are made. NULL uses the system temp dir. */
     const char *profile_root;
+    /*
+     * Where rendered pages are cached, and how much may be kept.
+     *
+     * A render costs about half a gigabyte and a second or two, and the same
+     * page is often looked at twice. `cache_dir` NULL turns caching off;
+     * otherwise the budget bounds it, because an unbounded cache is a slow disk
+     * leak. `cache_ttl_seconds` stops a page that has changed being served from
+     * the cache.
+     */
+    const char *cache_dir;
+    size_t cache_max_bytes;
+    size_t cache_max_entries;
+    int cache_ttl_seconds;
 } mi_render_config;
 
 void mi_render_config_init(mi_render_config *cfg);
@@ -79,6 +92,8 @@ typedef struct {
     double elapsed_seconds;
     /* 1 when the output was cut off at max_output_bytes. */
     int truncated;
+    /* 1 when this came from the cache rather than a fresh render. */
+    int from_cache;
     /* Why it failed, for a log or a message. May be NULL. */
     char *error;
 } mi_render_result;
@@ -111,6 +126,14 @@ int mi_render_pool_available(const mi_render_pool *pool);
 
 /* How many renders may run at once, for reporting. */
 int mi_render_pool_limit(const mi_render_pool *pool);
+
+/* Cache figures for reporting: entries, bytes, hits and misses. Any may be NULL.
+ * `hits` and `misses` are 0 when caching is off. */
+void mi_render_pool_cache_stats(const mi_render_pool *pool, size_t *entries,
+                                size_t *bytes, uint64_t *hits, uint64_t *misses);
+
+/* Whether this pool caches at all. */
+int mi_render_pool_caching(const mi_render_pool *pool);
 
 /* Whether a slot is free right now, without taking one. */
 int mi_render_pool_idle(const mi_render_pool *pool);

@@ -214,6 +214,12 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->render_viewport_height = 900;
     cfg->render_browser = NULL;
     cfg->render_profile_root = NULL;
+    /* Caching on by default: a render is expensive, and the same page is often
+     * looked at twice. 0 means "the built-in default" for each bound. */
+    cfg->render_cache_dir = NULL; /* filled from the work dir when serving */
+    cfg->render_cache_max_bytes = 0;
+    cfg->render_cache_max_entries = 0;
+    cfg->render_cache_ttl_seconds = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1816,6 +1822,28 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, ",");
         mi_json_key(&b, "viewport_height");
         mi_json_int(&b, srv->cfg.render_viewport_height);
+        mi_json_raw(&b, ",");
+        /* Whether a repeat view is cheap, and how much is being kept. Reported
+         * so an operator can see the cache working rather than trusting it. */
+        mi_json_key(&b, "cache");
+        mi_json_bool(&b, mi_render_pool_caching(srv->renderer));
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "cache_entries");
+        {
+            size_t entries = 0, bytes = 0;
+            uint64_t hits = 0, misses = 0;
+            mi_render_pool_cache_stats(srv->renderer, &entries, &bytes, &hits, &misses);
+            mi_json_int(&b, (int64_t)entries);
+            mi_json_raw(&b, ",");
+            mi_json_key(&b, "cache_bytes");
+            mi_json_int(&b, (int64_t)bytes);
+            mi_json_raw(&b, ",");
+            mi_json_key(&b, "cache_hits");
+            mi_json_int(&b, (int64_t)hits);
+            mi_json_raw(&b, ",");
+            mi_json_key(&b, "cache_misses");
+            mi_json_int(&b, (int64_t)misses);
+        }
         mi_json_raw(&b, "}");
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
@@ -2145,8 +2173,10 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         snprintf(meta, sizeof meta,
                  "X-Vyzorix-Render: %s\r\n"
                  "X-Vyzorix-Render-Ms: %.0f\r\n"
+                 "X-Vyzorix-Render-Cache: %s\r\n"
                  "%s",
                  mi_render_status_name(st), res.elapsed_seconds * 1000.0,
+                 res.from_cache ? "hit" : "miss",
                  res.truncated ? "X-Vyzorix-Render-Truncated: yes\r\n" : "");
         if (res.title) {
             /* The page's own title travels as a header so a client can label a
@@ -2168,7 +2198,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                           res.content_type, res.len, meta,
                           cors ? "Access-Control-Allow-Origin: " : "",
                           cors ? cors : "",
-                          cors ? "\r\nAccess-Control-Expose-Headers: X-Vyzorix-Render,X-Vyzorix-Render-Ms,X-Vyzorix-Title,X-Vyzorix-Render-Truncated\r\n"
+                          cors ? "\r\nAccess-Control-Expose-Headers: X-Vyzorix-Render,X-Vyzorix-Render-Ms,X-Vyzorix-Render-Cache,X-Vyzorix-Title,X-Vyzorix-Render-Truncated\r\n"
                                  "Vary: Origin\r\n"
                                : "");
         send_all(fd, header, (size_t)hn);
@@ -2760,7 +2790,22 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
         rcfg.viewport_height = cfg->render_viewport_height;
         rcfg.user_agent = cfg->user_agent;
         rcfg.profile_root = cfg->render_profile_root;
+
+        /* The cache lives beside the downloads unless told otherwise: it is the
+         * same volume the operator already sized for this engine's data. */
+        char *cache_dir = NULL;
+        if (cfg->render_cache_dir && *cfg->render_cache_dir) {
+            cache_dir = mi_strdup(cfg->render_cache_dir);
+        } else if (srv->download_dir) {
+            cache_dir = mi_asprintf("%s/.render-cache", srv->download_dir);
+        }
+        rcfg.cache_dir = cache_dir;
+        rcfg.cache_max_bytes = cfg->render_cache_max_bytes;
+        rcfg.cache_max_entries = cfg->render_cache_max_entries;
+        rcfg.cache_ttl_seconds = cfg->render_cache_ttl_seconds;
+
         srv->renderer = mi_render_pool_new(&rcfg);
+        free(cache_dir);
     }
     return srv;
 }

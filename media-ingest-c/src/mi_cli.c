@@ -480,7 +480,8 @@ static void on_signal(int sig) {
 static int cmd_serve(const char *host, int port, const char *work_dir,
                      const char *auth_token, const char *allow_origins,
                      const char *user_agent, int render, int render_timeout,
-                     int render_concurrent) {
+                     int render_concurrent, const char *render_cache_dir,
+                     int render_cache_ttl) {
     mi_server_config cfg;
     mi_server_config_init(&cfg);
     if (host) cfg.host = host;
@@ -492,6 +493,8 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
     cfg.render_enabled = render;
     if (render_timeout > 0) cfg.render_timeout_seconds = render_timeout;
     if (render_concurrent > 0) cfg.render_max_concurrent = render_concurrent;
+    if (render_cache_dir) cfg.render_cache_dir = render_cache_dir;
+    if (render_cache_ttl > 0) cfg.render_cache_ttl_seconds = render_cache_ttl;
 
     mi_mkdir_p(cfg.work_dir);
 
@@ -564,6 +567,7 @@ static void usage(void) {
             "  media-ingest serve [--host H] [--port N] [--work-dir D] [--auth-token T]\n"
             "                      [--allow-origin ORIGINS] [--user-agent UA]\n"
             "                      [--render] [--render-timeout SECONDS] [--render-concurrent N]\n"
+            "                      [--render-cache DIR] [--render-cache-ttl SECONDS] [--no-render-cache]\n"
             "  media-ingest upload <file-or-dir> --bucket B --access-key K --secret-key S\n"
             "                          [--endpoint URL] [--region R] [--prefix P] [--cdn-base URL]\n"
             "                          [--path-style|--virtual-host] [--purge --cf-token T --cf-zone Z]\n"
@@ -639,6 +643,10 @@ int main(int argc, char **argv) {
     int serve_render = getenv("MI_RENDER") != NULL;
     int serve_render_timeout = 0;
     int serve_render_concurrent = 0;
+    /* The render cache is on by default, under the work dir; these only change
+     * where it lives or how long an entry is trusted. */
+    const char *serve_render_cache = NULL;
+    int serve_render_cache_ttl = 0;
 
     storage_opts so;
     storage_opts_init(&so);
@@ -661,7 +669,8 @@ int main(int argc, char **argv) {
         OPT_SECRET, OPT_SESSION, OPT_PREFIX, OPT_CONTENTTYPE, OPT_VHOST, OPT_PATHSTYLE,
         OPT_CDN_BASE, OPT_PURGE, OPT_CF_TOKEN, OPT_CF_ZONE,
         OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN, OPT_USERAGENT,
-        OPT_RENDER, OPT_RENDER_TIMEOUT, OPT_RENDER_CONCURRENT
+        OPT_RENDER, OPT_RENDER_TIMEOUT, OPT_RENDER_CONCURRENT,
+        OPT_RENDER_CACHE, OPT_RENDER_CACHE_TTL, OPT_NO_RENDER_CACHE
     };
     static struct option long_opts[] = {
         {"output", required_argument, 0, 'o'},
@@ -697,6 +706,9 @@ int main(int argc, char **argv) {
         {"render", no_argument, 0, OPT_RENDER},
         {"render-timeout", required_argument, 0, OPT_RENDER_TIMEOUT},
         {"render-concurrent", required_argument, 0, OPT_RENDER_CONCURRENT},
+        {"render-cache", required_argument, 0, OPT_RENDER_CACHE},
+        {"render-cache-ttl", required_argument, 0, OPT_RENDER_CACHE_TTL},
+        {"no-render-cache", no_argument, 0, OPT_NO_RENDER_CACHE},
         {"header", required_argument, 0, 'H'},
         {"quiet", no_argument, 0, 'q'},
         {"verbose", no_argument, 0, 'v'},
@@ -744,6 +756,9 @@ int main(int argc, char **argv) {
             case OPT_RENDER: serve_render = 1; break;
             case OPT_RENDER_TIMEOUT: serve_render_timeout = atoi(optarg); break;
             case OPT_RENDER_CONCURRENT: serve_render_concurrent = atoi(optarg); break;
+            case OPT_RENDER_CACHE: serve_render_cache = optarg; break;
+            case OPT_RENDER_CACHE_TTL: serve_render_cache_ttl = atoi(optarg); break;
+            case OPT_NO_RENDER_CACHE: serve_render_cache = ""; break;
             default: usage(); return 2;
         }
     }
@@ -806,7 +821,8 @@ int main(int argc, char **argv) {
         case CMD_SERVE:
             rc = cmd_serve(serve_host, serve_port, serve_work_dir, serve_token,
                            serve_allow_origins, serve_user_agent, serve_render,
-                           serve_render_timeout, serve_render_concurrent);
+                           serve_render_timeout, serve_render_concurrent,
+                           serve_render_cache, serve_render_cache_ttl);
             break;
         default: rc = 2;
     }

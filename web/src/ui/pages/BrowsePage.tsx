@@ -82,6 +82,8 @@ export interface BrowsePageProps {
   renderedTitle: string | null;
   /** How long the render took, for the record. */
   renderMs: number | null;
+  /** True when the engine served this from its cache rather than rendering. */
+  renderedFromCache: boolean;
   /** Ask for a render in the given mode. */
   onRender: (mode: RenderMode) => void;
   /** Clear the rendered result, so the address can be changed. */
@@ -190,6 +192,7 @@ export function BrowsePage(props: BrowsePageProps) {
     renderFailure,
     renderedTitle,
     renderMs,
+    renderedFromCache,
     onRender,
     onClearRender,
   } = props;
@@ -207,6 +210,9 @@ export function BrowsePage(props: BrowsePageProps) {
       if (renderFailure) return renderFailureLabel(renderFailure);
       if (rendered) {
         const label = renderedTitle ? `“${renderedTitle}”` : 'that page';
+        // A cached answer is worth saying so: it explains why this one was
+        // instant when the first one took a second or two.
+        if (renderedFromCache) return `${label} — from the cache`;
         return renderMs ? `${label} — rendered in ${(renderMs / 1000).toFixed(1)}s` : label;
       }
       return sourceUrl.trim();
@@ -232,6 +238,7 @@ export function BrowsePage(props: BrowsePageProps) {
     renderFailure,
     rendered,
     renderedTitle,
+    renderedFromCache,
     renderMs,
     byUrl,
     sourceUrl,

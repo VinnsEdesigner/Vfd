@@ -11,12 +11,13 @@ BIN     := $(BUILD)/media-ingest
 LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_download.c $(SRC_DIR)/mi_hls.c \
            $(SRC_DIR)/mi_storage.c $(SRC_DIR)/mi_json.c \
-           $(SRC_DIR)/mi_browse.c $(SRC_DIR)/mi_render.c \
+           $(SRC_DIR)/mi_browse.c $(SRC_DIR)/mi_render.c $(SRC_DIR)/mi_cache.c \
            $(SRC_DIR)/mi_server.c
 CLI_SRC := $(SRC_DIR)/mi_cli.c
 TEST_SRC := tests/test_media_ingest.c
 TEST_SERVER_SRC := tests/test_server.c
 TEST_RENDER_SRC := tests/test_render.c
+TEST_CACHE_SRC := tests/test_cache.c
 
 .PHONY: all clean test
 
@@ -37,10 +38,14 @@ $(BUILD)/test_server: $(LIB_SRC) $(TEST_SERVER_SRC) | $(BUILD)
 $(BUILD)/test_render: $(LIB_SRC) $(TEST_RENDER_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_RENDER_SRC) $(LDLIBS)
 
-test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render
+$(BUILD)/test_cache: $(LIB_SRC) $(TEST_CACHE_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_CACHE_SRC) $(LDLIBS)
+
+test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache
 	$(BUILD)/test_media_ingest
 	$(BUILD)/test_server
 	$(BUILD)/test_render
+	$(BUILD)/test_cache
 
 clean:
 	rm -rf $(BUILD)

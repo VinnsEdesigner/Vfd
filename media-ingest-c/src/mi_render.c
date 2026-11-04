@@ -17,6 +17,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "mi_cache.h"
 #include "mi_util.h"
 
 /* Chromium's own names, in the order they are usually found. */
@@ -180,6 +181,8 @@ static char *find_browser(const char *hint) {
 struct mi_render_pool {
     mi_render_config cfg;
     char *browser;
+    /* Rendered pages, keyed by URL and mode. NULL when caching is off. */
+    mi_cache *cache;
     /* A counting semaphore as a mutex + condition: the free count is explicit,
      * which makes "is a slot free" answerable without blocking. */
     pthread_mutex_t lock;
@@ -201,6 +204,10 @@ void mi_render_config_init(mi_render_config *cfg) {
     cfg->max_concurrent = 1;
     cfg->user_agent = NULL;
     cfg->profile_root = NULL;
+    cfg->cache_dir = NULL;
+    cfg->cache_max_bytes = 0; /* 0 -> the cache's own default */
+    cfg->cache_max_entries = 0;
+    cfg->cache_ttl_seconds = 0;
 }
 
 const char *mi_render_status_name(mi_render_status s) {
@@ -258,6 +265,19 @@ mi_render_pool *mi_render_pool_new(const mi_render_config *cfg) {
                 pool->cfg.v8_heap_mb);
     }
 
+    /* The cache is built even without a browser, so a host that has lost its
+     * browser can still serve what it rendered before. */
+    if (pool->cfg.cache_dir && *pool->cfg.cache_dir) {
+        pool->cache = mi_cache_new(pool->cfg.cache_dir, pool->cfg.cache_max_bytes,
+                                   pool->cfg.cache_max_entries, pool->cfg.cache_ttl_seconds);
+        if (pool->cache) {
+            size_t entries = 0, bytes = 0;
+            mi_cache_stats(pool->cache, &entries, &bytes, NULL, NULL);
+            mi_logf(MI_LOG_INFO, "render: caching under %s (%zu entries, %zu bytes kept)",
+                    pool->cfg.cache_dir, entries, bytes);
+        }
+    }
+
     pthread_mutex_init(&pool->lock, NULL);
     pthread_cond_init(&pool->free_slot, NULL);
     pthread_mutex_init(&pool->reap_lock, NULL);
@@ -273,6 +293,7 @@ void mi_render_pool_free(mi_render_pool *pool) {
         nanosleep(&ts, NULL);
     }
     pthread_mutex_unlock(&pool->lock);
+    mi_cache_free(pool->cache);
     free(pool->browser);
     pthread_mutex_destroy(&pool->lock);
     pthread_cond_destroy(&pool->free_slot);
@@ -286,6 +307,20 @@ int mi_render_pool_available(const mi_render_pool *pool) {
 
 int mi_render_pool_limit(const mi_render_pool *pool) {
     return pool ? pool->cfg.max_concurrent : 0;
+}
+
+int mi_render_pool_caching(const mi_render_pool *pool) {
+    return pool && pool->cache != NULL;
+}
+
+void mi_render_pool_cache_stats(const mi_render_pool *pool, size_t *entries,
+                                size_t *bytes, uint64_t *hits, uint64_t *misses) {
+    if (entries) *entries = 0;
+    if (bytes) *bytes = 0;
+    if (hits) *hits = 0;
+    if (misses) *misses = 0;
+    if (!pool || !pool->cache) return;
+    mi_cache_stats(pool->cache, entries, bytes, hits, misses);
 }
 
 int mi_render_pool_idle(const mi_render_pool *pool) {
@@ -479,6 +514,35 @@ mi_render_status mi_render_run(mi_render_pool *pool, const char *url,
         return out->status;
     }
 
+    /*
+     * The cache is consulted *before* a slot is taken, so a hit costs no
+     * concurrency at all. That is the whole point of it: the gate is narrow
+     * because each render is expensive, and a repeat view should not compete
+     * with a fresh one.
+     *
+     * The key is the URL and the mode together: the same page in picture and
+     * text form are different results and must not answer for each other.
+     */
+    char key[2048];
+    snprintf(key, sizeof key, "%s|%s", mode == MI_RENDER_IMAGE ? "image" : "html", url);
+    if (pool->cache) {
+        mi_cache_entry hit;
+        if (mi_cache_get(pool->cache, key, &hit)) {
+            out->data = hit.data;
+            out->len = hit.len;
+            out->content_type = hit.content_type ? hit.content_type
+                                                 : "application/octet-stream";
+            out->title = hit.title;
+            out->from_cache = 1;
+            out->status = MI_RENDER_OK;
+            /* The *actual* time this request took, which for a hit is a file
+             * read. Reporting the original render's duration instead would tell
+             * the user a cached view was slow when it was not. */
+            out->elapsed_seconds = mono_seconds() - started;
+            return MI_RENDER_OK;
+        }
+    }
+
     /* Take a slot, or refuse at once. A queue would grow without bound behind a
      * slow page, and the caller can retry. */
     pthread_mutex_lock(&pool->lock);
@@ -589,6 +653,14 @@ mi_render_status mi_render_run(mi_render_pool *pool, const char *url,
     out->content_type = mode == MI_RENDER_IMAGE ? "image/png" : "text/html; charset=utf-8";
     if (mode == MI_RENDER_DOM) out->title = title_from_html(data, len);
     rc = truncated ? MI_RENDER_TOO_LARGE : MI_RENDER_OK;
+
+    /* Store only a complete result. A truncated one is missing whatever came
+     * after the cap, and caching that would make the loss permanent. The time
+     * is measured here, because the result's own field is set on the way out. */
+    if (pool->cache && rc == MI_RENDER_OK) {
+        mi_cache_put(pool->cache, key, data, len, out->content_type, out->title,
+                     (mono_seconds() - started) * 1000.0);
+    }
 
 done:
     /* The profile goes away whatever happened, so nothing accumulates. */

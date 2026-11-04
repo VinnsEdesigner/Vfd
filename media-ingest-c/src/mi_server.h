@@ -68,6 +68,16 @@ typedef struct {
     int render_viewport_height;
     const char *render_browser;   /* explicit Chromium path, else searched */
     const char *render_profile_root; /* where throwaway profiles are made */
+    /*
+     * Rendered-page cache. NULL `render_cache_dir` turns it off; the budget and
+     * TTL bound it, and 0 means the built-in default in each case. It is on by
+     * default, under the work dir, because a render is expensive enough that
+     * repeating one is worth avoiding.
+     */
+    const char *render_cache_dir;
+    size_t render_cache_max_bytes;
+    size_t render_cache_max_entries;
+    int render_cache_ttl_seconds;
 } mi_server_config;
 
 typedef struct mi_server mi_server;
