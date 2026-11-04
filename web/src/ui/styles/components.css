@@ -4561,6 +4561,29 @@ input[type='range']:focus-visible {
   justify-content: center;
   margin-top: 4px;
 }
+/*
+ * The keyboard target. It has to be a real editable element for a phone to open
+ * its keyboard, but it must not be visible: it is parked off-screen at the size
+ * of a caret, kept empty, and read only through `beforeinput`/`keydown`.
+ *
+ * `opacity: 0` rather than `display: none` or `visibility: hidden`, because a
+ * hidden element cannot be focused and would never raise the keyboard.
+ */
+.live__kbd {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  opacity: 0;
+  /* The browser's own zoom-on-focus must not fire for a field the user cannot
+     see; the page being driven handles its own layout. */
+  font-size: 16px;
+}
 
 .browse__loading {
   display: flex;

@@ -39,7 +39,6 @@ import {
   toFrameCoords,
   touchMessage,
   wheelMessage,
-  type LiveKeyMessage,
 } from './live-input';
 
 export type LiveStatus = 'idle' | 'connecting' | 'open' | 'closed';
@@ -108,6 +107,15 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
   const { status, frame, page, failure, reason, onOpen, onClose, send } = live;
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  /**
+   * The element that actually takes the keyboard.
+   *
+   * A `<div>` cannot raise the on-screen keyboard on a phone, however it is
+   * focused — only an editable element can. This hidden textarea is kept
+   * focusable and empty: a tap focuses it (which opens the keyboard), and every
+   * character that arrives is forwarded to the page and then cleared.
+   */
+  const kbdRef = useRef<HTMLTextAreaElement | null>(null);
   /** The last viewport we told the engine about, so we do not repeat ourselves. */
   const sentSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
   const isLive = status === 'open' || status === 'connecting';
@@ -185,9 +193,34 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
     [frame?.width, frame?.height],
   );
 
+  /*
+   * Focusing from a touch, on a delay.
+   *
+   * A synchronous `.focus()` inside a touch handler does not stick: the browser's
+   * own handling of the tap runs after it and moves focus back to the body, so a
+   * phone never opens its keyboard (verified — `document.activeElement` was
+   * `BODY` after the tap even though the focus call had run). Deferring to the
+   * next task lets the tap finish first, so the focus is the last word.
+   */
+  const focusKeyboardSoon = useCallback(() => {
+    window.setTimeout(() => kbdRef.current?.focus(), 0);
+  }, []);
+
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!isLive) return;
+      /*
+       * A press on a non-focusable element blurs whatever had focus, so the
+       * keyboard target is re-focused here unconditionally. That matters on a
+       * touch device, where the browser fires a synthetic mouse press *after* the
+       * touch: without this the focus the tap just took is immediately lost and
+       * the keyboard never opens.
+       *
+       * The default is also prevented, which stops the blur happening at all —
+       * the focus call then only has to survive the *first* press.
+       */
+      e.preventDefault();
+      focusKeyboardSoon();
       /*
        * On a touch device the browser also synthesises mouse events from a tap,
        * after the touch handlers have already forwarded the tap and its click. Let
@@ -197,10 +230,8 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
       if (suppressMouseAfterTouch.current) return;
       const { x, y } = frameCoords(e.clientX, e.clientY);
       send(mouseMessage('mousePressed', x, y, buttonName(e.button), 1, e.buttons, modifiersFromEvent(e)));
-      // The stage needs focus for keys to reach the page.
-      stageRef.current?.focus();
     },
-    [isLive, frameCoords, send],
+    [isLive, frameCoords, focusKeyboardSoon, send],
   );
 
   const onMouseUp = useCallback(
@@ -270,11 +301,10 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
       }
       touchMoved.current = false;
       send(touchMessage('touchStart', pointsOf(), modifiersFromEvent(e)));
-      // Focus the stage so a hardware keyboard also works, and so the page's own
-      // on-screen keyboard has something to attach to.
-      stageRef.current?.focus();
+      // Focus the keyboard target, so a phone opens its keyboard.
+      focusKeyboardSoon();
     },
-    [isLive, pointsOf, send],
+    [isLive, focusKeyboardSoon, pointsOf, send],
   );
 
   const onTouchMove = useCallback(
@@ -337,20 +367,43 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
     [isLive, pointsOf, send],
   );
 
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (!isLive) return;
-      // Escape leaves the stage, so the console stays usable by keyboard.
+  /*
+   * The keyboard.
+   *
+   * Keys are read from a hidden textarea, not the stage, because that is the only
+   * element a phone will raise a keyboard for — a `<div>` cannot, however it is
+   * focused. Two paths, and the split matters:
+   *
+   *   - `keydown` gives the *named* keys: Backspace, Enter, the arrows, and any
+   *     shortcut. Forwarded as key events.
+   *   - `input` gives committed text, which is what an on-screen keyboard, an IME
+   *     or a paste produces. Forwarded as text, because a phone's keyboard does
+   *     not always send a usable `key`/`code` for a character.
+   *
+   * These are *native* listeners rather than React props on purpose. React's
+   * `onBeforeInput` is a polyfill built on `keypress`/`textInput` and does not
+   * fire reliably, which is how an earlier version of this shipped a keyboard
+   * that silently sent nothing. The field is cleared after each event so it never
+   * accumulates text, and `input` is diffed against what we already sent so a
+   * composition that arrives in pieces is forwarded exactly once.
+   */
+  useEffect(() => {
+    const el = kbdRef.current;
+    if (!el || !isLive) return;
+
+    const onNativeKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        stageRef.current?.blur();
+        el.blur();
         return;
       }
-      // Let the console keep its own reload, so the user is never trapped.
       if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) return;
+      // A printable character comes through `input` instead, so it is not sent
+      // twice. Everything else is a named key.
+      const printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+      if (printable) return;
       e.preventDefault();
-      const event: LiveKeyMessage['event'] = 'keyDown';
       send(
-        keyMessage(event, {
+        keyMessage('keyDown', {
           key: e.key,
           code: e.code,
           keyCode: e.keyCode,
@@ -360,40 +413,34 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
           shiftKey: e.shiftKey,
         }),
       );
-    },
-    [isLive, send],
-  );
+    };
 
-  const onKeyUp = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (!isLive) return;
-      send(
-        keyMessage('keyUp', {
-          key: e.key,
-          code: e.code,
-          keyCode: e.keyCode,
-          altKey: e.altKey,
-          ctrlKey: e.ctrlKey,
-          metaKey: e.metaKey,
-          shiftKey: e.shiftKey,
-        }),
-      );
-    },
-    [isLive, send],
-  );
+    const onNativeInput = () => {
+      const text = el.value;
+      // Clear immediately: the field is a keyboard, not a text box, and leaving
+      // the value in place would let it grow without bound.
+      el.value = '';
+      if (text) send(textMessage(text));
+    };
 
-  /** Committed text (paste), which is not a key sequence. */
-  const onPaste = useCallback(
-    (e: React.ClipboardEvent) => {
-      if (!isLive) return;
-      const text = e.clipboardData.getData('text');
+    const onNativePaste = (e: ClipboardEvent) => {
+      const text = e.clipboardData?.getData('text') ?? '';
       if (text) {
         e.preventDefault();
+        el.value = '';
         send(textMessage(text));
       }
-    },
-    [isLive, send],
-  );
+    };
+
+    el.addEventListener('keydown', onNativeKeyDown);
+    el.addEventListener('input', onNativeInput);
+    el.addEventListener('paste', onNativePaste);
+    return () => {
+      el.removeEventListener('keydown', onNativeKeyDown);
+      el.removeEventListener('input', onNativeInput);
+      el.removeEventListener('paste', onNativePaste);
+    };
+  }, [isLive, send]);
 
   const shownFrame = frame;
   const liveUrl = page?.url || url;
@@ -459,10 +506,31 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
             This page is being driven by the engine’s own browser. It is not sandboxed — only open
             pages you would be willing to visit.
           </Note>
+          {/*
+            The keyboard target.
+            
+            A `<div>` cannot raise the on-screen keyboard on a phone, however it
+            is focused; only an editable element can. This textarea is the
+            element a tap focuses, so a phone opens its keyboard. It is kept
+            empty and off to the side — it is a keyboard, not a text box, and
+            every character it receives is forwarded to the page and cleared.
+
+            `autoCapitalize`/`autoCorrect` are off because the page being driven
+            is the one that should decide how text is entered, not this field.
+          */}
+          <textarea
+            ref={kbdRef}
+            className="live__kbd"
+            aria-hidden="true"
+            tabIndex={-1}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+          />
           <div
             className="live__stage"
             ref={stageRef}
-            tabIndex={0}
             role="application"
             aria-label={`Live page ${liveUrl}`}
             onMouseDown={onMouseDown}
@@ -472,9 +540,6 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
             onTouchMove={onTouchMove}
             onTouchEnd={onTouchEnd}
             onTouchCancel={onTouchCancel}
-            onKeyDown={onKeyDown}
-            onKeyUp={onKeyUp}
-            onPaste={onPaste}
           >
             {shownFrame ? (
               <img
@@ -492,8 +557,8 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
             )}
           </div>
           <p className="live__hint">
-            Click to focus, then type. Escape releases the keyboard. Scrolling is forwarded to the
-            page.
+            Tap or click the page to focus it, then type. Escape releases the keyboard. Scrolling is
+            forwarded to the page.
           </p>
         </>
       )}
