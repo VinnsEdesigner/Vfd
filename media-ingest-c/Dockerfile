@@ -1,4 +1,4 @@
-# media-ingest — the engine, with the browser it renders with.
+# media-ingest — the engine, with the browser it renders with and streams.
 #
 # WHY THIS IS NOT A SCRATCH IMAGE
 #
@@ -15,6 +15,23 @@
 # 500 MB of proportional set size at its peak. The engine therefore needs a plan
 # with at least 2 GB and a render concurrency of one or two — see README. This
 # is not a container to run on a 512 MB instance.
+#
+# THE LIVE-VIDEO PATH ADDS TWO THINGS
+#
+# A live-video session captures the page as raw video, which needs a display to
+# capture from and a media stack to encode it:
+#
+#   Xvfb            a virtual X server. Chromium is NOT run headless here,
+#                   because headless composites internally and never touches X,
+#                   so there would be nothing for the capture to read.
+#   GStreamer       ximagesrc -> vp8enc -> rtpvp8pay -> webrtcbin. `libnice`
+#                   (in the -bad set) is what gives webrtcbin ICE; without it
+#                   webrtcbin exists but cannot connect, and the failure is a
+#                   null pad at runtime rather than a missing package.
+#
+# Both are optional at runtime: if they are absent the engine reports the
+# capability unavailable and the console hides the control, rather than
+# accepting a session it cannot serve.
 
 # ------------------------------------------------------------------ #
 # Build                                                               #
@@ -24,7 +41,11 @@ FROM debian:trixie-slim AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential \
+      pkg-config \
       libcurl4-openssl-dev \
+      libgstreamer1.0-dev \
+      libgstreamer-plugins-base1.0-dev \
+      libgstreamer-plugins-bad1.0-dev \
       ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
@@ -46,6 +67,7 @@ FROM debian:trixie-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       chromium \
+      xvfb \
       fonts-liberation \
       fonts-dejavu-core \
       fonts-noto-core \
@@ -54,6 +76,13 @@ RUN apt-get update \
       libcurl4 \
       curl \
       tini \
+      gstreamer1.0-tools \
+      gstreamer1.0-plugins-base \
+      gstreamer1.0-plugins-good \
+      gstreamer1.0-plugins-bad \
+      gstreamer1.0-plugins-ugly \
+      gstreamer1.0-libav \
+      gstreamer1.0-nice \
  && rm -rf /var/lib/apt/lists/*
 
 # A non-root user, because the engine runs a browser on pages it does not
@@ -74,6 +103,7 @@ VOLUME ["/data"]
 ENV MI_WORK_DIR=/data/downloads \
     MI_RENDER=1 \
     MI_INTERACTIVE=1 \
+    MI_RTC=1 \
     MI_HOST=0.0.0.0 \
     MI_PORT=8787
 
@@ -93,7 +123,8 @@ CMD ["serve", \
      "--port", "8787", \
      "--work-dir", "/data/downloads", \
      "--render", \
-     "--interactive"]
+     "--interactive", \
+     "--rtc"]
 
 EXPOSE 8787
 

@@ -19,6 +19,7 @@ Built for ingesting media you own or are licensed to distribute.
 | `src/mi_sanitize.[ch]` | HTML allowlist sanitiser for rendered DOM |
 | `src/mi_ws.[ch]` | WebSocket framing (RFC 6455), for live page sessions |
 | `src/mi_interactive.[ch]` | Live, driveable page sessions over the Chromium CDP pipe |
+| `src/mi_rtc.[ch]` | Live video over WebRTC: raw capture from an X display, input on a data channel |
 | `src/mi_cli.c` | Command-line front end |
 
 ## Build
@@ -256,11 +257,98 @@ cannot use Chromium's namespace sandbox. **A page driven here runs unsandboxed.*
 That is why the console says so plainly and why the engine only opens pages the
 operator would be willing to visit.
 
+## Live video over WebRTC
+
+The live-page path above streams **JPEG frames over a WebSocket**: capture with a
+CDP screencast, encode, send, decode in the browser, draw into an `<img>`. Every
+step is a cost, and the whole chain is gated on a CDP acknowledgement round-trip,
+which caps the frame rate.
+
+`serve --rtc` sends **raw video over WebRTC** instead:
+
+```
+chromium (software GL, on a real X display)
+   | paints
+Xvfb :99
+   | ximagesrc
+raw I420 --> vp8enc --> rtpvp8pay --> webrtcbin --SRTP--> browser
+```
+
+No JPEG, no base64, no per-frame acknowledgement, and a transport built for media:
+SRTP over UDP with congestion control, rather than a TCP stream that
+head-of-line blocks.
+
+### Signalling, and why it is HTTP and not a socket
+
+WebRTC cannot carry its own bootstrap — the two peers have to agree on
+*something* before a peer connection exists, and that something cannot be WebRTC.
+It does not have to be a long-lived socket either. Here it is four plain HTTP
+requests:
+
+```
+POST   /api/v1/rtc                 {url}    -> {token, sdp, width, height, gathered}
+POST   /api/v1/rtc/{token}/answer  {sdp}    -> {ok}
+GET    /api/v1/rtc/{token}                  -> {state, connected, reason}
+DELETE /api/v1/rtc/{token}                  -> {ok}
+```
+
+Input does not need a socket either: it rides a **WebRTC data channel**, inside
+the peer connection the video already uses. The engine creates (or accepts) a
+channel labelled `input`, and maps the console's own vocabulary — `navigate`,
+`reload`, `resize`, `mouse`, `wheel`, `key`, `text`, `touch` — onto CDP over the
+pipe it already held. So the whole session, media and control, is one WebRTC
+connection.
+
+### Gathering is awaited, not trickled
+
+Trickle ICE exists to avoid waiting for gathering: candidates are sent as they are
+found, over the signalling channel. With no signalling socket there is nowhere to
+send them, so the engine waits instead. `mi_rtc_open` returns immediately and
+`mi_rtc_wait_offer` blocks until gathering has finished, then re-reads the local
+description so the candidates are *in* the SDP. The cost is a second or so at
+startup; the gain is a handshake with no mid-flight messages.
+
+`--rtc-stun` sets the STUN server used for gathering. Without one only host
+candidates are produced, which works on a LAN and not across a NAT.
+
+### Requirements
+
+This path needs three things the JPEG path does not:
+
+- **Xvfb** — a virtual X server. Chromium is **not** run headless here, because
+  headless composites internally and never touches X, so there would be nothing
+  for the capture to read. It runs with `--use-gl=swiftshader` because the virtual
+  display has no GPU.
+- **GStreamer** with `ximagesrc`, `vp8enc`, `rtpvp8pay` and `webrtcbin`.
+- **`libnice`** (the `gstreamer1.0-nice` package) — what gives `webrtcbin` ICE.
+  Without it `webrtcbin` exists but cannot connect, and the failure appears as a
+  null pad at runtime rather than a missing package, which is why the engine
+  probes for the *elements* rather than the libraries.
+
+When any is absent the capability reports unavailable and the console hides the
+control, rather than accepting a session it cannot serve.
+
+### Bounds
+
+- `--rtc-concurrent` (default 1) bounds sessions. A session holds an Xvfb *and* a
+  Chromium, so this is the heaviest of the three page features; a full gate is
+  refused with `503` rather than queued;
+- `--rtc-idle` (default 180 s) closes a session nobody is watching;
+- `--rtc-fps` (default 25) and `--rtc-bitrate` (kbit/s, default 2500) bound the
+  encode, because every frame costs one and the encoder shares a host with the
+  browser;
+- only public `http(s)` pages are streamed — the same URL rules as rendering and
+  the JPEG live path;
+- like the others, the browser runs `--no-sandbox`, because an unprivileged
+  container cannot use Chromium's namespace sandbox.
+
 ### The Origin check
 
 A WebSocket handshake is **not** subject to CORS, so the engine checks the
 `Origin` header itself against `MI_ALLOW_ORIGINS` and refuses a handshake from an
-origin that is not listed. Without that, any page a user visits could open a
+origin that is not listed. (The live-video routes above use plain HTTP, so they
+*are* subject to CORS and get the usual treatment — plus the session token,
+which is what stops one session steering another.) Without that, any page a user visits could open a
 session to their engine. The bearer token cannot travel as a header on a
 WebSocket, so it is accepted as a `token` query parameter — the Origin check is
 what makes that safe.

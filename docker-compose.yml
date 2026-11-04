@@ -36,6 +36,10 @@ services:
       # held open, so it is a separate opt-in from rendering and shares the same
       # memory reasoning.
       MI_INTERACTIVE: "1"
+      # Live video is on too. It is the heaviest of the three: a session holds
+      # an Xvfb and a Chromium, and the frames are encoded. It needs the
+      # GStreamer webrtc plugins, which the image carries.
+      MI_RTC: "1"
     # The image's CMD already supplies serve, the host, the port, --render and
     # --interactive; these only add what cannot be a compiled-in default. The
     # engine reads them from the environment, which is how a container is
@@ -44,12 +48,18 @@ services:
       - serve
       - --render-concurrent=1
       - --interactive-concurrent=1
+      - --rtc-concurrent=1
+      # STUN so a viewer on another network can connect; the engine's host
+      # candidates alone only work on the same LAN.
+      - --rtc-stun=stun://stun.l.google.com:19302
     deploy:
       resources:
         limits:
           # The floor for one render plus the engine. Raise it only alongside
           # --render-concurrent: two renders need roughly twice this.
-          memory: 2g
+          # A render plus the engine, with headroom for one live-video session
+          # (an Xvfb, a Chromium and the encoder).
+          memory: 3g
     # A browser needs more than the 64 MB a container gets by default for
     # /dev/shm. The engine passes --disable-dev-shm-usage as well, so this is a
     # second allowance rather than the only one.
