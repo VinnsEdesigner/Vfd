@@ -29,6 +29,7 @@
 #include "mi_interactive.h"
 #include "mi_json.h"
 #include "mi_render.h"
+#include "mi_rtc.h"
 #include "mi_sanitize.h"
 #include "mi_util.h"
 #include "mi_ws.h"
@@ -149,6 +150,10 @@ struct mi_server {
     /* Live, driveable page sessions. Same reasoning: its own pool, its own
      * gate, and NULL when the feature is off. */
     mi_interactive_pool *driver;
+    /* Live video over WebRTC: raw capture from an X display instead of a
+     * stream of JPEG frames. Its own pool and gate again, because it holds a
+     * browser *and* an X server for as long as it runs. */
+    mi_rtc_pool *rtc;
 };
 
 /* ------------------------------------------------------------------ */
@@ -238,6 +243,21 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->interactive_max_concurrent = 1;
     cfg->interactive_idle_seconds = 180;
     cfg->interactive_v8_heap_mb = 256;
+    /*
+     * Live video over WebRTC. A third opt-in, and the most demanding: it needs
+     * a browser on a real X display, so it costs an Xvfb and a Chromium per
+     * session, plus the encode. Off unless asked for. 0 means the built-in
+     * default in each case.
+     */
+    cfg->rtc_enabled = 0;
+    cfg->rtc_max_concurrent = 1;
+    cfg->rtc_idle_seconds = 180;
+    cfg->rtc_v8_heap_mb = 256;
+    cfg->rtc_width = 0;
+    cfg->rtc_height = 0;
+    cfg->rtc_fps = 0;
+    cfg->rtc_bitrate_kbps = 0;
+    cfg->rtc_stun_server = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1984,6 +2004,301 @@ static int ws_queue_text(mi_outbox *box, const char *json, size_t len, int dropp
  * user's page; there is nothing to parallelise, and one thread per session is
  * what makes the concurrency gate meaningful.
  */
+/* ------------------------------------------------------------------ */
+/* Live video sessions (raw video over WebRTC, signalled on the WS)     */
+/* ------------------------------------------------------------------ */
+
+/* Queue one already-built JSON text message; never droppable, because a
+ * signalling message carries information rather than a moment. */
+static void rtc_queue_json(mi_outbox *out, const char *json) {
+    ws_queue_text(out, json, strlen(json), 0);
+}
+
+/*
+ * GET /api/v1/rtc?url=…  (WebSocket upgrade)
+ *
+ * The transport is WebRTC, but the *signalling* rides the WebSocket the engine
+ * already speaks: one offer out, one answer in, and ICE candidates both ways.
+ * Reusing the socket means no second protocol, no second port, and the same
+ * Origin and token checks that already guard a live session.
+ *
+ * The browser paints into Xvfb; ximagesrc reads that display; the frames are
+ * encoded and handed to webrtcbin. Nothing here touches JPEG or CDP for video.
+ */
+static void serve_rtc_ws(mi_server *srv, int fd, http_request *req) {
+    const char *key = request_header(req, "Sec-WebSocket-Key");
+    const char *upgrade = request_header(req, "Upgrade");
+    const char *connection = request_header(req, "Connection");
+    if (!mi_ws_is_upgrade(upgrade, connection, key)) {
+        send_error(fd, 400, "Bad Request", "expected a WebSocket upgrade", NULL);
+        return;
+    }
+    /* A WebSocket handshake is not subject to CORS, so the Origin is checked
+     * here: without it any page a user visits could open a stream. */
+    const char *origin = request_header(req, "Origin");
+    if (srv->cfg.allow_origins && origin && !origin_allowed(srv->cfg.allow_origins, origin)) {
+        send_error(fd, 403, "Forbidden", "origin is not allowed", NULL);
+        return;
+    }
+
+    char *url = query_str(req->query, "url");
+    if (!url || !*url) {
+        free(url);
+        send_error(fd, 400, "Bad Request", "missing 'url'", NULL);
+        return;
+    }
+    if (!mi_rtc_url_allowed(url)) {
+        free(url);
+        send_error(fd, 400, "Bad Request", "url is not streamable", NULL);
+        return;
+    }
+    if (!srv->rtc) {
+        send_error(fd, 503, "Service Unavailable",
+                   "live video is not enabled on this engine", NULL);
+        free(url);
+        return;
+    }
+    if (!mi_rtc_pool_available(srv->rtc)) {
+        send_error(fd, 503, "Service Unavailable",
+                   "no browser, Xvfb or GStreamer webrtc plugins on the engine host", NULL);
+        free(url);
+        return;
+    }
+
+    char err[200];
+    mi_rtc *rtc = NULL;
+    char *offer = NULL;
+    mi_rtc_status st = mi_rtc_open(srv->rtc, url, &rtc, &offer, err, sizeof err);
+    if (st != MI_RTC_OK) {
+        int code = 502;
+        const char *text = "Bad Gateway";
+        if (st == MI_RTC_BUSY) { code = 503; text = "Service Unavailable"; }
+        else if (st == MI_RTC_BAD_URL) { code = 400; text = "Bad Request"; }
+        else if (st == MI_RTC_NO_PLUGIN) { code = 503; text = "Service Unavailable"; }
+        send_error(fd, code, text, err[0] ? err : "could not start a live video session", NULL);
+        free(url);
+        return;
+    }
+
+    /* Upgrade only once the browser is up and an offer exists, so a failure is
+     * an HTTP status the console can read rather than a socket that dies. */
+    char *accept = mi_ws_accept_key(key);
+    if (!accept) {
+        mi_rtc_close(rtc);
+        free(offer);
+        free(url);
+        send_error(fd, 500, "Internal Server Error", "out of memory", NULL);
+        return;
+    }
+    char handshake[512];
+    int hn = snprintf(handshake, sizeof handshake,
+                      "HTTP/1.1 101 Switching Protocols\r\n"
+                      "Upgrade: websocket\r\n"
+                      "Connection: Upgrade\r\n"
+                      "Sec-WebSocket-Accept: %s\r\n\r\n",
+                      accept);
+    free(accept);
+    send_all(fd, handshake, (size_t)hn);
+
+    mi_outbox *out = mi_outbox_new(0);
+    if (!out) {
+        mi_rtc_close(rtc);
+        free(offer);
+        free(url);
+        return;
+    }
+
+    /* A per-session token the console must echo. A stray message from another
+     * tab, or a replayed one, cannot steer this stream. */
+    char token[40];
+    gen_id(token);
+
+    int vw = 0, vh = 0;
+    mi_rtc_viewport(rtc, &vw, &vh);
+
+    {
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"type\":\"offer\",\"token\":");
+        mi_json_string(&b, token);
+        mi_json_raw(&b, ",\"url\":");
+        mi_json_string(&b, url);
+        mi_json_raw(&b, ",\"sdp\":");
+        mi_json_string(&b, offer ? offer : "");
+        mi_json_raw(&b, ",\"width\":");
+        mi_json_int(&b, vw);
+        mi_json_raw(&b, ",\"height\":");
+        mi_json_int(&b, vh);
+        mi_json_raw(&b, "}");
+        rtc_queue_json(out, mi_json_data(&b));
+        mi_json_free(&b);
+    }
+    free(offer);
+
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+
+    unsigned char rbuf[65536];
+    size_t rlen = 0;
+    int alive = 1;
+    int sent_ice = 0;
+    char last_state[32] = "";
+
+    while (alive) {
+        short want = POLLIN;
+        if (!mi_outbox_empty(out)) want |= POLLOUT;
+        struct pollfd p = {.fd = fd, .events = want};
+        int pr = poll(&p, 1, 10);
+        if (pr > 0 && (p.revents & (POLLIN | POLLHUP))) {
+            ssize_t n = recv(fd, rbuf + rlen, sizeof rbuf - rlen, 0);
+            if (n > 0) rlen += (size_t)n;
+            else if (n == 0) alive = 0;
+            else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) alive = 0;
+        }
+        if (alive && mi_outbox_flush(out, fd) != 0) alive = 0;
+
+        /* The console's half of the handshake: the answer, remote ICE, goodbye. */
+        size_t consumed = 0;
+        while (rlen - consumed >= 2) {
+            mi_ws_frame f;
+            ssize_t used = mi_ws_parse(rbuf + consumed, rlen - consumed, &f);
+            if (used == 0) break;
+            if (used < 0) { alive = 0; break; }
+            consumed += (size_t)used;
+
+            if (f.opcode == MI_WS_CLOSE) {
+                /* Tear down before acknowledging, so the slot is free by the
+                 * time the console's close event fires. */
+                mi_rtc_close(rtc);
+                rtc = NULL;
+                mi_ws_send(fd, MI_WS_CLOSE, NULL, 0);
+                mi_ws_frame_free(&f);
+                alive = 0;
+                break;
+            } else if (f.opcode == MI_WS_PING) {
+                mi_ws_send(fd, MI_WS_PONG, f.payload, f.len);
+            } else if (f.opcode == MI_WS_PONG) {
+                /* Liveness only. */
+            } else if (f.opcode == MI_WS_TEXT) {
+                mi_json *m = mi_json_parse((const char *)f.payload);
+                if (!m) {
+                    rtc_queue_json(out, "{\"type\":\"error\",\"message\":\"a message was not valid JSON\"}");
+                } else {
+                    const char *t = mi_json_get_string(m, "token", "");
+                    if (strcmp(t, token) != 0) {
+                        rtc_queue_json(out, "{\"type\":\"error\",\"message\":\"bad session token\"}");
+                    } else {
+                        const char *kind = mi_json_get_string(m, "type", "");
+                        if (!strcmp(kind, "answer")) {
+                            const char *sdp = mi_json_get_string(m, "sdp", NULL);
+                            if (!sdp || !*sdp) {
+                                rtc_queue_json(out, "{\"type\":\"error\",\"message\":\"an answer needs an sdp\"}");
+                            } else if (mi_rtc_set_answer(rtc, sdp) != 0) {
+                                rtc_queue_json(out, "{\"type\":\"error\",\"message\":\"the answer was not valid SDP\"}");
+                            }
+                        } else if (!strcmp(kind, "ice")) {
+                            const char *cand = mi_json_get_string(m, "candidate", NULL);
+                            int mline = (int)mi_json_get_int(m, "mline", -1);
+                            if (cand && *cand) mi_rtc_add_ice(rtc, cand, mline);
+                        } else if (!strcmp(kind, "bye")) {
+                            mi_rtc_close(rtc);
+                            rtc = NULL;
+                            alive = 0;
+                        }
+                    }
+                    mi_json_value_free(m);
+                }
+            }
+            mi_ws_frame_free(&f);
+        }
+        if (consumed > 0) {
+            memmove(rbuf, rbuf + consumed, rlen - consumed);
+            rlen -= consumed;
+        }
+        if (!alive) break;
+
+        /* Pumping is what runs the GStreamer main loop: without it nothing
+         * negotiates and no media leaves. */
+        if (mi_rtc_pump(rtc, 10) != 0) {
+            const char *why = mi_rtc_close_reason(rtc);
+            mi_json_buf b;
+            mi_json_init(&b);
+            mi_json_raw(&b, "{\"type\":\"ended\",\"reason\":");
+            mi_json_string(&b, (why && *why) ? why : "the stream ended");
+            mi_json_raw(&b, "}");
+            rtc_queue_json(out, mi_json_data(&b));
+            mi_json_free(&b);
+            break;
+        }
+
+        /* Trickle the local candidates gathered since the last pass. webrtcbin
+         * starts gathering as soon as the local description is set, which is
+         * during the offer, so some exist before the answer arrives. */
+        char *ice = mi_rtc_local_ice_json(rtc);
+        if (ice) {
+            mi_json *arr = mi_json_parse(ice);
+            if (arr && arr->type == MI_JSON_ARRAY) {
+                for (size_t i = (size_t)sent_ice; i < arr->count; i++) {
+                    const mi_json *e = arr->items[i];
+                    const char *cand = mi_json_get_string(e, "candidate", NULL);
+                    if (!cand) continue;
+                    mi_json_buf b;
+                    mi_json_init(&b);
+                    mi_json_raw(&b, "{\"type\":\"ice\",\"token\":");
+                    mi_json_string(&b, token);
+                    mi_json_raw(&b, ",\"candidate\":");
+                    mi_json_string(&b, cand);
+                    mi_json_raw(&b, ",\"mline\":");
+                    mi_json_int(&b, mi_json_get_int(e, "mline", 0));
+                    mi_json_raw(&b, "}");
+                    rtc_queue_json(out, mi_json_data(&b));
+                    mi_json_free(&b);
+                    sent_ice++;
+                }
+            }
+            if (arr) mi_json_value_free(arr);
+            free(ice);
+        }
+
+        /* Report a state change once, not on every tick. */
+        const char *state = mi_rtc_state(rtc);
+        if (state && strcmp(state, last_state) != 0) {
+            snprintf(last_state, sizeof last_state, "%s", state);
+            mi_json_buf b;
+            mi_json_init(&b);
+            mi_json_raw(&b, "{\"type\":\"state\",\"token\":");
+            mi_json_string(&b, token);
+            mi_json_raw(&b, ",\"state\":");
+            mi_json_string(&b, state);
+            mi_json_raw(&b, ",\"connected\":");
+            mi_json_bool(&b, mi_rtc_connected(rtc));
+            mi_json_raw(&b, "}");
+            rtc_queue_json(out, mi_json_data(&b));
+            mi_json_free(&b);
+        }
+    }
+
+    if (rtc) {
+        const char *why = mi_rtc_close_reason(rtc);
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"type\":\"ended\",\"reason\":");
+        mi_json_string(&b, (why && *why) ? why : "the session closed");
+        mi_json_raw(&b, "}");
+        rtc_queue_json(out, mi_json_data(&b));
+        mi_json_free(&b);
+        mi_rtc_close(rtc);
+    }
+    /* A farewell is worth a short grace period to reach the console. */
+    for (int i = 0; i < 40 && !mi_outbox_empty(out); i++) {
+        if (mi_outbox_flush(out, fd) != 0) break;
+        struct timespec t = {.tv_sec = 0, .tv_nsec = 5 * 1000 * 1000};
+        nanosleep(&t, NULL);
+    }
+    mi_outbox_free(out);
+    free(url);
+}
+
 static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
     /* The handshake. A browser's WebSocket client does not send a frame until
      * it has seen the 101, so nothing is lost from having read only the head. */
@@ -2313,6 +2628,30 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         return;
     }
 
+    /*
+     * GET /api/v1/rtc?url=…  (WebSocket upgrade, WebRTC media)
+     *
+     * Same reasoning as the interactive route above: a browser cannot put an
+     * Authorization header on a WebSocket, so the token may arrive as a query
+     * parameter and the Origin check inside the handler is the other half.
+     */
+    if (!strcmp(req->path, "/api/v1/rtc") && !strcmp(req->method, "GET")) {
+        if (srv->cfg.auth_token) {
+            const char *auth = request_header(req, "Authorization");
+            char *qtok = query_str(req->query, "token");
+            int ok = (auth && !strncmp(auth, "Bearer ", 7) &&
+                      !strcmp(auth + 7, srv->cfg.auth_token)) ||
+                     (qtok && !strcmp(qtok, srv->cfg.auth_token));
+            free(qtok);
+            if (!ok) {
+                send_error(fd, 401, "Unauthorized", "missing or invalid token", cors);
+                return;
+            }
+        }
+        serve_rtc_ws(srv, fd, req);
+        return;
+    }
+
     if (!authorized(srv, req)) {
         send_error(fd, 401, "Unauthorized", "missing or invalid bearer token", cors);
         return;
@@ -2403,6 +2742,22 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, ",");
         mi_json_key(&b, "idle_timeout_seconds");
         mi_json_int(&b, srv->cfg.interactive_idle_seconds);
+        mi_json_raw(&b, "}");
+        /* Whether the page can be streamed as live video, and within what
+         * bounds. Its own opt-in because it costs a display and a browser. */
+        mi_json_raw(&b, ",\"rtc\":");
+        mi_json_raw(&b, "{");
+        mi_json_key(&b, "enabled");
+        mi_json_bool(&b, srv->rtc != NULL);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "available");
+        mi_json_bool(&b, srv->rtc != NULL && mi_rtc_pool_available(srv->rtc));
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "max_concurrent");
+        mi_json_int(&b, srv->rtc ? mi_rtc_pool_limit(srv->rtc) : 0);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "active");
+        mi_json_int(&b, srv->rtc ? mi_rtc_pool_active(srv->rtc) : 0);
         mi_json_raw(&b, "}");
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
@@ -3416,6 +3771,26 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
             icfg.keepalive_timeout_seconds = cfg->interactive_keepalive_timeout_seconds;
         srv->driver = mi_interactive_pool_new(&icfg);
     }
+
+    /* The live-video pool, built the same way and for the same reason. It is
+     * the only one that spawns an X server as well as a browser, so its gate
+     * bounds displays as much as browsers. */
+    if (cfg->rtc_enabled) {
+        mi_rtc_config rcfg;
+        mi_rtc_config_init(&rcfg);
+        rcfg.chromium_path = cfg->render_browser;
+        rcfg.max_concurrent = cfg->rtc_max_concurrent > 0 ? cfg->rtc_max_concurrent : 1;
+        rcfg.idle_timeout_seconds = cfg->rtc_idle_seconds > 0 ? cfg->rtc_idle_seconds : 180;
+        rcfg.v8_heap_mb = cfg->rtc_v8_heap_mb > 0 ? cfg->rtc_v8_heap_mb : 256;
+        rcfg.width = cfg->rtc_width > 0 ? cfg->rtc_width : cfg->render_viewport_width;
+        rcfg.height = cfg->rtc_height > 0 ? cfg->rtc_height : cfg->render_viewport_height;
+        if (cfg->rtc_fps > 0) rcfg.fps = cfg->rtc_fps;
+        if (cfg->rtc_bitrate_kbps > 0) rcfg.bitrate_kbps = cfg->rtc_bitrate_kbps;
+        rcfg.user_agent = cfg->user_agent;
+        rcfg.profile_root = cfg->render_profile_root;
+        rcfg.stun_server = cfg->rtc_stun_server;
+        srv->rtc = mi_rtc_pool_new(&rcfg);
+    }
     return srv;
 }
 
@@ -3435,6 +3810,7 @@ void mi_server_free(mi_server *srv) {
     free(srv->download_dir);
     mi_render_pool_free(srv->renderer);
     mi_interactive_pool_free(srv->driver);
+    mi_rtc_pool_free(srv->rtc);
     if (srv->listen_fd >= 0) close(srv->listen_fd);
     pthread_mutex_destroy(&srv->lock);
     free(srv);

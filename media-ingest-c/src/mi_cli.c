@@ -482,7 +482,8 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
                      const char *user_agent, int render, int render_timeout,
                      int render_concurrent, const char *render_cache_dir,
                      int render_cache_ttl, int interactive, int interactive_concurrent,
-                     int interactive_idle) {
+                     int interactive_idle, int rtc, int rtc_concurrent, int rtc_fps,
+                     int rtc_bitrate, const char *rtc_stun) {
     mi_server_config cfg;
     mi_server_config_init(&cfg);
     if (host) cfg.host = host;
@@ -499,6 +500,11 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
     cfg.interactive_enabled = interactive;
     if (interactive_concurrent > 0) cfg.interactive_max_concurrent = interactive_concurrent;
     if (interactive_idle > 0) cfg.interactive_idle_seconds = interactive_idle;
+    cfg.rtc_enabled = rtc;
+    if (rtc_concurrent > 0) cfg.rtc_max_concurrent = rtc_concurrent;
+    if (rtc_fps > 0) cfg.rtc_fps = rtc_fps;
+    if (rtc_bitrate > 0) cfg.rtc_bitrate_kbps = rtc_bitrate;
+    cfg.rtc_stun_server = rtc_stun;
 
     mi_mkdir_p(cfg.work_dir);
 
@@ -573,6 +579,8 @@ static void usage(void) {
             "                      [--render] [--render-timeout SECONDS] [--render-concurrent N]\n"
             "                      [--render-cache DIR] [--render-cache-ttl SECONDS] [--no-render-cache]\n"
             "                      [--interactive] [--interactive-concurrent N] [--interactive-idle SECONDS]\n"
+            "                      [--rtc] [--rtc-concurrent N] [--rtc-fps N] [--rtc-bitrate KBPS]\n"
+            "                      [--rtc-stun URL]\n"
             "  media-ingest upload <file-or-dir> --bucket B --access-key K --secret-key S\n"
             "                          [--endpoint URL] [--region R] [--prefix P] [--cdn-base URL]\n"
             "                          [--path-style|--virtual-host] [--purge --cf-token T --cf-zone Z]\n"
@@ -664,6 +672,11 @@ int main(int argc, char **argv) {
     int serve_interactive = getenv("MI_INTERACTIVE") != NULL;
     int serve_interactive_concurrent = 0;
     int serve_interactive_idle = 0;
+    int serve_rtc = getenv("MI_RTC") != NULL;
+    int serve_rtc_concurrent = 0;
+    int serve_rtc_fps = 0;
+    int serve_rtc_bitrate = 0;
+    const char *serve_rtc_stun = NULL;
     /* The render cache is on by default, under the work dir; these only change
      * where it lives or how long an entry is trusted. */
     const char *serve_render_cache = NULL;
@@ -692,7 +705,8 @@ int main(int argc, char **argv) {
         OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN, OPT_USERAGENT,
         OPT_RENDER, OPT_RENDER_TIMEOUT, OPT_RENDER_CONCURRENT,
         OPT_RENDER_CACHE, OPT_RENDER_CACHE_TTL, OPT_NO_RENDER_CACHE,
-        OPT_INTERACTIVE, OPT_INTERACTIVE_CONCURRENT, OPT_INTERACTIVE_IDLE
+        OPT_INTERACTIVE, OPT_INTERACTIVE_CONCURRENT, OPT_INTERACTIVE_IDLE,
+        OPT_RTC, OPT_RTC_CONCURRENT, OPT_RTC_FPS, OPT_RTC_BITRATE, OPT_RTC_STUN
     };
     static struct option long_opts[] = {
         {"output", required_argument, 0, 'o'},
@@ -734,6 +748,11 @@ int main(int argc, char **argv) {
         {"interactive", no_argument, 0, OPT_INTERACTIVE},
         {"interactive-concurrent", required_argument, 0, OPT_INTERACTIVE_CONCURRENT},
         {"interactive-idle", required_argument, 0, OPT_INTERACTIVE_IDLE},
+        {"rtc", no_argument, 0, OPT_RTC},
+        {"rtc-concurrent", required_argument, 0, OPT_RTC_CONCURRENT},
+        {"rtc-fps", required_argument, 0, OPT_RTC_FPS},
+        {"rtc-bitrate", required_argument, 0, OPT_RTC_BITRATE},
+        {"rtc-stun", required_argument, 0, OPT_RTC_STUN},
         {"header", required_argument, 0, 'H'},
         {"quiet", no_argument, 0, 'q'},
         {"verbose", no_argument, 0, 'v'},
@@ -787,6 +806,11 @@ int main(int argc, char **argv) {
             case OPT_INTERACTIVE: serve_interactive = 1; break;
             case OPT_INTERACTIVE_CONCURRENT: serve_interactive_concurrent = atoi(optarg); break;
             case OPT_INTERACTIVE_IDLE: serve_interactive_idle = atoi(optarg); break;
+            case OPT_RTC: serve_rtc = 1; break;
+            case OPT_RTC_CONCURRENT: serve_rtc_concurrent = atoi(optarg); break;
+            case OPT_RTC_FPS: serve_rtc_fps = atoi(optarg); break;
+            case OPT_RTC_BITRATE: serve_rtc_bitrate = atoi(optarg); break;
+            case OPT_RTC_STUN: serve_rtc_stun = optarg; break;
             default: usage(); return 2;
         }
     }
@@ -852,7 +876,8 @@ int main(int argc, char **argv) {
                            serve_render_timeout, serve_render_concurrent,
                            serve_render_cache, serve_render_cache_ttl,
                            serve_interactive, serve_interactive_concurrent,
-                           serve_interactive_idle);
+                           serve_interactive_idle, serve_rtc, serve_rtc_concurrent,
+                           serve_rtc_fps, serve_rtc_bitrate, serve_rtc_stun);
             break;
         default: rc = 2;
     }

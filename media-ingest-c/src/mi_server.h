@@ -94,6 +94,23 @@ typedef struct {
     /* Keepalive for a live session, in seconds. 0 uses the built-in default. */
     int interactive_keepalive_ping_seconds;
     int interactive_keepalive_timeout_seconds;
+    /*
+     * Live video over WebRTC (raw capture rather than JPEG frames).
+     *
+     * The most demanding of the three page features: a session holds a browser
+     * *and* an X server, and the frames are encoded. It needs Xvfb and the
+     * GStreamer webrtc plugins, so it is its own opt-in. 0 means the built-in
+     * default for each numeric field.
+     */
+    int rtc_enabled;
+    int rtc_max_concurrent;
+    int rtc_idle_seconds;
+    int rtc_v8_heap_mb;
+    int rtc_width;
+    int rtc_height;
+    int rtc_fps;
+    int rtc_bitrate_kbps;
+    const char *rtc_stun_server; /* e.g. stun://host:19302; NULL = host only */
 } mi_server_config;
 
 typedef struct mi_server mi_server;
