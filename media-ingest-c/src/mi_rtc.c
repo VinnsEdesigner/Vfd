@@ -846,8 +846,68 @@ static void close_extra_fds(void) {
     for (long fd = 5; fd < max; fd++) close((int)fd);
 }
 
+/*
+ * Clear a lock whose display has no owner.
+ *
+ * A session killed with SIGKILL leaves `/tmp/.X<n>-lock` behind, and Xvfb then
+ * refuses that display. Since the display number comes from a counter that
+ * restarts at the same value each run, the first session after a restart can
+ * land on a stale lock and fail to start at all.
+ *
+ * X writes its pid into the lock file, so this is exact: the lock is removed
+ * only when nothing is listening on the display it guards. A lock held by a
+ * live server is left alone.
+ */
+static void clear_stale_display_lock(const char *display) {
+    if (!display || display[0] != ':' || !display[1]) return;
+    int n = atoi(display + 1);
+    if (n <= 0) return;
+
+    char lock[64];
+    snprintf(lock, sizeof lock, "/tmp/.X%d-lock", n);
+    FILE *f = fopen(lock, "r");
+    if (!f) return; /* no lock, nothing to do */
+    long pid = 0;
+    if (fscanf(f, "%ld", &pid) != 1) pid = 0;
+    fclose(f);
+
+    /*
+     * A lock whose owner is still alive is a real display; leave it.
+     *
+     * `kill(pid, 0)` is not enough on its own: a *zombie* — a process that has
+     * exited but not been reaped — accepts the signal, so a killed Xvfb whose
+     * parent has not waited on it still looks alive. `/proc/<pid>/stat` carries
+     * the state, and 'Z' means gone.
+     */
+    if (pid > 0 && (kill((pid_t)pid, 0) == 0 || errno == EPERM)) {
+        int is_zombie = 0;
+        char statpath[64];
+        snprintf(statpath, sizeof statpath, "/proc/%ld/stat", pid);
+        FILE *sf = fopen(statpath, "r");
+        if (sf) {
+            char line[512];
+            if (fgets(line, sizeof line, sf)) {
+                /* The state is the field after the (comm) column. */
+                char *close = strrchr(line, ')');
+                if (close && close[1] == ' ' && close[2] == 'Z') is_zombie = 1;
+            }
+            fclose(sf);
+        }
+        if (!is_zombie) return;
+    }
+
+    mi_logf(MI_LOG_INFO, "rtc: clearing a stale display lock for %s (pid %ld is gone)",
+            display, pid);
+    unlink(lock);
+    char sock[64];
+    snprintf(sock, sizeof sock, "/tmp/.X11-unix/X%d", n);
+    unlink(sock);
+}
+
 /* A virtual display for the browser to paint into. */
 static pid_t spawn_xvfb(const char *xvfb, const char *display, int w, int h) {
+    clear_stale_display_lock(display);
+
     char screen[32];
     snprintf(screen, sizeof screen, "%dx%dx24", w, h);
 

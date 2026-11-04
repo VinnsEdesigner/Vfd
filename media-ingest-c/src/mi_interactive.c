@@ -948,7 +948,6 @@ fail:
 
 mi_it_event mi_interactive_pump(mi_interactive *it, int ms) {
     if (!it) return MI_IT_EV_CLOSED;
-    it->ev_frame = it->ev_shot = it->ev_state = 0;
     if (!it->closed) pump_io(it, ms);
 
     if (it->closed) return MI_IT_EV_CLOSED;
@@ -970,9 +969,23 @@ mi_it_event mi_interactive_pump(mi_interactive *it, int ms) {
         return MI_IT_EV_CLOSED;
     }
 
-    if (it->ev_frame) return MI_IT_EV_FRAME;
-    if (it->ev_shot) return MI_IT_EV_SHOT;
-    if (it->ev_state) return MI_IT_EV_STATE;
+    /*
+     * A flag is cleared when its event is returned, not before the call.
+     *
+     * Clearing up front lost events: a live session produces a frame on
+     * almost every call, so a state change set in the same `pump_io` was
+     * wiped on the next call without ever being returned — which is why the
+     * console never saw a page state at all.
+     *
+     * State is checked first, deliberately. It is rare and carries
+     * information; a frame is frequent and droppable, and the outbox will
+     * discard a superseded one anyway. Returning the frame first would starve
+     * the state even with sticky flags, because there is always another
+     * frame next call.
+     */
+    if (it->ev_state) { it->ev_state = 0; return MI_IT_EV_STATE; }
+    if (it->ev_shot) { it->ev_shot = 0; return MI_IT_EV_SHOT; }
+    if (it->ev_frame) { it->ev_frame = 0; return MI_IT_EV_FRAME; }
     return MI_IT_EV_NONE;
 }
 
