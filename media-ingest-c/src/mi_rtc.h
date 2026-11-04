@@ -181,42 +181,6 @@ int mi_rtc_connected(mi_rtc *rtc);
 /* Why the session ended, for a farewell. Never NULL. */
 const char *mi_rtc_close_reason(mi_rtc *rtc);
 
-/* ------------------------------------------------------------------ */
-/* The input channel                                                   */
-/* ------------------------------------------------------------------ */
-
-/*
- * Called with one JSON command from the browser, on the pumping thread.
- *
- * The command is the console's own vocabulary (navigate, mouse, key, text,
- * touch), the same one the WebSocket carried. The engine owns the mapping from
- * there to CDP, so the console never speaks CDP.
- */
-typedef void (*mi_rtc_input_fn)(void *user, const char *json);
-
-void mi_rtc_set_input_handler(mi_rtc *rtc, mi_rtc_input_fn fn, void *user);
-
-/*
- * Open the `input` data channel, if it is not open already.
- *
- * Called once the connection is up. Idempotent: the browser may also create the
- * channel itself, in which case this finds it already there.
- */
-int mi_rtc_channel_open(mi_rtc *rtc);
-
-/* Whether the input channel is open and can carry commands. */
-int mi_rtc_channel_ready(mi_rtc *rtc);
-
-/* Send one JSON message to the browser. A no-op when the channel is not open. */
-void mi_rtc_channel_send(mi_rtc *rtc, const char *json);
-
-/* Local ICE candidates gathered so far, as a JSON array. Owned by the caller.
- * Empty once gathering is complete and the offer carries them. */
-char *mi_rtc_local_ice_json(mi_rtc *rtc);
-
-/* Frames captured and bytes encoded, for reporting. */
-void mi_rtc_stats(mi_rtc *rtc, uint64_t *frames_captured, uint64_t *bytes_encoded);
-
 /* The browser's viewport, which is the X display's size. */
 void mi_rtc_viewport(mi_rtc *rtc, int *width, int *height);
 

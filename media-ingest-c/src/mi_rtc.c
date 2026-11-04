@@ -115,20 +115,10 @@ struct mi_rtc {
     int answer_set;
     int connected;
     int failed;
-    /* Local candidates, kept so they can be reported. */
-    char *local_ice;
-    size_t local_ice_len;
-    size_t local_ice_cap;
-
-    /* Counters, so the stream can be reported rather than guessed at. */
-    uint64_t frames;
-    uint64_t bytes;
-
-    /* The input data channel. */
+    /* The input data channel. The engine owns the mapping from the console's
+     * vocabulary to CDP, so there is nothing for a caller to hook. */
     GstWebRTCDataChannel *channel;
     int channel_ready;
-    mi_rtc_input_fn input_fn;
-    void *input_user;
 
     int width, height;
     double last_activity;
@@ -668,10 +658,6 @@ static void on_channel_message(GstWebRTCDataChannel *channel, gchar *data, gpoin
     if (!rtc || !data) return;
     rtc->last_activity = mono_seconds();
     /* The console speaks its own vocabulary, not CDP; the mapping is above. */
-    if (rtc->input_fn) {
-        rtc->input_fn(rtc->input_user, data);
-        return;
-    }
     mi_json *m = mi_json_parse(data);
     if (m) {
         rtc_input(rtc, m);
@@ -720,13 +706,7 @@ static void on_data_channel(GstElement *webrtc, GstWebRTCDataChannel *channel,
     g_free(label);
 }
 
-void mi_rtc_set_input_handler(mi_rtc *rtc, mi_rtc_input_fn fn, void *user) {
-    if (!rtc) return;
-    rtc->input_fn = fn;
-    rtc->input_user = user;
-}
-
-int mi_rtc_channel_open(mi_rtc *rtc) {
+static int mi_rtc_channel_open(mi_rtc *rtc) {
     if (!rtc || !rtc->webrtc) return -1;
     if (rtc->channel) return 0;
     GstWebRTCDataChannel *ch = NULL;
@@ -737,46 +717,20 @@ int mi_rtc_channel_open(mi_rtc *rtc) {
     return 0;
 }
 
-int mi_rtc_channel_ready(mi_rtc *rtc) { return rtc && rtc->channel_ready; }
-
-void mi_rtc_channel_send(mi_rtc *rtc, const char *json) {
-    if (!rtc || !rtc->channel || !json) return;
-    GError *err = NULL;
-    if (!gst_webrtc_data_channel_send_string_full(rtc->channel, json, &err)) {
-        if (err) {
-            mi_logf(MI_LOG_INFO, "rtc: channel send failed: %s", err->message);
-            g_error_free(err);
-        }
-    }
-}
-
 /* ------------------------------------------------------------------ */
 /* GStreamer callbacks                                                 */
 /* ------------------------------------------------------------------ */
 
-/* A local ICE candidate: keep it for the record. With gathering awaited before
- * the offer, these end up in the SDP, so this is for reporting rather than for
- * sending. */
+/* A local ICE candidate.
+ *
+ * Nothing needs to send these: gathering is awaited before the offer is handed
+ * over, so they are already in the SDP. All this does is note that the session is
+ * alive, which is what keeps a gathering browser from being reaped as idle.
+ */
 static void on_ice_candidate(GstElement *webrtc, guint mline_index, gchar *candidate,
                              gpointer user_data) {
     mi_rtc *rtc = user_data;
-    (void)webrtc;
-    if (!candidate || !*candidate) return;
-    char entry[512];
-    int n = snprintf(entry, sizeof entry, "%s{\"candidate\":\"%.400s\",\"mline\":%u}",
-                     rtc->local_ice_len ? "," : "", candidate, mline_index);
-    if (n <= 0) return;
-    size_t need = rtc->local_ice_len + (size_t)n + 2;
-    if (need > rtc->local_ice_cap) {
-        size_t cap = need * 2;
-        char *grown = mi_realloc(rtc->local_ice, cap);
-        if (!grown) return;
-        rtc->local_ice = grown;
-        rtc->local_ice_cap = cap;
-    }
-    memcpy(rtc->local_ice + rtc->local_ice_len, entry, (size_t)n);
-    rtc->local_ice_len += (size_t)n;
-    rtc->local_ice[rtc->local_ice_len] = '\0';
+    (void)webrtc; (void)mline_index; (void)candidate;
     rtc->last_activity = mono_seconds();
 }
 
@@ -1120,9 +1074,6 @@ mi_rtc_status mi_rtc_open(mi_rtc_pool *pool, const char *url, mi_rtc **out,
     rtc->rfd = -1;
     rtc->url = mi_strdup(url);
     rtc->last_activity = mono_seconds();
-    rtc->local_ice_cap = 1024;
-    rtc->local_ice = mi_malloc(rtc->local_ice_cap);
-    if (rtc->local_ice) rtc->local_ice[0] = '\0';
 
     char id[64];
     snprintf(id, sizeof id, "%d-%ld", (int)getpid(), (long)time(NULL));
@@ -1318,16 +1269,6 @@ const char *mi_rtc_close_reason(mi_rtc *rtc) {
     return rtc->closed ? "the session closed" : "";
 }
 
-char *mi_rtc_local_ice_json(mi_rtc *rtc) {
-    if (!rtc) return mi_strdup("[]");
-    return mi_asprintf("[%s]", rtc->local_ice ? rtc->local_ice : "");
-}
-
-void mi_rtc_stats(mi_rtc *rtc, uint64_t *frames, uint64_t *bytes) {
-    if (frames) *frames = rtc ? rtc->frames : 0;
-    if (bytes) *bytes = rtc ? rtc->bytes : 0;
-}
-
 void mi_rtc_viewport(mi_rtc *rtc, int *width, int *height) {
     if (width) *width = rtc ? rtc->width : 0;
     if (height) *height = rtc ? rtc->height : 0;
@@ -1369,7 +1310,6 @@ void mi_rtc_close(mi_rtc *rtc) {
     free(rtc->profile);
     free(rtc->url);
     free(rtc->offer);
-    free(rtc->local_ice);
     free(rtc->rbuf);
     free(rtc->wbuf);
     free(rtc->cdp_resp_json);

@@ -156,20 +156,6 @@ static void test_live(void) {
     CHECK(mi_rtc_state(rtc) != NULL, "the connection state is reportable");
     CHECK(!mi_rtc_connected(rtc), "it is not connected without a browser answering");
 
-    /* The input channel is not open until a browser answers, and sending on a
-     * channel that is not open must be a no-op rather than a crash. */
-    CHECK(!mi_rtc_channel_ready(rtc), "the input channel is closed before an answer");
-    mi_rtc_channel_send(rtc, "{\"type\":\"reload\"}"); /* must not crash */
-    CHECK(1, "sending on a closed channel is harmless");
-
-    /* Local ICE is still reportable, for a caller that wants to log it. */
-    char *ice = mi_rtc_local_ice_json(rtc);
-    CHECK(ice != NULL, "local ICE can be reported");
-    if (ice) {
-        CHECK(ice[0] == '[', "and it is a JSON array");
-        free(ice);
-    }
-
     free(offer);
     mi_rtc_close(rtc);
     CHECK(mi_rtc_pool_active(pool) == 0, "closing releases the slot");
