@@ -29,7 +29,8 @@ import { Spinner } from '../primitives/Spinner';
 import { Note } from '../primitives/Note';
 import { EmptyState } from '../primitives/EmptyState';
 import { IconRefresh, IconExternal, IconX, IconImage } from '../primitives/Icons';
-import type { LiveFailure, LiveFrame, LivePageState } from '../../hooks';
+import type { LiveFailure, LiveFrame, LivePageState, LiveStreamStats } from '../../hooks';
+
 import {
   keyMessage,
   modifiersFromEvent,
@@ -49,6 +50,14 @@ export interface LiveViewProps {
   page: LivePageState | null;
   /** The size the engine is drawing at, once open. Locks the stage's shape. */
   viewport: { width: number; height: number } | null;
+  /**
+   * What the stream is doing: frames received, frames skipped, worst gap.
+   *
+   * Shown in the bar because a live view that stutters is otherwise impossible
+   * to diagnose from the outside — a gap means the engine dropped frames to keep
+   * up, and a large gap with no skips means the link itself is slow.
+   */
+  stats: LiveStreamStats | null;
   failure: LiveFailure | null;
   reason: string | null;
   onOpen: (url: string, width: number, height: number) => void;
@@ -106,7 +115,7 @@ function buttonName(button: number): 'left' | 'middle' | 'right' | 'none' {
 }
 
 export function InteractiveView({ url, live }: InteractiveViewProps) {
-  const { status, frame, page, viewport, failure, reason, onOpen, onClose, send } = live;
+  const { status, frame, page, viewport, stats, failure, reason, onOpen, onClose, send } = live;
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   /**
@@ -607,6 +616,21 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
             Tap or click the page to focus it, then type. Escape releases the keyboard. Scrolling is
             forwarded to the page.
           </p>
+          {/*
+            What the stream is doing, in the open. A live view that stutters is
+            otherwise impossible to diagnose from the outside: a rising skip count
+            means the engine is dropping frames to keep up, while a large worst-gap
+            with no skips means the link itself is slow. Both are worth knowing,
+            and neither is guessable from the picture.
+          */}
+          {stats && (
+            <p className="live__stats" title="How the picture stream is performing">
+              {stats.received} frames
+              {stats.skipped > 0 ? ` · ${stats.skipped} skipped` : ''}
+              {stats.lastArrivalMs > 0 ? ` · ${Math.round(stats.lastArrivalMs)}ms apart` : ''}
+              {stats.worstGapMs > 0 ? ` · worst ${Math.round(stats.worstGapMs)}ms` : ''}
+            </p>
+          )}
         </>
       )}
 

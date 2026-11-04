@@ -321,6 +321,28 @@ export type LiveStatus = 'connecting' | 'open' | 'closed';
  * (the image itself). A binary frame is paired with the header that preceded it
  * so the caller gets one `LiveFrame` rather than two callbacks.
  */
+/** What a live session's stream is actually doing, measured rather than assumed. */
+export interface LiveStreamStats {
+  /** Frames received and decoded. */
+  received: number;
+  /** The highest `seq` seen — the engine's own count of frames it produced. */
+  highestSeq: number;
+  /**
+   * Frames the engine produced but this client never saw.
+   *
+   * A gap in `seq` is a frame the engine dropped to keep the view current, or
+   * one lost in transit. Either way it is the number that says whether the link
+   * is keeping up.
+   */
+  skipped: number;
+  /** Milliseconds from a frame's bytes arriving to the previous frame painting. */
+  lastGapMs: number;
+  /** The largest such gap seen, which is the stall a user would notice. */
+  worstGapMs: number;
+  /** Milliseconds since the previous frame arrived, for the live rate. */
+  lastArrivalMs: number;
+}
+
 export class LiveSession {
   private socket: WebSocket | null = null;
   /** The header of a frame whose binary payload has not arrived yet. */
@@ -328,6 +350,26 @@ export class LiveSession {
   private status: LiveStatus = 'connecting';
   /** A failure captured before close, so the close callback can name it. */
   private failure: LiveFailure | null = null;
+  /**
+   * What the stream is doing, measured.
+   *
+   * These numbers exist because the latency question could not be answered by
+   * reasoning: the engine measures microseconds to produce a frame, so if the
+   * user sees seconds the delay is either in the transport or in the paint. The
+   * `seq` gap separates those — a gap means frames were dropped to keep up (a
+   * link problem), while a growing `worstGapMs` with no gap means each frame
+   * took a long time to arrive (also a link problem), and neither with a slow
+   * feel would point at the paint instead.
+   */
+  private stats: LiveStreamStats = {
+    received: 0,
+    highestSeq: 0,
+    skipped: 0,
+    lastGapMs: 0,
+    worstGapMs: 0,
+    lastArrivalMs: 0,
+  };
+  private lastArrivalAt = 0;
 
   constructor(
     private readonly wsUrl: string,
@@ -416,6 +458,27 @@ export class LiveSession {
   private onBinary(data: ArrayBuffer): void {
     const header = this.pendingHeader;
     this.pendingHeader = null;
+
+    /*
+     * Measure before doing anything else, so the number describes the transport
+     * rather than this handler's own work.
+     */
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (this.lastArrivalAt > 0) {
+      const gap = now - this.lastArrivalAt;
+      this.stats.lastArrivalMs = gap;
+      if (gap > this.stats.worstGapMs) this.stats.worstGapMs = gap;
+    }
+    this.lastArrivalAt = now;
+    this.stats.received++;
+    if (header && header.seq > 0) {
+      if (this.stats.highestSeq > 0 && header.seq > this.stats.highestSeq + 1) {
+        /* A gap means the engine dropped a frame to keep up, or one was lost. */
+        this.stats.skipped += header.seq - this.stats.highestSeq - 1;
+      }
+      this.stats.highestSeq = Math.max(this.stats.highestSeq, header.seq);
+    }
+
     const blob = new Blob([data], { type: header?.format === 'png' ? 'image/png' : 'image/jpeg' });
     const frame: LiveFrame = {
       url: URL.createObjectURL(blob),
@@ -425,6 +488,11 @@ export class LiveSession {
       seq: header?.seq ?? 0,
     };
     this.handlers.onFrame?.(frame);
+  }
+
+  /** What the stream is doing. A copy, so a caller cannot disturb it. */
+  streamStats(): LiveStreamStats {
+    return { ...this.stats };
   }
 
   /** Send a command to the engine. A no-op once the socket is gone. */

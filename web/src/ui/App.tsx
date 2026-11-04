@@ -1342,6 +1342,7 @@ export function App({ initialView = 'overview' }: AppProps) {
               frame: live.frame,
               page: live.page,
               viewport: live.viewport,
+              stats: live.stats,
               failure: live.failure,
               reason: live.reason,
               onOpen: live.open,

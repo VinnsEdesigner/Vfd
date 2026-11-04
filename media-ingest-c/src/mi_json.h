@@ -24,6 +24,13 @@ void mi_json_free(mi_json_buf *b);
 const char *mi_json_data(const mi_json_buf *b); /* never NULL once inited */
 
 void mi_json_raw(mi_json_buf *b, const char *text);
+/*
+ * Append raw bytes, which may include NUL and anything else.
+ *
+ * `mi_json_raw` is strlen-based and so cannot carry a binary payload; this is for
+ * building a buffer that holds a serialized WebSocket frame rather than JSON.
+ */
+void mi_json_bytes(mi_json_buf *b, const void *data, size_t len);
 void mi_json_string(mi_json_buf *b, const char *s); /* NULL -> null */
 void mi_json_int(mi_json_buf *b, int64_t v);
 void mi_json_double(mi_json_buf *b, double v);

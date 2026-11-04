@@ -22,7 +22,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMediaApi } from './provider';
 import type { LiveFailure, LiveFrame, LiveMessage, LivePageState } from '../domain/browse';
-import type { LiveSession } from '../rest/browse';
+import type { LiveSession, LiveStreamStats } from '../rest/browse';
 
 export type LiveStatus = 'idle' | 'connecting' | 'open' | 'closed';
 
@@ -80,6 +80,8 @@ export interface UseLiveSession {
    * which is what makes the coordinates a tap maps to correct.
    */
   viewport: { width: number; height: number } | null;
+  /** What the stream is doing: frames received, skipped, and the worst gap. */
+  stats: LiveStreamStats | null;
   /** Why the session ended, when it did. Null while it is alive or idle. */
   failure: LiveFailure | null;
   /** A sentence describing the failure or close. */
@@ -96,6 +98,8 @@ export function useLiveSession(): UseLiveSession {
   const { api } = useMediaApi();
   const [status, setStatus] = useState<LiveStatus>('idle');
   const [viewport, setViewport] = useState<{ width: number; height: number } | null>(null);
+  /** What the stream is doing, sampled as frames arrive. Null before the first. */
+  const [stats, setStats] = useState<LiveStreamStats | null>(null);
   const [frame, setFrame] = useState<LiveFrame | null>(null);
   const [page, setPage] = useState<LivePageState | null>(null);
   const [failure, setFailure] = useState<LiveFailure | null>(null);
@@ -146,7 +150,15 @@ export function useLiveSession(): UseLiveSession {
 
       const session = api.live.open(url, vp.width, vp.height, {
         onOpen: () => setStatus('open'),
-        onFrame: acceptFrame,
+        onFrame: (f) => {
+          acceptFrame(f);
+          /*
+           * Sample the stream's own numbers as frames arrive, so the view can
+           * show whether the link is keeping up rather than leaving it to a
+           * guess. Cheap: one object spread per frame.
+           */
+          setStats(session.streamStats());
+        },
         onMessage: (m: LiveMessage) => {
           if (m.kind === 'state') setPage(m.page);
           else if (m.kind === 'closed') {
@@ -235,5 +247,5 @@ export function useLiveSession(): UseLiveSession {
     [],
   );
 
-  return { status, viewport, frame, page, failure, reason, open, close, send };
+  return { status, viewport, frame, page, stats, failure, reason, open, close, send };
 }

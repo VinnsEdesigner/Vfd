@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include "mi_ws.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -65,23 +66,44 @@ size_t mi_ws_build_header(unsigned char out[10], int opcode, size_t payload_len)
     return n;
 }
 
+/*
+ * Write a whole frame to `fd`.
+ *
+ * Returns 0 on success, -1 when the peer is gone. Returns 1 when the socket
+ * would block — the caller must retry the *same* frame later, because a partial
+ * frame on the wire is not something a client can recover from.
+ *
+ * The distinction matters and was got wrong: a non-blocking `send` reports a
+ * full buffer as `EAGAIN`, which is backpressure rather than failure. Treating
+ * it as failure means the engine can only ever deliver a whole frame or drop the
+ * connection, with nothing in between — so one slow moment on a mobile link ends
+ * the session instead of costing a frame.
+ */
 int mi_ws_send(int fd, int opcode, const void *payload, size_t len) {
     unsigned char header[10];
     size_t hlen = mi_ws_build_header(header, opcode, len);
-    /* One writev would be nicer, but two sends keep it obvious and the second
-     * is a single syscall for the common small frame. */
     size_t sent = 0;
     while (sent < hlen) {
         ssize_t n = send(fd, (const char *)header + sent, hlen - sent, MSG_NOSIGNAL);
-        if (n <= 0) return -1;
-        sent += (size_t)n;
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 1;
+        if (n < 0 && errno == EINTR) continue;
+        return -1;
     }
     const unsigned char *p = payload;
     sent = 0;
     while (sent < len) {
         ssize_t n = send(fd, (const char *)p + sent, len - sent, MSG_NOSIGNAL);
-        if (n <= 0) return -1;
-        sent += (size_t)n;
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 1;
+        if (n < 0 && errno == EINTR) continue;
+        return -1;
     }
     return 0;
 }

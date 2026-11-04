@@ -25,6 +25,7 @@
 #include "mi_download.h"
 #include "mi_hls.h"
 #include "mi_identify.h"
+#include "mi_outbox.h"
 #include "mi_interactive.h"
 #include "mi_json.h"
 #include "mi_render.h"
@@ -1918,45 +1919,60 @@ static void ws_dispatch(mi_interactive *it, const mi_json *m) {
     }
 }
 
-/* Send the JSON header that introduces a binary image frame. */
-static int ws_send_image_header(int fd, const char *type, const char *format, int w, int h,
-                                int seq) {
-    mi_json_buf b;
-    mi_json_init(&b);
-    mi_json_raw(&b, "{\"type\":");
-    mi_json_string(&b, type);
-    mi_json_raw(&b, ",\"format\":");
-    mi_json_string(&b, format);
-    mi_json_raw(&b, ",\"width\":");
-    mi_json_int(&b, w);
-    mi_json_raw(&b, ",\"height\":");
-    mi_json_int(&b, h);
-    mi_json_raw(&b, ",\"seq\":");
-    mi_json_int(&b, seq);
-    mi_json_raw(&b, "}");
-    int rc = mi_ws_send(fd, MI_WS_TEXT, mi_json_data(&b), b.len);
-    mi_json_free(&b);
+/* Serialize a WebSocket frame into `out`, appending. Used to build a message the
+ * outbox can treat as one indivisible unit. */
+static void append_frame(mi_json_buf *out, int opcode, const void *payload, size_t len) {
+    unsigned char header[10];
+    size_t hlen = mi_ws_build_header(header, opcode, len);
+    mi_json_bytes(out, header, hlen);
+    mi_json_bytes(out, payload, len);
+}
+
+/*
+ * Queue a picture as one message: the JSON header frame and the binary frame
+ * together.
+ *
+ * They must travel as a unit. A client that receives the header and then loses
+ * the picture is left waiting for bytes that never come; putting both in one
+ * outbox message means the queue can drop the pair whole, which is what makes
+ * dropping safe.
+ */
+static int ws_queue_image(mi_outbox *box, const char *type, const char *format, int w, int h,
+                          int seq, const unsigned char *png, size_t png_len) {
+    mi_json_buf hdr;
+    mi_json_init(&hdr);
+    mi_json_raw(&hdr, "{\"type\":");
+    mi_json_string(&hdr, type);
+    mi_json_raw(&hdr, ",\"format\":");
+    mi_json_string(&hdr, format);
+    mi_json_raw(&hdr, ",\"width\":");
+    mi_json_int(&hdr, w);
+    mi_json_raw(&hdr, ",\"height\":");
+    mi_json_int(&hdr, h);
+    mi_json_raw(&hdr, ",\"seq\":");
+    mi_json_int(&hdr, seq);
+    mi_json_raw(&hdr, "}");
+
+    /* A scratch buffer holding the header frame followed by the picture. */
+    mi_json_buf msg;
+    mi_json_init(&msg);
+    append_frame(&msg, MI_WS_TEXT, mi_json_data(&hdr), hdr.len);
+    append_frame(&msg, MI_WS_BINARY, png, png_len);
+    mi_json_free(&hdr);
+
+    int rc = mi_outbox_push(box, mi_json_data(&msg), msg.len, 1 /* droppable */);
+    mi_json_free(&msg);
     return rc;
 }
 
-static void ws_send_error(int fd, const char *message) {
-    mi_json_buf b;
-    mi_json_init(&b);
-    mi_json_raw(&b, "{\"type\":\"error\",\"message\":");
-    mi_json_string(&b, message);
-    mi_json_raw(&b, "}");
-    mi_ws_send(fd, MI_WS_TEXT, mi_json_data(&b), b.len);
-    mi_json_free(&b);
-}
-
-static void ws_send_closed(int fd, const char *reason) {
-    mi_json_buf b;
-    mi_json_init(&b);
-    mi_json_raw(&b, "{\"type\":\"closed\",\"reason\":");
-    mi_json_string(&b, reason);
-    mi_json_raw(&b, "}");
-    mi_ws_send(fd, MI_WS_TEXT, mi_json_data(&b), b.len);
-    mi_json_free(&b);
+/* Queue one text message (a state change, an error, a farewell). */
+static int ws_queue_text(mi_outbox *box, const char *json, size_t len, int droppable) {
+    mi_json_buf msg;
+    mi_json_init(&msg);
+    append_frame(&msg, MI_WS_TEXT, json, len);
+    int rc = mi_outbox_push(box, mi_json_data(&msg), msg.len, droppable);
+    mi_json_free(&msg);
+    return rc;
 }
 
 /*
@@ -2047,6 +2063,23 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
     free(accept);
     send_all(fd, handshake, (size_t)hn);
 
+    /*
+     * Everything from here on goes through the outbox rather than straight to
+     * the socket.
+     *
+     * A live session writes far more than the socket can always take — a picture
+     * is tens of kilobytes and the page may paint faster than the link drains —
+     * so the queue is what makes the difference between a session that degrades
+     * and one that dies. A full socket becomes a dropped stale picture, not a
+     * closed connection.
+     */
+    mi_outbox *out = mi_outbox_new(0); /* the built-in bound */
+    if (!out) {
+        mi_interactive_close(it);
+        free(url);
+        return;
+    }
+
     /* Tell the console the page is live, then stream. */
     {
         mi_json_buf b;
@@ -2058,7 +2091,7 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, ",\"height\":");
         mi_json_int(&b, height);
         mi_json_raw(&b, "}");
-        mi_ws_send(fd, MI_WS_TEXT, mi_json_data(&b), b.len);
+        ws_queue_text(out, mi_json_data(&b), b.len, 0);
         mi_json_free(&b);
     }
 
@@ -2072,9 +2105,13 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
     int alive = 1;
 
     while (alive) {
-        /* Anything from the console? A short wait, so a frame is not delayed
-         * behind a quiet socket. */
-        struct pollfd p = {.fd = fd, .events = POLLIN};
+        /*
+         * Watch both directions. POLLOUT is only asked for when something is
+         * waiting, so an idle session does not wake on every writable socket.
+         */
+        short want = POLLIN;
+        if (!mi_outbox_empty(out)) want |= POLLOUT;
+        struct pollfd p = {.fd = fd, .events = want};
         int pr = poll(&p, 1, 10);
         if (pr > 0 && (p.revents & (POLLIN | POLLHUP))) {
             ssize_t n = recv(fd, rbuf + rlen, sizeof rbuf - rlen, 0);
@@ -2089,6 +2126,9 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
                 alive = 0;
             }
         }
+        /* Drain the queue whenever the socket will take more. A failure here
+         * means the peer is gone, which is the only case that ends the session. */
+        if (alive && mi_outbox_flush(out, fd) != 0) alive = 0;
 
         /*
          * The keepalive. A tab closed behind a proxy can leave a connection that
@@ -2127,6 +2167,8 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
                 alive = 0;
                 break;
             } else if (f.opcode == MI_WS_PING) {
+                /* A pong goes out at once rather than through the queue: it is
+                 * tiny, and a delayed keepalive answer is worse than useless. */
                 mi_ws_send(fd, MI_WS_PONG, f.payload, f.len);
             } else if (f.opcode == MI_WS_PONG) {
                 /* Liveness only; nothing to do. */
@@ -2136,7 +2178,13 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
                     ws_dispatch(it, m);
                     mi_json_value_free(m);
                 } else {
-                    ws_send_error(fd, "a command was not valid JSON");
+                    mi_json_buf b;
+                    mi_json_init(&b);
+                    mi_json_raw(&b, "{\"type\":\"error\",\"message\":");
+                    mi_json_string(&b, "a command was not valid JSON");
+                    mi_json_raw(&b, "}");
+                    ws_queue_text(out, mi_json_data(&b), b.len, 0);
+                    mi_json_free(&b);
                 }
             }
             mi_ws_frame_free(&f);
@@ -2153,44 +2201,67 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
             size_t len = 0;
             const unsigned char *frame = mi_interactive_frame(it, &len);
             if (frame && len > 0) {
-                if (ws_send_image_header(fd, "frame", mi_interactive_frame_format(it),
-                                         mi_interactive_frame_width(it),
-                                         mi_interactive_frame_height(it), ++seq) != 0) {
-                    alive = 0;
-                } else if (mi_ws_send(fd, MI_WS_BINARY, frame, len) != 0) {
-                    alive = 0;
-                }
+                /* Droppable: a newer picture supersedes this one, so a slow link
+                 * loses a frame rather than falling behind. */
+                ws_queue_image(out, "frame", mi_interactive_frame_format(it),
+                               mi_interactive_frame_width(it), mi_interactive_frame_height(it),
+                               ++seq, frame, len);
             }
         } else if (ev == MI_IT_EV_SHOT) {
             size_t len = 0;
             const unsigned char *frame = mi_interactive_frame(it, &len);
             if (frame && len > 0) {
-                if (ws_send_image_header(fd, "shot", mi_interactive_frame_format(it),
-                                         mi_interactive_frame_width(it),
-                                         mi_interactive_frame_height(it), ++seq) != 0) {
-                    alive = 0;
-                } else if (mi_ws_send(fd, MI_WS_BINARY, frame, len) != 0) {
-                    alive = 0;
-                }
+                /* A still was asked for explicitly, so it is not droppable: the
+                 * user pressed a button and expects that picture. */
+                ws_queue_image(out, "shot", mi_interactive_frame_format(it),
+                               mi_interactive_frame_width(it), mi_interactive_frame_height(it),
+                               ++seq, frame, len);
             }
         } else if (ev == MI_IT_EV_STATE) {
             const char *state = mi_interactive_state(it);
             if (state) {
-                /* The state is already a JSON object; wrap it with its type. */
+                /* The state is already a JSON object; wrap it with its type.
+                 * Never droppable: it carries information, not a moment. */
                 mi_json_buf b;
                 mi_json_init(&b);
                 mi_json_raw(&b, "{\"type\":\"state\",\"page\":");
                 mi_json_raw(&b, state);
                 mi_json_raw(&b, "}");
-                if (mi_ws_send(fd, MI_WS_TEXT, mi_json_data(&b), b.len) != 0) alive = 0;
+                ws_queue_text(out, mi_json_data(&b), b.len, 0);
                 mi_json_free(&b);
             }
         } else if (ev == MI_IT_EV_CLOSED) {
-            ws_send_closed(fd, mi_interactive_close_reason(it));
+            const char *why = mi_interactive_close_reason(it);
+            mi_json_buf b;
+            mi_json_init(&b);
+            mi_json_raw(&b, "{\"type\":\"closed\",\"reason\":");
+            mi_json_string(&b, why);
+            mi_json_raw(&b, "}");
+            ws_queue_text(out, mi_json_data(&b), b.len, 0);
+            mi_json_free(&b);
+            /* Give the farewell a moment to leave before the socket closes. */
+            for (int i = 0; i < 20 && !mi_outbox_empty(out); i++) {
+                if (mi_outbox_flush(out, fd) != 0) break;
+                struct timespec t = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
+                nanosleep(&t, NULL);
+            }
             alive = 0;
         }
     }
 
+    /*
+     * How the stream actually behaved, for the log.
+     *
+     * These are the numbers that say whether the transport is the problem: a
+     * rising `would_block` means the link could not take the pictures as fast as
+     * the page produced them, and `dropped` says how many were skipped to keep
+     * the view current. Silence here means the link kept up.
+     */
+    mi_logf(MI_LOG_INFO, "live: %s ended (%s); frames dropped %llu, socket full %llu",
+            url, mi_interactive_close_reason(it),
+            (unsigned long long)mi_outbox_dropped(out),
+            (unsigned long long)mi_outbox_would_block(out));
+    mi_outbox_free(out);
     mi_interactive_close(it);
     free(url);
 }

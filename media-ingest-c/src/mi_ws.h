@@ -71,8 +71,11 @@ int mi_ws_is_upgrade(const char *upgrade, const char *connection, const char *ke
 size_t mi_ws_build_header(unsigned char out[10], int opcode, size_t payload_len);
 
 /*
- * Write a whole frame to `fd`. Returns 0, or -1 if the socket refused it. `fd`
- * is used with MSG_NOSIGNAL semantics by the caller's own SIGPIPE handling.
+ * Write a whole frame to `fd`.
+ *
+ * Returns 0 on success, -1 when the peer is gone, and 1 when the socket would
+ * block. On 1 the caller must retry the *same* frame — a partially written frame
+ * cannot be resumed by a client, so it is never safe to move on.
  */
 int mi_ws_send(int fd, int opcode, const void *payload, size_t len);
 

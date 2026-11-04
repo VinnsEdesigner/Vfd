@@ -12,7 +12,7 @@ LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_download.c $(SRC_DIR)/mi_hls.c \
            $(SRC_DIR)/mi_storage.c $(SRC_DIR)/mi_json.c \
            $(SRC_DIR)/mi_browse.c $(SRC_DIR)/mi_render.c $(SRC_DIR)/mi_cache.c \
-           $(SRC_DIR)/mi_sanitize.c $(SRC_DIR)/mi_identify.c $(SRC_DIR)/mi_ws.c $(SRC_DIR)/mi_interactive.c \
+           $(SRC_DIR)/mi_sanitize.c $(SRC_DIR)/mi_identify.c $(SRC_DIR)/mi_outbox.c $(SRC_DIR)/mi_ws.c $(SRC_DIR)/mi_interactive.c \
            $(SRC_DIR)/mi_server.c
 CLI_SRC := $(SRC_DIR)/mi_cli.c
 TEST_SRC := tests/test_media_ingest.c
@@ -23,6 +23,7 @@ TEST_SANITIZE_SRC := tests/test_sanitize.c
 TEST_WS_SRC := tests/test_ws.c
 TEST_INTERACTIVE_SRC := tests/test_interactive.c
 TEST_IDENTIFY_SRC := tests/test_identify.c
+TEST_OUTBOX_SRC := tests/test_outbox.c
 
 .PHONY: all clean test
 
@@ -58,7 +59,10 @@ $(BUILD)/test_interactive: $(LIB_SRC) $(TEST_INTERACTIVE_SRC) | $(BUILD)
 $(BUILD)/test_identify: $(LIB_SRC) $(TEST_IDENTIFY_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_IDENTIFY_SRC) $(LDLIBS)
 
-test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify
+$(BUILD)/test_outbox: $(LIB_SRC) $(TEST_OUTBOX_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_OUTBOX_SRC) $(LDLIBS)
+
+test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox
 	$(BUILD)/test_media_ingest
 	$(BUILD)/test_server
 	$(BUILD)/test_render
@@ -67,6 +71,7 @@ test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUI
 	$(BUILD)/test_ws
 	$(BUILD)/test_interactive
 	$(BUILD)/test_identify
+	$(BUILD)/test_outbox
 
 clean:
 	rm -rf $(BUILD)

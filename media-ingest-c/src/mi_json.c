@@ -47,6 +47,14 @@ void mi_json_raw(mi_json_buf *b, const char *text) {
     b->data[b->len] = '\0';
 }
 
+void mi_json_bytes(mi_json_buf *b, const void *data, size_t len) {
+    if (!data || len == 0) return;
+    json_reserve(b, len);
+    memcpy(b->data + b->len, data, len);
+    b->len += len;
+    b->data[b->len] = '\0';
+}
+
 void mi_json_string(mi_json_buf *b, const char *s) {
     if (!s) {
         mi_json_raw(b, "null");
