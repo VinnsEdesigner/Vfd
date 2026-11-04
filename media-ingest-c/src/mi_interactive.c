@@ -1166,6 +1166,33 @@ void mi_interactive_text(mi_interactive *it, const char *text) {
     touched(it);
 }
 
+int mi_interactive_parse_points(const mi_json *pts, double *out, int max) {
+    if (!pts || !out || max <= 0) return 0;
+    if (pts->type != MI_JSON_ARRAY) return 0;
+    int count = 0;
+    if (pts->count > 0 && pts->items[0] && pts->items[0]->type == MI_JSON_ARRAY) {
+        /* Nested pairs: `[[x,y], …]`. */
+        for (size_t i = 0; i < pts->count && count < max; i++) {
+            const mi_json *pair = pts->items[i];
+            if (!pair || pair->type != MI_JSON_ARRAY || pair->count < 2) continue;
+            out[count * 2] = pair->items[0]->number;
+            out[count * 2 + 1] = pair->items[1]->number;
+            count++;
+        }
+    } else {
+        /* Flat: `[x, y, x, y, …]`. */
+        for (size_t i = 0; i + 1 < pts->count && count < max; i += 2) {
+            const mi_json *x = pts->items[i];
+            const mi_json *y = pts->items[i + 1];
+            if (!x || !y || x->type != MI_JSON_NUMBER || y->type != MI_JSON_NUMBER) break;
+            out[count * 2] = x->number;
+            out[count * 2 + 1] = y->number;
+            count++;
+        }
+    }
+    return count;
+}
+
 void mi_interactive_touch(mi_interactive *it, const char *type, const double *points,
                           int count, int modifiers) {
     if (!it || it->closed || !type || !points || count <= 0) return;

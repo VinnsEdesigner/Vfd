@@ -1841,19 +1841,9 @@ static void ws_dispatch(mi_interactive *it, const mi_json *m) {
     } else if (!strcmp(type, "text")) {
         mi_interactive_text(it, mi_json_get_string(m, "text", NULL));
     } else if (!strcmp(type, "touch")) {
-        const mi_json *pts = mi_json_get(m, "points");
+        /* Both point shapes are accepted; see mi_interactive_parse_points. */
         double coords[32];
-        int count = 0;
-        if (pts && pts->type == MI_JSON_ARRAY) {
-            for (size_t i = 0; i < pts->count && count < 16; i++) {
-                const mi_json *pair = pts->items[i];
-                if (pair && pair->type == MI_JSON_ARRAY && pair->count >= 2) {
-                    coords[count * 2] = pair->items[0]->number;
-                    coords[count * 2 + 1] = pair->items[1]->number;
-                    count++;
-                }
-            }
-        }
+        int count = mi_interactive_parse_points(mi_json_get(m, "points"), coords, 16);
         mi_interactive_touch(it, mi_json_get_string(m, "event", "touchStart"), coords, count,
                              (int)mi_json_get_number(m, "modifiers", 0));
     }

@@ -33,6 +33,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mi_json.h"
+
 typedef enum {
     MI_IT_OK = 0,
     MI_IT_BUSY,       /* the gate is full; try again shortly */
@@ -174,6 +176,22 @@ void mi_interactive_text(mi_interactive *it, const char *text);
 /* A touch event. `points` is a NULL-terminated array of x,y pairs. */
 void mi_interactive_touch(mi_interactive *it, const char *type, const double *points,
                           int count, int modifiers);
+
+/*
+ * Read touch points out of a client message.
+ *
+ * Accepts both shapes a client may send, because getting this wrong is silent:
+ *
+ *   flat    `[x, y, x, y, …]`      — what the console sends, and the natural
+ *                                    shape for building a CDP point list
+ *   nested  `[[x, y], [x, y], …]`
+ *
+ * Returns the number of points written to `out`, which must hold `2 * max`.
+ * Extracted from the WebSocket handler so it can be tested without a socket: an
+ * earlier version accepted only the nested form, so every touch the console sent
+ * parsed to zero points and the page received nothing at all.
+ */
+int mi_interactive_parse_points(const struct mi_json *points, double *out, int max);
 
 /* Whether this URL may be driven. Same rules as the renderer. */
 int mi_interactive_url_allowed(const char *url);

@@ -46,6 +46,76 @@ static void test_url_rules(void) {
     CHECK(!mi_interactive_url_allowed(NULL), "a null url is refused");
 }
 
+/*
+ * Touch point parsing.
+ *
+ * This is the test that was missing, and its absence is why a broken build
+ * shipped: the console sends a flat `[x, y]` list while the parser expected
+ * nested pairs, so every touch parsed to zero points and the engine forwarded
+ * nothing. The page received no touches at all and looked like a static image.
+ * A pure parser with a case per shape catches that without a browser.
+ */
+static void test_parse_points(void) {
+    double out[32];
+
+    /* The shape the console sends: flat, one pair. */
+    {
+        mi_json *m = mi_json_parse("{\"points\":[10,20]}");
+        CHECK(mi_interactive_parse_points(mi_json_get(m, "points"), out, 16) == 1,
+              "a flat pair parses to one point");
+        CHECK(out[0] == 10 && out[1] == 20, "and keeps its coordinates");
+        mi_json_value_free(m);
+    }
+
+    /* Flat, two fingers. */
+    {
+        mi_json *m = mi_json_parse("{\"points\":[1,2,3,4]}");
+        CHECK(mi_interactive_parse_points(mi_json_get(m, "points"), out, 16) == 2,
+              "a flat list of four numbers is two points");
+        CHECK(out[0] == 1 && out[1] == 2 && out[2] == 3 && out[3] == 4,
+              "and both are in order");
+        mi_json_value_free(m);
+    }
+
+    /* The nested shape a different client might send. */
+    {
+        mi_json *m = mi_json_parse("{\"points\":[[10,20],[30,40]]}");
+        CHECK(mi_interactive_parse_points(mi_json_get(m, "points"), out, 16) == 2,
+              "a nested pair list parses to two points");
+        CHECK(out[0] == 10 && out[1] == 20 && out[2] == 30 && out[3] == 40,
+              "and keeps its coordinates");
+        mi_json_value_free(m);
+    }
+
+    /* Edge cases that must not crash or invent points. */
+    {
+        mi_json *m = mi_json_parse("{\"points\":[]}");
+        CHECK(mi_interactive_parse_points(mi_json_get(m, "points"), out, 16) == 0,
+              "an empty list is no points");
+        mi_json_value_free(m);
+
+        m = mi_json_parse("{\"points\":[7]}");
+        CHECK(mi_interactive_parse_points(mi_json_get(m, "points"), out, 16) == 0,
+              "a lone coordinate is not a point");
+        mi_json_value_free(m);
+
+        m = mi_json_parse("{\"points\":\"nonsense\"}");
+        CHECK(mi_interactive_parse_points(mi_json_get(m, "points"), out, 16) == 0,
+              "a non-array is no points");
+        mi_json_value_free(m);
+
+        CHECK(mi_interactive_parse_points(NULL, out, 16) == 0, "a missing field is no points");
+    }
+
+    /* The cap is respected, so a hostile client cannot overrun the buffer. */
+    {
+        mi_json *m = mi_json_parse("{\"points\":[1,2,3,4,5,6,7,8,9,10]}");
+        CHECK(mi_interactive_parse_points(mi_json_get(m, "points"), out, 2) == 2,
+              "the point count is capped at the caller's limit");
+        mi_json_value_free(m);
+    }
+}
+
 static void test_config(void) {
     mi_interactive_config cfg;
     mi_interactive_config_init(&cfg);
@@ -188,6 +258,7 @@ static void test_live(void) {
 int main(void) {
     mi_log_set_level(MI_LOG_ERROR);
     test_url_rules();
+    test_parse_points();
     test_config();
     test_live();
     printf("\n%d checks, %d failures", g_checks, g_failures);
