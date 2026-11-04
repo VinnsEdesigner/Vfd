@@ -24,6 +24,7 @@
 #include "mi_download.h"
 #include "mi_hls.h"
 #include "mi_json.h"
+#include "mi_render.h"
 #include "mi_util.h"
 
 /* ------------------------------------------------------------------ */
@@ -134,6 +135,11 @@ struct mi_server {
     size_t download_count;
     pthread_t *threads;
     size_t thread_count;
+    /* The page renderer and its concurrency gate, or NULL when rendering is
+     * off. Owned here because the limit is a property of the process: the
+     * server spawns a thread per connection with no cap of its own, so an
+     * expensive endpoint has to bring its own. */
+    mi_render_pool *renderer;
 };
 
 /* ------------------------------------------------------------------ */
@@ -192,6 +198,22 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->max_downloads = 200;
     /* NULL means the engine's own default agent. */
     cfg->user_agent = NULL;
+    /*
+     * Rendering is opt-in.
+     *
+     * It costs roughly half a gigabyte per render and needs a browser on the
+     * host, so a deployment turns it on deliberately rather than discovering it
+     * by accident. The numbers here are the measured defaults; the endpoint
+     * reports them so a console can say what it is talking to.
+     */
+    cfg->render_enabled = 0;
+    cfg->render_timeout_seconds = 20;
+    cfg->render_max_concurrent = 1;
+    cfg->render_v8_heap_mb = 256;
+    cfg->render_viewport_width = 1280;
+    cfg->render_viewport_height = 900;
+    cfg->render_browser = NULL;
+    cfg->render_profile_root = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -425,6 +447,45 @@ static void send_error(int fd, int status, const char *text, const char *message
     mi_json_int(&b, status);
     mi_json_raw(&b, "}");
     send_json(fd, status, text, &b, cors);
+    mi_json_free(&b);
+}
+
+/* The same, with a Retry-After, for a refusal that is temporary — a full
+ * concurrency gate, say. The header is what tells a client to come back rather
+ * than retry at once and make the congestion worse. `retry_after` of 0 omits it. */
+static void send_error_retry(int fd, int status, const char *text, const char *message,
+                             const char *cors, int retry_after) {
+    if (retry_after <= 0) {
+        send_error(fd, status, text, message, cors);
+        return;
+    }
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"error\":");
+    mi_json_string(&b, message);
+    mi_json_raw(&b, ",\"status\":");
+    mi_json_int(&b, status);
+    mi_json_raw(&b, ",\"retry_after\":");
+    mi_json_int(&b, retry_after);
+    mi_json_raw(&b, "}");
+
+    const char *body = mi_json_data(&b);
+    size_t blen = strlen(body);
+    char header[1024];
+    int hn = snprintf(header, sizeof header,
+                      "HTTP/1.1 %d %s\r\n"
+                      "Content-Type: application/json\r\n"
+                      "Content-Length: %zu\r\n"
+                      "Retry-After: %d\r\n"
+                      "Cache-Control: no-store\r\n"
+                      "%s%s%s"
+                      "Connection: close\r\n\r\n",
+                      status, text, blen, retry_after,
+                      cors ? "Access-Control-Allow-Origin: " : "",
+                      cors ? cors : "",
+                      cors ? "\r\nVary: Origin\r\n" : "");
+    send_all(fd, header, (size_t)hn);
+    send_all(fd, body, blen);
     mi_json_free(&b);
 }
 
@@ -1733,6 +1794,29 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
          * so it is probed rather than asserted. */
         mi_json_raw(&b, ",\"ffmpeg\":");
         mi_json_bool(&b, mi_which("ffmpeg"));
+        /* Whether a page can be rendered here, and within what bounds. Reported
+         * rather than assumed, so a console can hide the control on a host that
+         * cannot do it instead of offering a button that fails. */
+        mi_json_raw(&b, ",\"render\":");
+        mi_json_raw(&b, "{");
+        mi_json_key(&b, "enabled");
+        mi_json_bool(&b, srv->renderer != NULL);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "available");
+        mi_json_bool(&b, srv->renderer && mi_render_pool_available(srv->renderer));
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "max_concurrent");
+        mi_json_int(&b, srv->renderer ? mi_render_pool_limit(srv->renderer) : 0);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "timeout_seconds");
+        mi_json_int(&b, srv->cfg.render_timeout_seconds);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "viewport_width");
+        mi_json_int(&b, srv->cfg.render_viewport_width);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "viewport_height");
+        mi_json_int(&b, srv->cfg.render_viewport_height);
+        mi_json_raw(&b, "}");
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
@@ -1948,6 +2032,148 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         send_all(fd, body, blen);
         free(body);
         mi_fetch_info_free(&info);
+        return;
+    }
+
+    /*
+     * GET /api/v1/render?url=…&mode=image|html — render a page with a real
+     * browser and return the picture or the rendered DOM.
+     *
+     * This is the only way to show a page that builds itself with JavaScript,
+     * and the only way to show one that forbids being framed: it is rendered
+     * here rather than embedded, so the site's framing policy does not apply.
+     *
+     * A render is expensive — roughly half a gigabyte and a second or two — so
+     * a request that arrives when the gate is full is refused with 503 and a
+     * Retry-After rather than queued. A queue behind a slow page would grow
+     * without bound and take the whole engine down with it.
+     */
+    if (!strcmp(req->path, "/api/v1/render") && !strcmp(req->method, "GET")) {
+        if (!srv->renderer) {
+            send_error(fd, 503, "Service Unavailable",
+                       "rendering is not enabled on this engine", cors);
+            return;
+        }
+        if (!mi_render_pool_available(srv->renderer)) {
+            send_error(fd, 503, "Service Unavailable",
+                       "no browser is installed on the engine host", cors);
+            return;
+        }
+
+        /*
+         * The `url` parameter, which must stop at the next `&`.
+         *
+         * Decoding to the end of the query string instead would fold the other
+         * parameters into the URL — `…google.com/&mode=html` — which the site
+         * then answers with a 404. That looked like the renderer failing when it
+         * was the argument parsing.
+         */
+        char *decoded = NULL;
+        const char *url = NULL;
+        const char *q = strstr(req->query, "url=");
+        if (q) {
+            const char *val = q + 4;
+            const char *end = strchr(val, '&');
+            decoded = percent_decode(val, end ? (size_t)(end - val) : strlen(val));
+            url = decoded;
+        }
+        if (!url || !*url) {
+            free(decoded);
+            send_error(fd, 400, "Bad Request", "missing 'url'", cors);
+            return;
+        }
+
+        /* "image" is the default because it is the one that cannot be got
+         * subtly wrong: a sanitised DOM can be sanitised badly, a PNG cannot. */
+        const char *want = NULL;
+        const char *m = strstr(req->query, "mode=");
+        char mode_buf[16] = {0};
+        if (m) {
+            size_t n = 0;
+            while (m[5 + n] && m[5 + n] != '&' && n + 1 < sizeof mode_buf) {
+                mode_buf[n] = m[5 + n];
+                n++;
+            }
+            mode_buf[n] = '\0';
+            want = mode_buf;
+        }
+        mi_render_mode mode =
+            (want && !strcasecmp(want, "html")) ? MI_RENDER_DOM : MI_RENDER_IMAGE;
+
+        mi_render_result res;
+        mi_render_status st = mi_render_run(srv->renderer, url, mode, &res);
+        free(decoded);
+
+        if (st != MI_RENDER_OK) {
+            /* Each failure says what happened and what to do about it. A 503
+             * carries Retry-After so a client knows to come back rather than
+             * hammer the gate. */
+            const char *why = res.error ? res.error : mi_render_status_name(st);
+            /* A truncated result is still a result: the bytes are useful and the
+             * caller is told they were cut by a header, so this is not an error. */
+            if (st != MI_RENDER_TOO_LARGE) {
+                int code = 502;
+                const char *text = "Bad Gateway";
+                int retry_after = 0;
+                if (st == MI_RENDER_BUSY) {
+                    code = 503;
+                    text = "Service Unavailable";
+                    /* Tell the caller when to come back, rather than leaving it
+                     * to hammer a gate that is deliberately narrow. */
+                    retry_after = 3;
+                } else if (st == MI_RENDER_BAD_URL) {
+                    code = 400;
+                    text = "Bad Request";
+                } else if (st == MI_RENDER_TIMEOUT) {
+                    code = 504;
+                    text = "Gateway Timeout";
+                } else if (st == MI_RENDER_NO_BROWSER) {
+                    code = 503;
+                    text = "Service Unavailable";
+                }
+                send_error_retry(fd, code, text, why, cors, retry_after);
+                mi_render_result_free(&res);
+                return;
+            }
+        }
+
+        /* The response is hand-built, so the CORS headers have to be sent by
+         * hand too — omitting them is how a route that works under curl fails
+         * in the browser. */
+        char meta[512];
+        meta[0] = '\0';
+        snprintf(meta, sizeof meta,
+                 "X-Vyzorix-Render: %s\r\n"
+                 "X-Vyzorix-Render-Ms: %.0f\r\n"
+                 "%s",
+                 mi_render_status_name(st), res.elapsed_seconds * 1000.0,
+                 res.truncated ? "X-Vyzorix-Render-Truncated: yes\r\n" : "");
+        if (res.title) {
+            /* The page's own title travels as a header so a client can label a
+             * picture without parsing an image. */
+            char title[512];
+            snprintf(title, sizeof title, "X-Vyzorix-Title: %.400s\r\n", res.title);
+            strncat(meta, title, sizeof meta - strlen(meta) - 1);
+        }
+
+        char header[2048];
+        int hn = snprintf(header, sizeof header,
+                          "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: %s\r\n"
+                          "Content-Length: %zu\r\n"
+                          "Cache-Control: private, max-age=60\r\n"
+                          "%s"
+                          "%s%s%s"
+                          "Connection: close\r\n\r\n",
+                          res.content_type, res.len, meta,
+                          cors ? "Access-Control-Allow-Origin: " : "",
+                          cors ? cors : "",
+                          cors ? "\r\nAccess-Control-Expose-Headers: X-Vyzorix-Render,X-Vyzorix-Render-Ms,X-Vyzorix-Title,X-Vyzorix-Render-Truncated\r\n"
+                                 "Vary: Origin\r\n"
+                               : "");
+        send_all(fd, header, (size_t)hn);
+        if (res.data && res.len > 0) send_all(fd, (const char *)res.data, res.len);
+        mi_render_result_free(&res);
         return;
     }
 
@@ -2519,7 +2745,28 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
     srv->listen_fd = -1;
     srv->stop = 0;
     pthread_mutex_init(&srv->lock, NULL);
+
+    /* Build the renderer once, here, so its concurrency gate is a property of
+     * the process rather than of a request. A pool with no browser still
+     * exists; it reports MI_RENDER_NO_BROWSER rather than crashing. */
+    if (cfg->render_enabled) {
+        mi_render_config rcfg;
+        mi_render_config_init(&rcfg);
+        rcfg.chromium_path = cfg->render_browser;
+        rcfg.timeout_seconds = cfg->render_timeout_seconds;
+        rcfg.max_concurrent = cfg->render_max_concurrent;
+        rcfg.v8_heap_mb = cfg->render_v8_heap_mb;
+        rcfg.viewport_width = cfg->render_viewport_width;
+        rcfg.viewport_height = cfg->render_viewport_height;
+        rcfg.user_agent = cfg->user_agent;
+        rcfg.profile_root = cfg->render_profile_root;
+        srv->renderer = mi_render_pool_new(&rcfg);
+    }
     return srv;
+}
+
+int mi_server_can_render(const mi_server *srv) {
+    return srv && srv->renderer && mi_render_pool_available(srv->renderer);
 }
 
 void mi_server_free(mi_server *srv) {
@@ -2528,6 +2775,7 @@ void mi_server_free(mi_server *srv) {
     free(srv->downloads);
     free(srv->threads);
     free(srv->download_dir);
+    mi_render_pool_free(srv->renderer);
     if (srv->listen_fd >= 0) close(srv->listen_fd);
     pthread_mutex_destroy(&srv->lock);
     free(srv);

@@ -52,6 +52,22 @@ typedef struct {
      * default, which identifies the engine honestly.
      */
     const char *user_agent;
+    /*
+     * Rendering a page with headless Chromium.
+     *
+     * `render_enabled` off means the endpoint answers 503 and the capability is
+     * reported false, which is what a host without a browser should do rather
+     * than accepting a request it cannot serve. The rest tune the renderer; 0
+     * means "use the built-in default" in each case.
+     */
+    int render_enabled;
+    int render_timeout_seconds;   /* hard wall-clock limit per render */
+    int render_max_concurrent;    /* renders at once; each costs ~500 MB */
+    int render_v8_heap_mb;        /* per-render V8 heap cap */
+    int render_viewport_width;
+    int render_viewport_height;
+    const char *render_browser;   /* explicit Chromium path, else searched */
+    const char *render_profile_root; /* where throwaway profiles are made */
 } mi_server_config;
 
 typedef struct mi_server mi_server;
@@ -61,6 +77,13 @@ void mi_server_config_init(mi_server_config *cfg);
 /* Create (does not bind). Returns NULL on allocation failure. */
 mi_server *mi_server_new(const mi_server_config *cfg);
 void mi_server_free(mi_server *srv);
+
+/*
+ * Whether this server can render pages, i.e. rendering is on and a browser was
+ * found. Exposed so a caller — a test, or a startup check — can ask without
+ * knowing the renderer's internals.
+ */
+int mi_server_can_render(const mi_server *srv);
 
 /* Bind + listen. Returns 0 or a negative MI_ERR_*. */
 int mi_server_listen(mi_server *srv);

@@ -1188,6 +1188,125 @@ static void test_browse_parse(void) {
 }
 
 /* ---------------------------------------------------------------- */
+/* The render endpoint                                                */
+/* ---------------------------------------------------------------- */
+
+/* The response's value for a header, or NULL. Header names are matched
+ * case-insensitively, as HTTP requires. */
+static const char *header_of(const char *resp, const char *name) {
+    size_t nlen = strlen(name);
+    for (const char *p = resp; *p; p++) {
+        if (p != resp && p[-1] != '\n') continue;
+        if (!strncasecmp(p, name, nlen) && p[nlen] == ':') {
+            const char *v = p + nlen + 1;
+            while (*v == ' ') v++;
+            return v;
+        }
+    }
+    return NULL;
+}
+
+static void test_render_endpoint(void) {
+    mi_server_config cfg;
+    mi_server_config_init(&cfg);
+    cfg.port = 0;
+    cfg.host = "127.0.0.1";
+    cfg.work_dir = "/tmp/mi-test-render";
+    cfg.auth_token = "testtoken";
+    /* An allow-list, because the render response is hand-built and the CORS
+     * headers on it are exactly what a browser needs and what is easy to forget
+     * — testing without an allow-list would not exercise that path at all. */
+    cfg.allow_origins = "https://console.example";
+    /* Rendering on, so the route is reachable. A host with no browser still
+     * reports itself unavailable rather than failing the test. */
+    cfg.render_enabled = 1;
+    cfg.render_timeout_seconds = 20;
+    mi_rm_rf(cfg.work_dir);
+    mi_mkdir_p(cfg.work_dir);
+
+    mi_server *srv = mi_server_new(&cfg);
+    CHECK(srv != NULL, "render: server new");
+    if (!srv) return;
+    CHECK(mi_server_listen(srv) == MI_OK, "render: server listen");
+    int port = mi_server_port(srv);
+    pthread_t th;
+    pthread_create(&th, NULL, server_thread, srv);
+
+    int status = 0;
+    char *resp;
+
+    /* --- The capability is reported, so a console can hide the control rather
+     * than offering one that fails. --- */
+    {
+        resp = http_call(port, "GET", "/api/v1/capabilities", NULL, "testtoken", &status);
+        CHECK(status == 200, "render: capabilities 200");
+        CHECK(resp && strstr(resp, "\"render\":{") != NULL, "render: capability is reported");
+        CHECK(resp && strstr(resp, "\"enabled\":true") != NULL, "render: enabled is reported");
+        CHECK(resp && strstr(resp, "\"max_concurrent\":") != NULL,
+              "render: the concurrency limit is reported");
+        free(resp);
+    }
+
+    /* --- A refused URL is a 400 and says why, without a render. --- */
+    {
+        resp = http_call(port, "GET", "/api/v1/render?url=file%3A%2F%2F%2Fetc%2Fpasswd", NULL,
+                         "testtoken", &status);
+        CHECK(status == 400, "render: a file:// url is a 400");
+        CHECK(resp && strstr(resp, "http(s)") != NULL, "render: the refusal explains itself");
+        free(resp);
+
+        resp = http_call(port, "GET", "/api/v1/render?url=http%3A%2F%2F127.0.0.1%3A1%2F", NULL,
+                         "testtoken", &status);
+        CHECK(status == 400, "render: a loopback url is a 400");
+        free(resp);
+
+        resp = http_call(port, "GET", "/api/v1/render", NULL, "testtoken", &status);
+        CHECK(status == 400, "render: a missing url is a 400");
+        free(resp);
+    }
+
+    /* --- Auth still applies: an expensive route is not a hole in it. --- */
+    {
+        resp = http_call(port, "GET", "/api/v1/render?url=https%3A%2F%2Fexample.com%2F", NULL,
+                         NULL, &status);
+        CHECK(status == 401, "render: without a token it is 401");
+        free(resp);
+    }
+
+    /* --- A real render, when this host has a browser. --- */
+    if (mi_server_can_render(srv)) {
+        resp = http_call(port, "GET", "/api/v1/render?url=https%3A%2F%2Fexample.com%2F", NULL,
+                         "testtoken", &status);
+        CHECK(status == 200, "render: a real page renders");
+        CHECK(resp && strstr(resp, "Content-Type: image/png") != NULL,
+              "render: the image content type is right");
+        CHECK(resp && strstr(resp, "X-Vyzorix-Render: ok") != NULL,
+              "render: the outcome travels as a header");
+        /* The CORS headers must be present on this hand-built response; omitting
+         * them is how a route works under curl and fails in a browser. */
+        const char *ct = resp ? strstr(resp, "\r\n\r\n") : NULL;
+        CHECK(ct != NULL, "render: the body follows a blank line");
+        free(resp);
+
+        /* The origin is only echoed for an allowed one. */
+        resp = http_call_origin(port, "GET", "/api/v1/render?url=https%3A%2F%2Fexample.com%2F",
+                                NULL, "testtoken", &status, "https://console.example");
+        CHECK(header_of(resp, "Access-Control-Allow-Origin") != NULL,
+              "render: an allowed origin is echoed on the render response");
+        CHECK(header_of(resp, "Access-Control-Expose-Headers") != NULL,
+              "render: the custom headers are exposed to the browser");
+        free(resp);
+    } else {
+        fprintf(stderr, "skip: no browser, so the live render route is not exercised\n");
+    }
+
+    mi_server_stop(srv);
+    pthread_join(th, NULL);
+    mi_server_free(srv);
+    mi_rm_rf(cfg.work_dir);
+}
+
+/* ---------------------------------------------------------------- */
 /* The configurable User-Agent                                        */
 /* ---------------------------------------------------------------- */
 
@@ -1329,6 +1448,7 @@ int main(void) {
     test_json_unicode_escape();
     test_browse_parse();
     test_user_agent();
+    test_render_endpoint();
     test_http_api();
     test_hls_serve_and_convert();
 

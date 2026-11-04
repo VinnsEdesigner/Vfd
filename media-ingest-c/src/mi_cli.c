@@ -479,7 +479,8 @@ static void on_signal(int sig) {
 
 static int cmd_serve(const char *host, int port, const char *work_dir,
                      const char *auth_token, const char *allow_origins,
-                     const char *user_agent) {
+                     const char *user_agent, int render, int render_timeout,
+                     int render_concurrent) {
     mi_server_config cfg;
     mi_server_config_init(&cfg);
     if (host) cfg.host = host;
@@ -488,6 +489,9 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
     cfg.auth_token = (auth_token && *auth_token) ? auth_token : NULL;
     cfg.allow_origins = (allow_origins && *allow_origins) ? allow_origins : NULL;
     cfg.user_agent = (user_agent && *user_agent) ? user_agent : NULL;
+    cfg.render_enabled = render;
+    if (render_timeout > 0) cfg.render_timeout_seconds = render_timeout;
+    if (render_concurrent > 0) cfg.render_max_concurrent = render_concurrent;
 
     mi_mkdir_p(cfg.work_dir);
 
@@ -559,6 +563,7 @@ static void usage(void) {
             "  media-ingest ingest <url> -o <dir> [--hls <dir>] [--upload] [-c N] [-q] [-H 'K: V']...\n"
             "  media-ingest serve [--host H] [--port N] [--work-dir D] [--auth-token T]\n"
             "                      [--allow-origin ORIGINS] [--user-agent UA]\n"
+            "                      [--render] [--render-timeout SECONDS] [--render-concurrent N]\n"
             "  media-ingest upload <file-or-dir> --bucket B --access-key K --secret-key S\n"
             "                          [--endpoint URL] [--region R] [--prefix P] [--cdn-base URL]\n"
             "                          [--path-style|--virtual-host] [--purge --cf-token T --cf-zone Z]\n"
@@ -629,6 +634,11 @@ int main(int argc, char **argv) {
     /* Some hosts refuse a request that does not look like a browser, so what the
      * engine calls itself is settable rather than compiled in. */
     const char *serve_user_agent = getenv("MI_USER_AGENT");
+    /* Rendering is opt-in: it costs about half a gigabyte per render and needs
+     * a browser on the host. MI_RENDER=1 turns it on without a flag. */
+    int serve_render = getenv("MI_RENDER") != NULL;
+    int serve_render_timeout = 0;
+    int serve_render_concurrent = 0;
 
     storage_opts so;
     storage_opts_init(&so);
@@ -650,7 +660,8 @@ int main(int argc, char **argv) {
         OPT_SEGMENT, OPT_UPLOAD, OPT_ENDPOINT, OPT_REGION, OPT_BUCKET, OPT_ACCESS,
         OPT_SECRET, OPT_SESSION, OPT_PREFIX, OPT_CONTENTTYPE, OPT_VHOST, OPT_PATHSTYLE,
         OPT_CDN_BASE, OPT_PURGE, OPT_CF_TOKEN, OPT_CF_ZONE,
-        OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN, OPT_USERAGENT
+        OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN, OPT_USERAGENT,
+        OPT_RENDER, OPT_RENDER_TIMEOUT, OPT_RENDER_CONCURRENT
     };
     static struct option long_opts[] = {
         {"output", required_argument, 0, 'o'},
@@ -683,6 +694,9 @@ int main(int argc, char **argv) {
         {"auth-token", required_argument, 0, OPT_AUTHTOKEN},
         {"allow-origin", required_argument, 0, OPT_ALLOWORIGIN},
         {"user-agent", required_argument, 0, OPT_USERAGENT},
+        {"render", no_argument, 0, OPT_RENDER},
+        {"render-timeout", required_argument, 0, OPT_RENDER_TIMEOUT},
+        {"render-concurrent", required_argument, 0, OPT_RENDER_CONCURRENT},
         {"header", required_argument, 0, 'H'},
         {"quiet", no_argument, 0, 'q'},
         {"verbose", no_argument, 0, 'v'},
@@ -727,6 +741,9 @@ int main(int argc, char **argv) {
             case OPT_AUTHTOKEN: serve_token = optarg; break;
             case OPT_ALLOWORIGIN: serve_allow_origins = optarg; break;
             case OPT_USERAGENT: serve_user_agent = optarg; break;
+            case OPT_RENDER: serve_render = 1; break;
+            case OPT_RENDER_TIMEOUT: serve_render_timeout = atoi(optarg); break;
+            case OPT_RENDER_CONCURRENT: serve_render_concurrent = atoi(optarg); break;
             default: usage(); return 2;
         }
     }
@@ -788,7 +805,8 @@ int main(int argc, char **argv) {
             break;
         case CMD_SERVE:
             rc = cmd_serve(serve_host, serve_port, serve_work_dir, serve_token,
-                           serve_allow_origins, serve_user_agent);
+                           serve_allow_origins, serve_user_agent, serve_render,
+                           serve_render_timeout, serve_render_concurrent);
             break;
         default: rc = 2;
     }
