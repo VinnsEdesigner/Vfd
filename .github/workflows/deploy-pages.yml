@@ -42,6 +42,17 @@ jobs:
         working-directory: web
         run: npm ci
 
+      # The integration test drives the *real* engine binary over HTTP, so the
+      # binary has to exist before the tests run. Without this the suite fails
+      # with "server binary not found" — which is exactly what happened until
+      # this step was added.
+      - name: Build the engine
+        working-directory: media-ingest-c
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
+          make
+
       - name: Verify (typecheck, lint, tests)
         working-directory: web
         run: |
