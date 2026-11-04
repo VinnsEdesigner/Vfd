@@ -152,18 +152,41 @@ export interface Capabilities {
    * engine cannot honour.
    */
   render: RenderCapability | null;
+  /**
+   * Whether a page can be driven live here, and within what bounds.
+   *
+   * Null when the engine predates live sessions, treated the same as
+   * unavailable so the console never offers a control the engine cannot honour.
+   */
+  interactive: InteractiveCapability | null;
 }
 
 /** How the engine can render a page. */
 export interface RenderCapability {
   enabled: boolean;
-  /** Enabled *and* a browser was found. Only this means "can do it". */
   available: boolean;
   /** How many renders run at once. More than one means a request may have to wait. */
   maxConcurrent: number;
   timeoutSeconds: number;
   viewportWidth: number;
   viewportHeight: number;
+}
+
+/**
+ * How the engine can host a live, driveable page.
+ *
+ * Separate from rendering because it is a separate opt-in and a separate cost: a
+ * render is a second-long subprocess, a live session is a browser held open for
+ * as long as it is used.
+ */
+export interface InteractiveCapability {
+  enabled: boolean;
+  /** Enabled *and* a browser was found. Only this means "can do it". */
+  available: boolean;
+  maxConcurrent: number;
+  /** How many sessions are open right now. */
+  active: number;
+  idleTimeoutSeconds: number;
 }
 
 export interface StorageConfig {

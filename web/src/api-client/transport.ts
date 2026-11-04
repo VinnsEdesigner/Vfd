@@ -47,6 +47,16 @@ export interface Transport {
   fetchWithHeaders(options: RequestOptions): Promise<{ blob: Blob; headers: ResponseHeaders }>;
   /** Resolve a path to an absolute URL (for links shown in the UI). */
   resolve(path: string): string;
+  /**
+   * Resolve a path to an absolute `ws:`/`wss:` URL, carrying the bearer token
+   * as a query parameter.
+   *
+   * A browser's WebSocket API cannot set an Authorization header, so the token
+   * has to travel in the URL. That is the engine's own design (it accepts a
+   * `token` query parameter for exactly this endpoint), and it is why the engine
+   * also checks the Origin: a WebSocket handshake is not subject to CORS.
+   */
+  socketUrl(path: string, query?: Record<string, string | number>): string;
 }
 
 export interface TransportConfig {
@@ -95,6 +105,19 @@ export function createTransport(config: TransportConfig): Transport {
   return {
     resolve(path: string): string {
       return `${base}${path.startsWith('/') ? path : `/${path}`}`;
+    },
+
+    socketUrl(path: string, query?: Record<string, string | number>): string {
+      const httpUrl = `${base}${path.startsWith('/') ? path : `/${path}`}`;
+      // A base URL may be http or https; a socket must be ws or wss.
+      const wsUrl = httpUrl.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+      const params = new URLSearchParams();
+      if (query) {
+        for (const [k, v] of Object.entries(query)) params.set(k, String(v));
+      }
+      if (config.authToken) params.set('token', config.authToken);
+      const qs = params.toString();
+      return qs ? `${wsUrl}?${qs}` : wsUrl;
     },
 
     async request<T>(options: RequestOptions): Promise<T> {

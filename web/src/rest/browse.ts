@@ -13,7 +13,7 @@
  */
 
 import { isApiError, type ApiClient } from '../api-client';
-import { normalizeBrowseResult } from '../domain/normalize';
+import { normalizeBrowseResult, normalizeLiveMessage } from '../domain/normalize';
 import {
   browseKindFor,
   type BrowseFilter,
@@ -22,10 +22,13 @@ import {
   type BrowseQuery,
   type BrowseResult,
   type FetchedPage,
+  type LiveFailure,
+  type LiveFrame,
+  type LiveMessage,
   type RenderFailure,
   type RenderMode,
 } from '../domain/browse';
-import type { WireBrowseResult } from '../domain/wire';
+import type { WireBrowseResult, WireLiveImageHeader, WireLiveMessage } from '../domain/wire';
 
 const API = 'https://commons.wikimedia.org/w/api.php';
 
@@ -248,6 +251,197 @@ export function createRenderResource(client: ApiClient) {
 }
 
 export type RenderResource = ReturnType<typeof createRenderResource>;
+
+/**
+ * A live, driveable page session.
+ *
+ * Unlike every other resource here, this one is a WebSocket rather than a
+ * request: the engine streams image frames down and the console sends input
+ * events up. `open` hands back a small handle that owns the socket and decodes
+ * both directions into the domain.
+ *
+ * The token cannot travel as a header — a browser's WebSocket API sets none — so
+ * it goes in the query string, which is why the engine accepts it there and
+ * checks the Origin in exchange.
+ */
+export function createLiveResource(client: ApiClient) {
+  return {
+    /** The ws:// URL for a session, for a caller that wants to open it itself. */
+    url(url: string, width: number, height: number): string {
+      return client.transport.socketUrl('/api/v1/interactive', {
+        url,
+        w: Math.round(width),
+        h: Math.round(height),
+      });
+    },
+
+    /**
+     * Open a session and start decoding it.
+     *
+     * The callbacks are called from the socket's own event handlers; the caller
+     * is responsible for revoking frame blob URLs when it replaces them, which
+     * `onFrame` is told about through the `LiveFrame` it receives.
+     */
+    open(
+      url: string,
+      width: number,
+      height: number,
+      handlers: {
+        onMessage?: (m: LiveMessage) => void;
+        onFrame?: (f: LiveFrame) => void;
+        onOpen?: () => void;
+        onClose?: (failure: LiveFailure, reason: string) => void;
+      },
+    ): LiveSession {
+      return new LiveSession(client.transport.socketUrl('/api/v1/interactive', {
+        url,
+        w: Math.round(width),
+        h: Math.round(height),
+      }), handlers);
+    },
+  };
+}
+
+export type LiveResource = ReturnType<typeof createLiveResource>;
+
+/** The socket states a session reports. */
+export type LiveStatus = 'connecting' | 'open' | 'closed';
+
+/**
+ * One live session.
+ *
+ * Owns a WebSocket and a small state machine over the engine's two message
+ * kinds: JSON text (ready/state/closed/error and image headers) and binary
+ * (the image itself). A binary frame is paired with the header that preceded it
+ * so the caller gets one `LiveFrame` rather than two callbacks.
+ */
+export class LiveSession {
+  private socket: WebSocket | null = null;
+  /** The header of a frame whose binary payload has not arrived yet. */
+  private pendingHeader: WireLiveImageHeader | null = null;
+  private status: LiveStatus = 'connecting';
+  /** A failure captured before close, so the close callback can name it. */
+  private failure: LiveFailure | null = null;
+
+  constructor(
+    private readonly wsUrl: string,
+    private readonly handlers: {
+      onMessage?: (m: LiveMessage) => void;
+      onFrame?: (f: LiveFrame) => void;
+      onOpen?: () => void;
+      onClose?: (failure: LiveFailure, reason: string) => void;
+    },
+  ) {}
+
+  getStatus(): LiveStatus {
+    return this.status;
+  }
+
+  connect(): void {
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(this.wsUrl);
+    } catch {
+      // A malformed URL or a blocked scheme is a failure to start, not a close.
+      this.failure = 'failed';
+      this.status = 'closed';
+      this.handlers.onClose?.('failed', 'could not open the session socket');
+      return;
+    }
+    socket.binaryType = 'arraybuffer';
+    this.socket = socket;
+
+    socket.onopen = () => {
+      this.status = 'open';
+      this.handlers.onOpen?.();
+    };
+
+    socket.onmessage = (ev: MessageEvent) => {
+      if (typeof ev.data === 'string') {
+        this.onText(ev.data);
+      } else if (ev.data instanceof ArrayBuffer) {
+        this.onBinary(ev.data);
+      }
+    };
+
+    socket.onerror = () => {
+      // An error is followed by a close; the close handler reports it.
+      if (!this.failure) this.failure = 'failed';
+    };
+
+    socket.onclose = (ev: CloseEvent) => {
+      this.status = 'closed';
+      // A 1000 close is deliberate; anything else, or a socket that never
+      // opened, is a failure worth naming. The engine reports the specific
+      // reason (busy, refused, disabled) as an HTTP status on the handshake,
+      // which the browser surfaces only as a close code, so the mapping here is
+      // coarse on purpose.
+      const failure = this.failure ?? (ev.wasClean ? 'closed' : 'failed');
+      this.handlers.onClose?.(failure, failure === 'closed' ? 'the session closed' : 'the session could not start');
+    };
+  }
+
+  private onText(data: string): void {
+    let w: WireLiveMessage;
+    try {
+      w = JSON.parse(data) as WireLiveMessage;
+    } catch {
+      return; // a message we cannot read is skipped, not fatal
+    }
+    // A frame/shot header introduces the binary that follows.
+    if (w.type === 'frame' || w.type === 'shot') {
+      this.pendingHeader = {
+        type: w.type,
+        format: w.format ?? 'jpeg',
+        width: w.width ?? 0,
+        height: w.height ?? 0,
+        seq: w.seq ?? 0,
+      };
+      return;
+    }
+    const msg = normalizeLiveMessage(w);
+    if (msg) {
+      if (msg.kind === 'closed') this.failure = 'closed';
+      if (msg.kind === 'error') this.failure = 'failed';
+      this.handlers.onMessage?.(msg);
+    }
+  }
+
+  private onBinary(data: ArrayBuffer): void {
+    const header = this.pendingHeader;
+    this.pendingHeader = null;
+    const blob = new Blob([data], { type: header?.format === 'png' ? 'image/png' : 'image/jpeg' });
+    const frame: LiveFrame = {
+      url: URL.createObjectURL(blob),
+      still: header?.type === 'shot',
+      width: header?.width ?? 0,
+      height: header?.height ?? 0,
+      seq: header?.seq ?? 0,
+    };
+    this.handlers.onFrame?.(frame);
+  }
+
+  /** Send a command to the engine. A no-op once the socket is gone. */
+  send(message: unknown): void {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(message));
+    }
+  }
+
+  close(): void {
+    if (this.socket) {
+      // A clean close code, so the engine sees a deliberate departure rather
+      // than a dropped connection.
+      try {
+        this.socket.close(1000, 'client closed');
+      } catch {
+        /* already closing */
+      }
+      this.socket = null;
+    }
+    this.status = 'closed';
+  }
+}
 
 /** Map a failed render request onto the reason the console should show. */
 function renderFailureFor(e: unknown): RenderFailure {

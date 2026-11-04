@@ -455,6 +455,118 @@ void mi_sha256_hex(const void *data, size_t len, char *out_hex) {
     mi_hex_encode(digest, 32, out_hex);
 }
 
+/* ------------------------------------------------------------------ */
+/* SHA-1 (RFC 3174)                                                    */
+/* ------------------------------------------------------------------ */
+
+#define ROTL32(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
+
+static void sha1_transform(uint32_t state[5], const unsigned char block[64]) {
+    uint32_t w[80];
+    for (int i = 0, j = 0; i < 16; i++, j += 4)
+        w[i] = ((uint32_t)block[j] << 24) | ((uint32_t)block[j + 1] << 16) |
+               ((uint32_t)block[j + 2] << 8) | ((uint32_t)block[j + 3]);
+    for (int i = 16; i < 80; i++)
+        w[i] = ROTL32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+
+    uint32_t a = state[0], b = state[1], c = state[2], d = state[3], e = state[4];
+    for (int i = 0; i < 80; i++) {
+        uint32_t f, k;
+        if (i < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }
+        else if (i < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
+        else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
+        else { f = b ^ c ^ d; k = 0xca62c1d6; }
+        uint32_t tmp = ROTL32(a, 5) + f + e + k + w[i];
+        e = d; d = c; c = ROTL32(b, 30); b = a; a = tmp;
+    }
+    state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e;
+}
+
+void mi_sha1(const void *vdata, size_t len, unsigned char out[20]) {
+    const unsigned char *data = vdata;
+    uint32_t state[5] = {0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0};
+    uint64_t bits = (uint64_t)len * 8;
+
+    size_t full = len / 64;
+    for (size_t i = 0; i < full; i++) sha1_transform(state, data + i * 64);
+
+    /* The tail: remaining bytes, a 0x80, zero padding, then the 64-bit length
+     * big-endian, in one or two blocks. */
+    unsigned char tail[128];
+    size_t rem = len - full * 64;
+    memset(tail, 0, sizeof tail);
+    memcpy(tail, data + full * 64, rem);
+    tail[rem] = 0x80;
+    size_t tail_len = rem < 56 ? 64 : 128;
+    for (int i = 0; i < 8; i++)
+        tail[tail_len - 1 - i] = (unsigned char)(bits >> (8 * i));
+    sha1_transform(state, tail);
+    if (tail_len == 128) sha1_transform(state, tail + 64);
+
+    for (int i = 0; i < 5; i++) {
+        out[i * 4] = (unsigned char)(state[i] >> 24);
+        out[i * 4 + 1] = (unsigned char)(state[i] >> 16);
+        out[i * 4 + 2] = (unsigned char)(state[i] >> 8);
+        out[i * 4 + 3] = (unsigned char)(state[i]);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Base64 (RFC 4648)                                                   */
+/* ------------------------------------------------------------------ */
+
+static const char B64_ALPHABET[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+char *mi_base64_encode(const unsigned char *data, size_t len) {
+    size_t groups = (len + 2) / 3;
+    char *out = mi_malloc(groups * 4 + 1);
+    if (!out) return NULL;
+    size_t o = 0;
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t v = (uint32_t)data[i] << 16;
+        int rem = (int)(len - i);
+        if (rem > 1) v |= (uint32_t)data[i + 1] << 8;
+        if (rem > 2) v |= (uint32_t)data[i + 2];
+        out[o++] = B64_ALPHABET[(v >> 18) & 0x3F];
+        out[o++] = B64_ALPHABET[(v >> 12) & 0x3F];
+        out[o++] = rem > 1 ? B64_ALPHABET[(v >> 6) & 0x3F] : '=';
+        out[o++] = rem > 2 ? B64_ALPHABET[v & 0x3F] : '=';
+    }
+    out[o] = '\0';
+    return out;
+}
+
+/* -1 for a byte that is not in the alphabet. */
+static int b64_value(unsigned char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+ssize_t mi_base64_decode(const char *in, size_t inlen, unsigned char *out, size_t cap) {
+    uint32_t acc = 0;
+    int bits = 0;
+    size_t o = 0;
+    for (size_t i = 0; i < inlen; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (c == '=' || c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
+        int v = b64_value(c);
+        if (v < 0) return -1;
+        acc = (acc << 6) | (uint32_t)v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (o >= cap) return -1;
+            out[o++] = (unsigned char)((acc >> bits) & 0xFF);
+        }
+    }
+    return (ssize_t)o;
+}
+
 void mi_hmac_sha256(const void *key, size_t keylen, const void *msg, size_t len,
                     unsigned char out[32]) {
     unsigned char k[64] = {0};

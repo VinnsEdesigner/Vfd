@@ -50,6 +50,7 @@ import {
   useBrowse,
   useBrowseUrl,
   useRenderPage,
+  useLiveSession,
   useSetStorageLocation,
   useCreateDownload,
   useCancelDownload,
@@ -207,6 +208,9 @@ export function App({ initialView = 'overview' }: AppProps) {
   /** True when the engine cleaned the page's markup before serving it. */
   const [renderedSanitized, setRenderedSanitized] = useState(false);
   const renderPage = useRenderPage();
+  /** The live page session. Its state is owned here so switching views does not
+   *  tear it down; the hook revokes each frame's blob as the next arrives. */
+  const live = useLiveSession();
   const [browseQueueingId, setBrowseQueueingId] = useState<string | null>(null);
   /** A browse result being previewed, if any. */
   const [browsePreview, setBrowsePreview] = useState<BrowseItem | null>(null);
@@ -1275,6 +1279,17 @@ export function App({ initialView = 'overview' }: AppProps) {
             onRender={renderBrowsedPage}
             renderedFromCache={renderedFromCache}
             renderedSanitized={renderedSanitized}
+            canGoLive={Boolean(capabilities?.interactive?.available)}
+            live={{
+              status: live.status,
+              frame: live.frame,
+              page: live.page,
+              failure: live.failure,
+              reason: live.reason,
+              onOpen: live.open,
+              onClose: live.close,
+              send: live.send,
+            }}
             onClearRender={() => {
               setRendered(null);
               setRenderedTitle(null);

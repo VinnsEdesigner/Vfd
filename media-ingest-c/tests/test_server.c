@@ -25,6 +25,7 @@
 #include "mi_json.h"
 #include "mi_server.h"
 #include "mi_util.h"
+#include "mi_ws.h"
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -1497,6 +1498,245 @@ static void test_render_endpoint(void) {
 }
 
 /* ---------------------------------------------------------------- */
+/* Live page sessions (WebSocket)                                     */
+/* ---------------------------------------------------------------- */
+
+/* Read exactly n bytes, or fewer on EOF. */
+static size_t read_full(int fd, unsigned char *buf, size_t n) {
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = recv(fd, buf + got, n - got, 0);
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    return got;
+}
+
+/* Send one masked client frame, as a browser would. */
+static int ws_send_frame(int fd, int opcode, const unsigned char *payload, size_t len) {
+    unsigned char mask[4] = {0x12, 0x34, 0x56, 0x78};
+    unsigned char hdr[14];
+    size_t hn = 0;
+    hdr[hn++] = (unsigned char)(0x80 | opcode);
+    if (len < 126) {
+        hdr[hn++] = (unsigned char)(0x80 | len);
+    } else if (len <= 0xFFFF) {
+        hdr[hn++] = (unsigned char)(0x80 | 126);
+        hdr[hn++] = (unsigned char)(len >> 8);
+        hdr[hn++] = (unsigned char)len;
+    } else {
+        hdr[hn++] = (unsigned char)(0x80 | 127);
+        for (int i = 7; i >= 0; i--) hdr[hn++] = (unsigned char)(len >> (8 * i));
+    }
+    memcpy(hdr + hn, mask, 4);
+    hn += 4;
+    if (send(fd, hdr, hn, 0) != (ssize_t)hn) return -1;
+    if (len) {
+        unsigned char *masked = mi_malloc(len);
+        if (!masked) return -1;
+        for (size_t i = 0; i < len; i++) masked[i] = payload[i] ^ mask[i & 3];
+        ssize_t w = send(fd, masked, len, 0);
+        free(masked);
+        if (w != (ssize_t)len) return -1;
+    }
+    return 0;
+}
+
+/* A parsed server frame. */
+typedef struct {
+    int opcode;
+    unsigned char *payload;
+    size_t len;
+} test_frame;
+
+/* Read one whole server frame (server frames are never masked). */
+static int ws_read_frame(int fd, test_frame *out) {
+    unsigned char h[2];
+    if (read_full(fd, h, 2) != 2) return -1;
+    out->opcode = h[0] & 0x0F;
+    uint64_t len = h[1] & 0x7F;
+    if (len == 126) {
+        unsigned char b[2];
+        if (read_full(fd, b, 2) != 2) return -1;
+        len = ((uint64_t)b[0] << 8) | b[1];
+    } else if (len == 127) {
+        unsigned char b[8];
+        if (read_full(fd, b, 8) != 8) return -1;
+        len = 0;
+        for (int i = 0; i < 8; i++) len = (len << 8) | b[i];
+    }
+    if (len > 8u * 1024u * 1024u) return -1;
+    out->payload = mi_malloc((size_t)len + 1);
+    if (!out->payload) return -1;
+    if (len && read_full(fd, out->payload, (size_t)len) != (size_t)len) {
+        free(out->payload);
+        out->payload = NULL;
+        return -1;
+    }
+    out->payload[len] = '\0';
+    out->len = (size_t)len;
+    return 0;
+}
+
+/* Open a WebSocket to the engine. Returns the fd after a valid 101, or -1, and
+ * sets `*status` to the HTTP status when the upgrade was refused. */
+static int ws_open(int port, const char *path, const char *origin, int *status) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+        close(fd);
+        return -1;
+    }
+    /* A valid, fixed key; the accept value is checked below against the RFC. */
+    const char *key = "dGhlIHNhbXBsZSBub25jZQ==";
+    char req[1024];
+    int n = snprintf(req, sizeof req,
+                     "GET %s HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                     "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                     "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n"
+                     "%s%s%s"
+                     "\r\n",
+                     path, key, origin ? "Origin: " : "", origin ? origin : "",
+                     origin ? "\r\n" : "");
+    if (send(fd, req, (size_t)n, 0) != n) {
+        close(fd);
+        return -1;
+    }
+    /* Read the response head. */
+    char head[1024];
+    size_t used = 0;
+    while (used + 1 < sizeof head) {
+        ssize_t r = recv(fd, head + used, 1, 0);
+        if (r <= 0) break;
+        used += (size_t)r;
+        head[used] = '\0';
+        if (strstr(head, "\r\n\r\n")) break;
+    }
+    if (status) {
+        int st = 0;
+        sscanf(head, "HTTP/1.1 %d", &st);
+        *status = st;
+    }
+    if (!strstr(head, "101")) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static void test_interactive_endpoint(void) {
+    mi_server_config cfg;
+    mi_server_config_init(&cfg);
+    cfg.port = 0;
+    cfg.host = "127.0.0.1";
+    cfg.work_dir = "/tmp/mi-test-interactive";
+    cfg.allow_origins = "https://console.example";
+    cfg.interactive_enabled = 1;
+    cfg.interactive_idle_seconds = 120;
+    mi_rm_rf(cfg.work_dir);
+    mi_mkdir_p(cfg.work_dir);
+
+    mi_server *srv = mi_server_new(&cfg);
+    CHECK(srv != NULL, "interactive: server new");
+    if (!srv) return;
+    CHECK(mi_server_listen(srv) == MI_OK, "interactive: server listen");
+    int port = mi_server_port(srv);
+    pthread_t th;
+    pthread_create(&th, NULL, server_thread, srv);
+
+    int status = 0;
+
+    /* The capability is reported, so a console can decide whether to offer it. */
+    {
+        char *resp = http_call(port, "GET", "/api/v1/capabilities", NULL, NULL, &status);
+        CHECK(status == 200, "interactive: capabilities 200");
+        CHECK(resp && strstr(resp, "\"interactive\":{") != NULL,
+              "interactive: the capability is reported");
+        CHECK(resp && strstr(resp, "\"enabled\":true") != NULL,
+              "interactive: enabled is reported");
+        free(resp);
+    }
+
+    /* A plain GET is not an upgrade. */
+    {
+        char *resp = http_call(port, "GET",
+                               "/api/v1/interactive?url=https%3A%2F%2Fexample.com%2F", NULL, NULL,
+                               &status);
+        CHECK(status == 400, "interactive: a plain GET is not an upgrade");
+        free(resp);
+    }
+
+    /* A refused URL is refused before the socket is upgraded. */
+    {
+        int st = 0;
+        int fd = ws_open(port, "/api/v1/interactive?url=file%3A%2F%2F%2Fetc%2Fpasswd",
+                         "https://console.example", &st);
+        CHECK(fd == -1 && st == 400, "interactive: a file:// url is a 400, not an upgrade");
+        if (fd >= 0) close(fd);
+    }
+
+    /* A disallowed Origin is refused: a WebSocket handshake is not subject to
+     * CORS, so the engine has to check it itself. */
+    {
+        int st = 0;
+        int fd = ws_open(port, "/api/v1/interactive?url=https%3A%2F%2Fexample.com%2F",
+                         "https://evil.example", &st);
+        CHECK(fd == -1 && st == 403, "interactive: a disallowed origin is a 403");
+        if (fd >= 0) close(fd);
+    }
+
+    /* The real thing, when this host has a browser. */
+    if (mi_server_can_drive(srv)) {
+        int st = 0;
+        int fd = ws_open(port, "/api/v1/interactive?url=https%3A%2F%2Fexample.com%2F&w=640&h=480",
+                         "https://console.example", &st);
+        CHECK(fd >= 0 && st == 101, "interactive: a live session upgrades");
+        if (fd >= 0) {
+            /* The first text message is `ready`. */
+            test_frame f;
+            int saw_ready = 0, saw_frame_header = 0, saw_binary = 0;
+            for (int i = 0; i < 60 && !saw_binary; i++) {
+                if (ws_read_frame(fd, &f) != 0) break;
+                if (f.opcode == MI_WS_TEXT) {
+                    if (strstr((char *)f.payload, "\"ready\"")) saw_ready = 1;
+                    if (strstr((char *)f.payload, "\"frame\"")) saw_frame_header = 1;
+                } else if (f.opcode == MI_WS_BINARY) {
+                    /* A JPEG: the engine streams JPEG frames. */
+                    if (f.len > 2 && f.payload[0] == 0xFF && f.payload[1] == 0xD8) saw_binary = 1;
+                }
+                free(f.payload);
+            }
+            CHECK(saw_ready, "interactive: the session announced itself");
+            CHECK(saw_frame_header, "interactive: a frame header arrived");
+            CHECK(saw_binary, "interactive: a JPEG frame arrived");
+
+            /* A masked close from the client, then the engine's close reply. */
+            ws_send_frame(fd, MI_WS_CLOSE, (const unsigned char *)"", 0);
+            int closed = 0;
+            for (int i = 0; i < 30; i++) {
+                if (ws_read_frame(fd, &f) != 0) break;
+                int is_close = f.opcode == MI_WS_CLOSE;
+                free(f.payload);
+                if (is_close) { closed = 1; break; }
+            }
+            CHECK(closed, "interactive: the close is acknowledged");
+            close(fd);
+        }
+    } else {
+        fprintf(stderr, "skip: no browser, so the live session route is not exercised\n");
+    }
+
+    mi_server_stop(srv);
+    pthread_join(th, NULL);
+    mi_server_free(srv);
+    mi_rm_rf(cfg.work_dir);
+}
+
+/* ---------------------------------------------------------------- */
 /* The configurable User-Agent                                        */
 /* ---------------------------------------------------------------- */
 
@@ -1639,6 +1879,7 @@ int main(void) {
     test_browse_parse();
     test_user_agent();
     test_render_endpoint();
+    test_interactive_endpoint();
     test_http_api();
     test_hls_serve_and_convert();
 

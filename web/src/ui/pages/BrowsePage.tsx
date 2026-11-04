@@ -24,9 +24,12 @@ import {
   type BrowseFilter,
   type BrowseItem,
   type BrowseKind,
+  type LiveFailure,
   type RenderFailure,
   type RenderMode,
 } from '../../hooks';
+import { InteractiveView } from './InteractiveView';
+import type { InteractiveViewProps } from './InteractiveView';
 
 export interface BrowsePageProps {
   term: string;
@@ -90,6 +93,16 @@ export interface BrowsePageProps {
   onRender: (mode: RenderMode) => void;
   /** Clear the rendered result, so the address can be changed. */
   onClearRender: () => void;
+
+  /**
+   * Whether the engine can drive a page live, and the session that does it.
+   *
+   * A live page is the richer of the two page views: a render draws it once, a
+   * live session keeps it running. When it is available it is the default, with
+   * the renderer kept as the fallback for a host that only has that.
+   */
+  canGoLive: boolean;
+  live: InteractiveViewProps['live'];
 }
 
 export type BrowseMode = 'search' | 'url' | 'page';
@@ -141,6 +154,24 @@ function renderFailureDetail(f: RenderFailure): string {
       return 'Only public http(s) pages are rendered. A file:// path would read the engine’s disk, and loopback or link-local addresses are refused.';
     default:
       return 'The browser could not produce a picture of that page.';
+  }
+}
+
+/** A one-line reason a live session stopped, for the subtitle. */
+function failureShort(f: LiveFailure): string {
+  switch (f) {
+    case 'disabled':
+      return 'Live pages are turned off on this engine';
+    case 'unavailable':
+      return 'This engine has no browser, so it cannot drive a page';
+    case 'busy':
+      return 'The engine is already driving another page';
+    case 'refused':
+      return 'That address cannot be driven';
+    case 'closed':
+      return 'The session ended';
+    default:
+      return 'That page could not be opened';
   }
 }
 
@@ -198,16 +229,30 @@ export function BrowsePage(props: BrowsePageProps) {
     renderedSanitized,
     onRender,
     onClearRender,
+    canGoLive,
+    live,
   } = props;
+
+  /** Which page view is showing: the live session, or a rendered picture. */
+  const [pageView, setPageView] = useState<'live' | 'picture'>('live');
 
   const debounced = useDebounced(term, 350);
   const searching = term.trim() !== debounced.trim();
   const byUrl = mode === 'url';
   const byPage = mode === 'page';
+  /** A live session is the default page view when the engine can host one. */
+  const liveActive = byPage && canGoLive;
+  const liveOpen = live.status === 'open' || live.status === 'connecting';
 
   const subtitle = useMemo(() => {
     if (byPage) {
-      if (!canRender) return 'This engine cannot render pages';
+      if (!canRender && !canGoLive) return 'This engine cannot show pages';
+      if (liveActive) {
+        if (!sourceUrl.trim()) return 'Use the page live, or draw a picture of it';
+        if (liveOpen) return 'Live — click into the page to use it';
+        if (live.status === 'connecting') return 'Opening the page…';
+        if (live.status === 'closed' && live.failure) return failureShort(live.failure);
+      }
       if (!sourceUrl.trim()) return 'View a page as a real browser would — the engine renders it';
       if (rendering) return 'Rendering that page…';
       if (renderFailure) return renderFailureLabel(renderFailure);
@@ -237,6 +282,11 @@ export function BrowsePage(props: BrowsePageProps) {
   }, [
     byPage,
     canRender,
+    canGoLive,
+    liveActive,
+    liveOpen,
+    live.status,
+    live.failure,
     rendering,
     renderFailure,
     rendered,
@@ -313,13 +363,25 @@ export function BrowsePage(props: BrowsePageProps) {
             </div>
             <Button
               variant="primary"
-              onClick={() => (byPage ? onRender('image') : onReadUrl())}
-              loading={byPage ? rendering : loading}
+              onClick={() => {
+                if (!byPage) {
+                  onReadUrl();
+                } else if (liveActive && pageView === 'live') {
+                  // A live session is opened at a starting size; the stage then
+                  // resizes it to fit.
+                  live.onOpen(sourceUrl.trim(), 1024, 768);
+                } else {
+                  onRender('image');
+                }
+              }}
+              loading={byPage ? (liveActive && pageView === 'live' ? live.status === 'connecting' : rendering) : loading}
               disabled={
-                !/^https?:\/\/\S+$/i.test(sourceUrl.trim()) || (byPage && !canRender)
+                !/^https?:\/\/\S+$/i.test(sourceUrl.trim()) ||
+                (byPage && !canRender && !canGoLive)
               }
             >
-              <IconSearch /> {byPage ? 'Render' : 'Read'}
+              <IconSearch />{' '}
+              {byPage ? (liveActive && pageView === 'live' ? 'Open live' : 'Render') : 'Read'}
             </Button>
           </div>
         ) : (
@@ -389,114 +451,143 @@ export function BrowsePage(props: BrowsePageProps) {
         )}
       </Card>
 
-      {/* The page view: the site, drawn by the engine's browser. This is what
-          makes a page that forbids framing, or that builds itself with
-          JavaScript, showable at all — the site's policy governs a frame, not a
-          picture we drew ourselves. */}
+      {/* The page view. A live session is the default when the engine can host
+          one: it is the page itself, usable, rather than a picture of it. The
+          renderer remains for a host that only has that, and as an explicit
+          "Picture" mode where both exist. */}
       {byPage && (
         <>
-          {!canRender ? (
+          {!canRender && !canGoLive ? (
             <Card>
               <EmptyState
-                title="This engine cannot render pages"
-                description="Rendering needs a browser on the engine host and is turned on deliberately. The engine reports this in its capabilities, so this control is only offered where it works."
+                title="This engine cannot show pages"
+                description="Showing a page needs a browser on the engine host — either to drive it live or to draw it once. The engine reports this in its capabilities, so this control is only offered where it works."
               />
             </Card>
-          ) : rendering ? (
-            <Card>
-              <div className="browse__rendering">
-                <Spinner size="lg" />
-                <p className="browse__rendering-note">
-                  Rendering with a real browser. This takes a second or two, and a page that never
-                  finishes is stopped rather than left to run.
-                </p>
-              </div>
-            </Card>
-          ) : renderFailure ? (
-            <Card>
-              <EmptyState
-                title={renderFailureLabel(renderFailure)}
-                description={renderFailureDetail(renderFailure)}
-              />
-              <div className="browse__page-actions">
-                <Button onClick={() => onRender('image')}>Try again</Button>
-                <a className="btn btn--sm" href={sourceUrl} target="_blank" rel="noreferrer">
-                  Open in a new tab
-                </a>
-              </div>
-            </Card>
-          ) : rendered ? (
-            <div className="browse__page">
-              <div className="browse__page-bar">
-                <span className="browse__page-url" title={sourceUrl}>
-                  {sourceUrl}
-                </span>
-                {/* Two ways to look at the same render: a picture, or the DOM
-                    after its scripts ran. The picture is the default because a
-                    PNG cannot be sanitised wrongly. */}
+          ) : (
+            <>
+              {/* When both are possible, let the user choose; when only one is,
+                  it is used without ceremony. */}
+              {canGoLive && canRender && (
                 <div className="browse__modes" role="group" aria-label="How to show the page">
                   <button
                     type="button"
-                    className={rendered.mode === 'image' ? 'browse__mode is-active' : 'browse__mode'}
-                    aria-pressed={rendered.mode === 'image'}
-                    onClick={() => onRender('image')}
+                    className={pageView === 'live' ? 'browse__mode is-active' : 'browse__mode'}
+                    aria-pressed={pageView === 'live'}
+                    onClick={() => setPageView('live')}
                   >
-                    Picture
+                    Live page
                   </button>
                   <button
                     type="button"
-                    className={rendered.mode === 'html' ? 'browse__mode is-active' : 'browse__mode'}
-                    aria-pressed={rendered.mode === 'html'}
-                    onClick={() => onRender('html')}
+                    className={pageView === 'picture' ? 'browse__mode is-active' : 'browse__mode'}
+                    aria-pressed={pageView === 'picture'}
+                    onClick={() => setPageView('picture')}
                   >
-                    Page text
+                    Picture
                   </button>
                 </div>
-                <Button size="sm" onClick={onClearRender}>
-                  Clear
-                </Button>
-                <a className="btn btn--sm" href={sourceUrl} target="_blank" rel="noreferrer">
-                  Open in a new tab
-                </a>
-              </div>
-              {rendered.mode === 'image' ? (
-                <img
-                  className="browse__shot"
-                  src={rendered.url}
-                  alt={`Rendered view of ${sourceUrl}`}
-                />
-              ) : (
-                <>
-                  {/* The page text is a *cleaned* copy, not the live site: its
-                      scripts, handlers and frames are gone. Saying so matters,
-                      because it looks like the page and is not. */}
-                  {renderedSanitized && (
-                    <Note className="browse__sanitized-note">
-                      A cleaned copy of the page. Scripts, forms and embedded frames are
-                      removed, and links open here rather than navigating away.
-                    </Note>
-                  )}
-                  <iframe
-                    className="browse__frame"
-                    src={rendered.url}
-                    title={`Rendered text of ${sourceUrl}`}
-                    // The strongest sandbox: an opaque origin, no scripts, no
-                    // forms, no popups, no top-level navigation. This — not the
-                    // engine's sanitiser — is the boundary that makes rendering
-                    // someone else's markup safe.
-                    sandbox=""
-                    referrerPolicy="no-referrer"
-                  />
-                </>
               )}
-            </div>
-          ) : (
-            <Card>
-              <EmptyState
-                title="Render a page"
-                description="The engine runs a real browser and draws the page, so a site that forbids being embedded — or that builds itself with JavaScript — still shows. Press Render."
-              />
-            </Card>
+
+              {canGoLive && (pageView === 'live' || !canRender) ? (
+                <InteractiveView url={sourceUrl.trim()} live={live} />
+              ) : rendering ? (
+                <Card>
+                  <div className="browse__rendering">
+                    <Spinner size="lg" />
+                    <p className="browse__rendering-note">
+                      Rendering with a real browser. This takes a second or two, and a page that never
+                      finishes is stopped rather than left to run.
+                    </p>
+                  </div>
+                </Card>
+              ) : renderFailure ? (
+                <Card>
+                  <EmptyState
+                    title={renderFailureLabel(renderFailure)}
+                    description={renderFailureDetail(renderFailure)}
+                  />
+                  <div className="browse__page-actions">
+                    <Button onClick={() => onRender('image')}>Try again</Button>
+                    <a className="btn btn--sm" href={sourceUrl} target="_blank" rel="noreferrer">
+                      Open in a new tab
+                    </a>
+                  </div>
+                </Card>
+              ) : rendered ? (
+                <div className="browse__page">
+                  <div className="browse__page-bar">
+                    <span className="browse__page-url" title={sourceUrl}>
+                      {sourceUrl}
+                    </span>
+                    {/* Two ways to look at the same render: a picture, or the DOM
+                        after its scripts ran. The picture is the default because a
+                        PNG cannot be sanitised wrongly. */}
+                    <div className="browse__modes" role="group" aria-label="How to show the page">
+                      <button
+                        type="button"
+                        className={rendered.mode === 'image' ? 'browse__mode is-active' : 'browse__mode'}
+                        aria-pressed={rendered.mode === 'image'}
+                        onClick={() => onRender('image')}
+                      >
+                        Picture
+                      </button>
+                      <button
+                        type="button"
+                        className={rendered.mode === 'html' ? 'browse__mode is-active' : 'browse__mode'}
+                        aria-pressed={rendered.mode === 'html'}
+                        onClick={() => onRender('html')}
+                      >
+                        Page text
+                      </button>
+                    </div>
+                    <Button size="sm" onClick={onClearRender}>
+                      Clear
+                    </Button>
+                    <a className="btn btn--sm" href={sourceUrl} target="_blank" rel="noreferrer">
+                      Open in a new tab
+                    </a>
+                  </div>
+                  {rendered.mode === 'image' ? (
+                    <img
+                      className="browse__shot"
+                      src={rendered.url}
+                      alt={`Rendered view of ${sourceUrl}`}
+                    />
+                  ) : (
+                    <>
+                      {/* The page text is a *cleaned* copy, not the live site: its
+                          scripts, handlers and frames are gone. Saying so matters,
+                          because it looks like the page and is not. */}
+                      {renderedSanitized && (
+                        <Note className="browse__sanitized-note">
+                          A cleaned copy of the page. Scripts, forms and embedded frames are
+                          removed, and links open here rather than navigating away.
+                        </Note>
+                      )}
+                      <iframe
+                        className="browse__frame"
+                        src={rendered.url}
+                        title={`Rendered text of ${sourceUrl}`}
+                        // The strongest sandbox: an opaque origin, no scripts, no
+                        // forms, no popups, no top-level navigation. This — not the
+                        // engine's sanitiser — is the boundary that makes rendering
+                        // someone else's markup safe.
+                        sandbox=""
+                        referrerPolicy="no-referrer"
+                      />
+                    </>
+                  )}
+                </div>
+              ) : (
+                <Card>
+                  <EmptyState
+                    title="Render a page"
+                    description="The engine runs a real browser and draws the page, so a site that forbids being embedded — or that builds itself with JavaScript — still shows. Press Render."
+                  />
+                </Card>
+              )}
+            </>
           )}
         </>
       )}

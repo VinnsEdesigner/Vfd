@@ -32,12 +32,18 @@ services:
       MI_USER_AGENT: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       # Rendering is on, and one at a time: each costs about 500 MB.
       MI_RENDER: "1"
-    # The image's CMD already supplies serve, the host, the port and --render;
-    # these only add what cannot be a compiled-in default. The engine reads them
-    # from the environment, which is how a container is configured.
+      # Live pages are on, also one at a time. A live session is a whole browser
+      # held open, so it is a separate opt-in from rendering and shares the same
+      # memory reasoning.
+      MI_INTERACTIVE: "1"
+    # The image's CMD already supplies serve, the host, the port, --render and
+    # --interactive; these only add what cannot be a compiled-in default. The
+    # engine reads them from the environment, which is how a container is
+    # configured.
     command:
       - serve
       - --render-concurrent=1
+      - --interactive-concurrent=1
     deploy:
       resources:
         limits:

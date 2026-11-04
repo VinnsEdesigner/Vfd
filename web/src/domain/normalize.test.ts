@@ -10,6 +10,7 @@ import {
   normalizeDownload,
   normalizeDownloadList,
   normalizeBrowseResult,
+  normalizeLiveMessage,
   normalizeMedia,
   normalizeProbe,
   toDownloadState,
@@ -227,6 +228,103 @@ describe('normalizeCapabilities', () => {
     expect(c.detectors).toEqual(['mp4', 'unknown']);
     expect(c.hls).toBe(true);
     expect(c.purge).toBe(false);
+  });
+
+  it('treats an engine that did not report live sessions as unable to', () => {
+    const c = normalizeCapabilities({
+      version: '1',
+      detectors: [],
+      hls: false,
+      upload: false,
+      purge: false,
+    });
+    expect(c.interactive).toBeNull();
+  });
+
+  it('maps a reported live-session capability', () => {
+    const c = normalizeCapabilities({
+      version: '1',
+      detectors: [],
+      hls: false,
+      upload: false,
+      purge: false,
+      interactive: {
+        enabled: true,
+        available: true,
+        max_concurrent: 2,
+        active: 1,
+        idle_timeout_seconds: 90,
+      },
+    });
+    expect(c.interactive).toEqual({
+      enabled: true,
+      available: true,
+      maxConcurrent: 2,
+      active: 1,
+      idleTimeoutSeconds: 90,
+    });
+  });
+
+  it('fills in defaults for a missing field but keeps a reported zero', () => {
+    const c = normalizeCapabilities({
+      version: '1',
+      detectors: [],
+      hls: false,
+      upload: false,
+      purge: false,
+      interactive: { enabled: true, available: false, max_concurrent: 1, active: 0 },
+    });
+    // A missing idle timeout takes the default.
+    expect(c.interactive?.idleTimeoutSeconds).toBe(180);
+    expect(c.interactive?.available).toBe(false);
+
+    // A *reported* zero is meaningful — the engine uses it to mean "no idle
+    // timeout" — so it must survive normalisation rather than become the default.
+    const noIdle = normalizeCapabilities({
+      version: '1',
+      detectors: [],
+      hls: false,
+      upload: false,
+      purge: false,
+      interactive: { enabled: true, available: true, max_concurrent: 1, active: 0, idle_timeout_seconds: 0 },
+    });
+    expect(noIdle.interactive?.idleTimeoutSeconds).toBe(0);
+  });
+});
+
+describe('normalizeLiveMessage', () => {
+  it('maps ready, state and closed', () => {
+    expect(normalizeLiveMessage({ type: 'ready', url: 'https://x/', width: 800, height: 600 })).toEqual({
+      kind: 'ready',
+      url: 'https://x/',
+      width: 800,
+      height: 600,
+    });
+    expect(
+      normalizeLiveMessage({
+        type: 'state',
+        page: { url: 'https://x/a', title: 'A', loading: true },
+      }),
+    ).toEqual({ kind: 'state', page: { url: 'https://x/a', title: 'A', loading: true } });
+    expect(normalizeLiveMessage({ type: 'closed', reason: 'idle too long' })).toEqual({
+      kind: 'closed',
+      reason: 'idle too long',
+    });
+  });
+
+  it('ignores a frame header, which is not a message on its own', () => {
+    expect(normalizeLiveMessage({ type: 'frame', format: 'jpeg', seq: 1 })).toBeNull();
+  });
+
+  it('gives a reason when one is missing', () => {
+    expect(normalizeLiveMessage({ type: 'closed' })).toEqual({
+      kind: 'closed',
+      reason: 'the session closed',
+    });
+    expect(normalizeLiveMessage({ type: 'error' })).toEqual({
+      kind: 'error',
+      message: 'the session reported an error',
+    });
   });
 });
 

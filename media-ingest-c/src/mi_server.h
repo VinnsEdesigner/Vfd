@@ -78,6 +78,19 @@ typedef struct {
     size_t render_cache_max_bytes;
     size_t render_cache_max_entries;
     int render_cache_ttl_seconds;
+    /*
+     * Live, driveable pages (Chromium over CDP).
+     *
+     * Distinct from rendering: a render draws a page once, a live session keeps
+     * a browser alive so the page can be used. It costs a whole browser per
+     * session, so `interactive_enabled` is its own opt-in and the concurrency is
+     * its own gate. `interactive_idle_seconds` closes a session nobody is
+     * watching, because an abandoned browser is a leak the size of a browser.
+     */
+    int interactive_enabled;
+    int interactive_max_concurrent;
+    int interactive_idle_seconds;
+    int interactive_v8_heap_mb;
 } mi_server_config;
 
 typedef struct mi_server mi_server;
@@ -94,6 +107,9 @@ void mi_server_free(mi_server *srv);
  * knowing the renderer's internals.
  */
 int mi_server_can_render(const mi_server *srv);
+
+/* The same question for live, driveable sessions. */
+int mi_server_can_drive(const mi_server *srv);
 
 /* Bind + listen. Returns 0 or a negative MI_ERR_*. */
 int mi_server_listen(mi_server *srv);

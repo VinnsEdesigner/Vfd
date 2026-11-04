@@ -10,6 +10,8 @@ export { SettingsPage } from './SettingsPage';
 export type { SettingsPageProps, SettingsTab, EngineFacts } from './SettingsPage';
 export { BrowsePage } from './BrowsePage';
 export type { BrowsePageProps, BrowseMode } from './BrowsePage';
+export { InteractiveView } from './InteractiveView';
+export type { InteractiveViewProps, LiveViewProps } from './InteractiveView';
 export type { StorageLocationValue } from '../settings/StorageLocationPanel';
 export {
   OverviewSkeleton,

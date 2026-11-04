@@ -481,7 +481,8 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
                      const char *auth_token, const char *allow_origins,
                      const char *user_agent, int render, int render_timeout,
                      int render_concurrent, const char *render_cache_dir,
-                     int render_cache_ttl) {
+                     int render_cache_ttl, int interactive, int interactive_concurrent,
+                     int interactive_idle) {
     mi_server_config cfg;
     mi_server_config_init(&cfg);
     if (host) cfg.host = host;
@@ -495,6 +496,9 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
     if (render_concurrent > 0) cfg.render_max_concurrent = render_concurrent;
     if (render_cache_dir) cfg.render_cache_dir = render_cache_dir;
     if (render_cache_ttl > 0) cfg.render_cache_ttl_seconds = render_cache_ttl;
+    cfg.interactive_enabled = interactive;
+    if (interactive_concurrent > 0) cfg.interactive_max_concurrent = interactive_concurrent;
+    if (interactive_idle > 0) cfg.interactive_idle_seconds = interactive_idle;
 
     mi_mkdir_p(cfg.work_dir);
 
@@ -568,6 +572,7 @@ static void usage(void) {
             "                      [--allow-origin ORIGINS] [--user-agent UA]\n"
             "                      [--render] [--render-timeout SECONDS] [--render-concurrent N]\n"
             "                      [--render-cache DIR] [--render-cache-ttl SECONDS] [--no-render-cache]\n"
+            "                      [--interactive] [--interactive-concurrent N] [--interactive-idle SECONDS]\n"
             "  media-ingest upload <file-or-dir> --bucket B --access-key K --secret-key S\n"
             "                          [--endpoint URL] [--region R] [--prefix P] [--cdn-base URL]\n"
             "                          [--path-style|--virtual-host] [--purge --cf-token T --cf-zone Z]\n"
@@ -655,6 +660,10 @@ int main(int argc, char **argv) {
     int serve_render = getenv("MI_RENDER") != NULL;
     int serve_render_timeout = 0;
     int serve_render_concurrent = 0;
+    /* Live sessions are their own opt-in: MI_INTERACTIVE=1 turns them on. */
+    int serve_interactive = getenv("MI_INTERACTIVE") != NULL;
+    int serve_interactive_concurrent = 0;
+    int serve_interactive_idle = 0;
     /* The render cache is on by default, under the work dir; these only change
      * where it lives or how long an entry is trusted. */
     const char *serve_render_cache = NULL;
@@ -682,7 +691,8 @@ int main(int argc, char **argv) {
         OPT_CDN_BASE, OPT_PURGE, OPT_CF_TOKEN, OPT_CF_ZONE,
         OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN, OPT_USERAGENT,
         OPT_RENDER, OPT_RENDER_TIMEOUT, OPT_RENDER_CONCURRENT,
-        OPT_RENDER_CACHE, OPT_RENDER_CACHE_TTL, OPT_NO_RENDER_CACHE
+        OPT_RENDER_CACHE, OPT_RENDER_CACHE_TTL, OPT_NO_RENDER_CACHE,
+        OPT_INTERACTIVE, OPT_INTERACTIVE_CONCURRENT, OPT_INTERACTIVE_IDLE
     };
     static struct option long_opts[] = {
         {"output", required_argument, 0, 'o'},
@@ -721,6 +731,9 @@ int main(int argc, char **argv) {
         {"render-cache", required_argument, 0, OPT_RENDER_CACHE},
         {"render-cache-ttl", required_argument, 0, OPT_RENDER_CACHE_TTL},
         {"no-render-cache", no_argument, 0, OPT_NO_RENDER_CACHE},
+        {"interactive", no_argument, 0, OPT_INTERACTIVE},
+        {"interactive-concurrent", required_argument, 0, OPT_INTERACTIVE_CONCURRENT},
+        {"interactive-idle", required_argument, 0, OPT_INTERACTIVE_IDLE},
         {"header", required_argument, 0, 'H'},
         {"quiet", no_argument, 0, 'q'},
         {"verbose", no_argument, 0, 'v'},
@@ -771,6 +784,9 @@ int main(int argc, char **argv) {
             case OPT_RENDER_CACHE: serve_render_cache = optarg; break;
             case OPT_RENDER_CACHE_TTL: serve_render_cache_ttl = atoi(optarg); break;
             case OPT_NO_RENDER_CACHE: serve_render_cache = ""; break;
+            case OPT_INTERACTIVE: serve_interactive = 1; break;
+            case OPT_INTERACTIVE_CONCURRENT: serve_interactive_concurrent = atoi(optarg); break;
+            case OPT_INTERACTIVE_IDLE: serve_interactive_idle = atoi(optarg); break;
             default: usage(); return 2;
         }
     }
@@ -834,7 +850,9 @@ int main(int argc, char **argv) {
             rc = cmd_serve(serve_host, serve_port, serve_work_dir, serve_token,
                            serve_allow_origins, serve_user_agent, serve_render,
                            serve_render_timeout, serve_render_concurrent,
-                           serve_render_cache, serve_render_cache_ttl);
+                           serve_render_cache, serve_render_cache_ttl,
+                           serve_interactive, serve_interactive_concurrent,
+                           serve_interactive_idle);
             break;
         default: rc = 2;
     }

@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -23,10 +24,12 @@
 #include "mi_detect.h"
 #include "mi_download.h"
 #include "mi_hls.h"
+#include "mi_interactive.h"
 #include "mi_json.h"
 #include "mi_render.h"
 #include "mi_sanitize.h"
 #include "mi_util.h"
+#include "mi_ws.h"
 
 /* ------------------------------------------------------------------ */
 /* download model                                                           */
@@ -141,6 +144,9 @@ struct mi_server {
      * server spawns a thread per connection with no cap of its own, so an
      * expensive endpoint has to bring its own. */
     mi_render_pool *renderer;
+    /* Live, driveable page sessions. Same reasoning: its own pool, its own
+     * gate, and NULL when the feature is off. */
+    mi_interactive_pool *driver;
 };
 
 /* ------------------------------------------------------------------ */
@@ -221,6 +227,15 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->render_cache_max_bytes = 0;
     cfg->render_cache_max_entries = 0;
     cfg->render_cache_ttl_seconds = 0;
+    /*
+     * Live sessions are opt-in and separate from rendering. A render is a
+     * second-long subprocess; a live session is a browser held open for as long
+     * as it is used, so it is a bigger commitment and a different decision.
+     */
+    cfg->interactive_enabled = 0;
+    cfg->interactive_max_concurrent = 1;
+    cfg->interactive_idle_seconds = 180;
+    cfg->interactive_v8_heap_mb = 256;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1752,6 +1767,354 @@ static int start_conversion(mi_server *srv, mi_download_rec *j) {
     return MI_OK;
 }
 
+/* ------------------------------------------------------------------ */
+/* Live page sessions (WebSocket)                                      */
+/* ------------------------------------------------------------------ */
+
+/* Pull a numeric query parameter, or `fallback` when it is absent. */
+static int query_int(const char *query, const char *name, int fallback) {
+    if (!query) return fallback;
+    size_t nlen = strlen(name);
+    for (const char *p = query; *p;) {
+        const char *amp = strchr(p, '&');
+        size_t seg = amp ? (size_t)(amp - p) : strlen(p);
+        if (seg > nlen && !strncmp(p, name, nlen) && p[nlen] == '=') {
+            return atoi(p + nlen + 1);
+        }
+        p = amp ? amp + 1 : p + seg;
+    }
+    return fallback;
+}
+
+/* Pull a URL-decoded string query parameter. Allocated, or NULL. */
+static char *query_str(const char *query, const char *name) {
+    if (!query) return NULL;
+    size_t nlen = strlen(name);
+    for (const char *p = query; *p;) {
+        const char *amp = strchr(p, '&');
+        size_t seg = amp ? (size_t)(amp - p) : strlen(p);
+        if (seg > nlen && !strncmp(p, name, nlen) && p[nlen] == '=') {
+            return percent_decode(p + nlen + 1, seg - nlen - 1);
+        }
+        p = amp ? amp + 1 : p + seg;
+    }
+    return NULL;
+}
+
+/* Forward one JSON command from the console to the browser. Unknown types are
+ * ignored rather than fatal, so a newer console is not broken by an older
+ * engine. */
+static void ws_dispatch(mi_interactive *it, const mi_json *m) {
+    const char *type = mi_json_get_string(m, "type", NULL);
+    if (!type) return;
+
+    if (!strcmp(type, "navigate")) {
+        const char *url = mi_json_get_string(m, "url", NULL);
+        if (url) mi_interactive_navigate(it, url);
+    } else if (!strcmp(type, "reload")) {
+        mi_interactive_reload(it);
+    } else if (!strcmp(type, "resize")) {
+        mi_interactive_resize(it, (int)mi_json_get_number(m, "width", 0),
+                              (int)mi_json_get_number(m, "height", 0));
+    } else if (!strcmp(type, "screenshot")) {
+        mi_interactive_screenshot(it);
+    } else if (!strcmp(type, "mouse")) {
+        mi_interactive_mouse(it, mi_json_get_string(m, "event", "mouseMoved"),
+                             mi_json_get_number(m, "x", 0), mi_json_get_number(m, "y", 0),
+                             mi_json_get_string(m, "button", "none"),
+                             (int)mi_json_get_number(m, "click_count", 0),
+                             (int)mi_json_get_number(m, "buttons", 0),
+                             (int)mi_json_get_number(m, "modifiers", 0));
+    } else if (!strcmp(type, "wheel")) {
+        mi_interactive_wheel(it, mi_json_get_number(m, "x", 0),
+                             mi_json_get_number(m, "y", 0),
+                             mi_json_get_number(m, "dx", 0),
+                             mi_json_get_number(m, "dy", 0),
+                             (int)mi_json_get_number(m, "modifiers", 0));
+    } else if (!strcmp(type, "key")) {
+        mi_interactive_key(it, mi_json_get_string(m, "event", "keyDown"),
+                           mi_json_get_string(m, "key", NULL),
+                           mi_json_get_string(m, "code", NULL),
+                           (int)mi_json_get_number(m, "vk", 0),
+                           mi_json_get_string(m, "text", NULL),
+                           (int)mi_json_get_number(m, "modifiers", 0));
+    } else if (!strcmp(type, "text")) {
+        mi_interactive_text(it, mi_json_get_string(m, "text", NULL));
+    } else if (!strcmp(type, "touch")) {
+        const mi_json *pts = mi_json_get(m, "points");
+        double coords[32];
+        int count = 0;
+        if (pts && pts->type == MI_JSON_ARRAY) {
+            for (size_t i = 0; i < pts->count && count < 16; i++) {
+                const mi_json *pair = pts->items[i];
+                if (pair && pair->type == MI_JSON_ARRAY && pair->count >= 2) {
+                    coords[count * 2] = pair->items[0]->number;
+                    coords[count * 2 + 1] = pair->items[1]->number;
+                    count++;
+                }
+            }
+        }
+        mi_interactive_touch(it, mi_json_get_string(m, "event", "touchStart"), coords, count,
+                             (int)mi_json_get_number(m, "modifiers", 0));
+    }
+}
+
+/* Send the JSON header that introduces a binary image frame. */
+static int ws_send_image_header(int fd, const char *type, const char *format, int w, int h,
+                                int seq) {
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"type\":");
+    mi_json_string(&b, type);
+    mi_json_raw(&b, ",\"format\":");
+    mi_json_string(&b, format);
+    mi_json_raw(&b, ",\"width\":");
+    mi_json_int(&b, w);
+    mi_json_raw(&b, ",\"height\":");
+    mi_json_int(&b, h);
+    mi_json_raw(&b, ",\"seq\":");
+    mi_json_int(&b, seq);
+    mi_json_raw(&b, "}");
+    int rc = mi_ws_send(fd, MI_WS_TEXT, mi_json_data(&b), b.len);
+    mi_json_free(&b);
+    return rc;
+}
+
+static void ws_send_error(int fd, const char *message) {
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"type\":\"error\",\"message\":");
+    mi_json_string(&b, message);
+    mi_json_raw(&b, "}");
+    mi_ws_send(fd, MI_WS_TEXT, mi_json_data(&b), b.len);
+    mi_json_free(&b);
+}
+
+static void ws_send_closed(int fd, const char *reason) {
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"type\":\"closed\",\"reason\":");
+    mi_json_string(&b, reason);
+    mi_json_raw(&b, "}");
+    mi_ws_send(fd, MI_WS_TEXT, mi_json_data(&b), b.len);
+    mi_json_free(&b);
+}
+
+/*
+ * Drive a live page for the life of one connection.
+ *
+ * This function owns the socket until the session ends. It is a poll loop over
+ * two directions: commands in from the console, and frames/state out from the
+ * browser. The two are interleaved on one thread because a session is one
+ * user's page; there is nothing to parallelise, and one thread per session is
+ * what makes the concurrency gate meaningful.
+ */
+static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
+    /* The handshake. A browser's WebSocket client does not send a frame until
+     * it has seen the 101, so nothing is lost from having read only the head. */
+    const char *key = request_header(req, "Sec-WebSocket-Key");
+    const char *upgrade = request_header(req, "Upgrade");
+    const char *connection = request_header(req, "Connection");
+    if (!mi_ws_is_upgrade(upgrade, connection, key)) {
+        send_error(fd, 400, "Bad Request", "expected a WebSocket upgrade", NULL);
+        return;
+    }
+    /* The Origin is checked here too, because a WebSocket handshake is not
+     * subject to CORS: without this, any page a user visits could open a
+     * session to their engine. */
+    const char *origin = request_header(req, "Origin");
+    if (srv->cfg.allow_origins && origin && !origin_allowed(srv->cfg.allow_origins, origin)) {
+        send_error(fd, 403, "Forbidden", "origin is not allowed", NULL);
+        return;
+    }
+
+    char *url = query_str(req->query, "url");
+    if (!url || !*url) {
+        free(url);
+        send_error(fd, 400, "Bad Request", "missing 'url'", NULL);
+        return;
+    }
+
+    if (!srv->driver) {
+        send_error(fd, 503, "Service Unavailable",
+                   "live sessions are not enabled on this engine", NULL);
+        free(url);
+        return;
+    }
+    if (!mi_interactive_pool_available(srv->driver)) {
+        send_error(fd, 503, "Service Unavailable",
+                   "no browser is installed on the engine host", NULL);
+        free(url);
+        return;
+    }
+
+    int width = query_int(req->query, "w", srv->cfg.render_viewport_width);
+    int height = query_int(req->query, "h", srv->cfg.render_viewport_height);
+
+    char err[200];
+    mi_interactive *it = NULL;
+    mi_it_status st = mi_interactive_open(srv->driver, url, width, height, &it, err, sizeof err);
+    if (st != MI_IT_OK) {
+        int code = 502;
+        const char *text = "Bad Gateway";
+        if (st == MI_IT_BUSY) { code = 503; text = "Service Unavailable"; }
+        else if (st == MI_IT_BAD_URL) { code = 400; text = "Bad Request"; }
+        else if (st == MI_IT_NO_BROWSER) { code = 503; text = "Service Unavailable"; }
+        send_error(fd, code, text, err[0] ? err : "could not open a live session", NULL);
+        free(url);
+        return;
+    }
+
+    /* Complete the upgrade only once the browser is actually up, so a failure is
+     * an HTTP status the console can read rather than a socket that opens and
+     * immediately dies. */
+    char *accept = mi_ws_accept_key(key);
+    if (!accept) {
+        mi_interactive_close(it);
+        free(url);
+        send_error(fd, 500, "Internal Server Error", "out of memory", NULL);
+        return;
+    }
+    char handshake[512];
+    int hn = snprintf(handshake, sizeof handshake,
+                      "HTTP/1.1 101 Switching Protocols\r\n"
+                      "Upgrade: websocket\r\n"
+                      "Connection: Upgrade\r\n"
+                      "Sec-WebSocket-Accept: %s\r\n\r\n",
+                      accept);
+    free(accept);
+    send_all(fd, handshake, (size_t)hn);
+
+    /* Tell the console the page is live, then stream. */
+    {
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"type\":\"ready\",\"url\":");
+        mi_json_string(&b, url);
+        mi_json_raw(&b, ",\"width\":");
+        mi_json_int(&b, width);
+        mi_json_raw(&b, ",\"height\":");
+        mi_json_int(&b, height);
+        mi_json_raw(&b, "}");
+        mi_ws_send(fd, MI_WS_TEXT, mi_json_data(&b), b.len);
+        mi_json_free(&b);
+    }
+
+    /* Non-blocking, so the poll loop can watch both directions. */
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+
+    unsigned char rbuf[65536];
+    size_t rlen = 0;
+    int seq = 0;
+    int alive = 1;
+
+    while (alive) {
+        /* Anything from the console? A short wait, so a frame is not delayed
+         * behind a quiet socket. */
+        struct pollfd p = {.fd = fd, .events = POLLIN};
+        int pr = poll(&p, 1, 10);
+        if (pr > 0 && (p.revents & (POLLIN | POLLHUP))) {
+            ssize_t n = recv(fd, rbuf + rlen, sizeof rbuf - rlen, 0);
+            if (n > 0) {
+                rlen += (size_t)n;
+            } else if (n == 0) {
+                alive = 0;
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                alive = 0;
+            }
+        }
+
+        /* Consume whole frames from the buffer. */
+        size_t consumed = 0;
+        while (rlen - consumed >= 2) {
+            mi_ws_frame f;
+            ssize_t used = mi_ws_parse(rbuf + consumed, rlen - consumed, &f);
+            if (used == 0) break;
+            if (used < 0) { alive = 0; break; }
+            consumed += (size_t)used;
+
+            if (f.opcode == MI_WS_CLOSE) {
+                /* Tear the session down *before* acknowledging the close, so the
+                 * concurrency slot is free by the time the console's close event
+                 * fires. Otherwise a console that replaces a session promptly —
+                 * opening a new page while one is live — is refused as busy even
+                 * though this one is already going away. */
+                mi_interactive_close(it);
+                it = NULL;
+                mi_ws_send(fd, MI_WS_CLOSE, NULL, 0);
+                mi_ws_frame_free(&f);
+                alive = 0;
+                break;
+            } else if (f.opcode == MI_WS_PING) {
+                mi_ws_send(fd, MI_WS_PONG, f.payload, f.len);
+            } else if (f.opcode == MI_WS_PONG) {
+                /* Liveness only; nothing to do. */
+            } else if (f.opcode == MI_WS_TEXT) {
+                mi_json *m = mi_json_parse((const char *)f.payload);
+                if (m) {
+                    ws_dispatch(it, m);
+                    mi_json_value_free(m);
+                } else {
+                    ws_send_error(fd, "a command was not valid JSON");
+                }
+            }
+            mi_ws_frame_free(&f);
+        }
+        if (consumed > 0) {
+            memmove(rbuf, rbuf + consumed, rlen - consumed);
+            rlen -= consumed;
+        }
+        if (!alive) break;
+
+        /* Then whatever the browser has for us. */
+        mi_it_event ev = mi_interactive_pump(it, 10);
+        if (ev == MI_IT_EV_FRAME) {
+            size_t len = 0;
+            const unsigned char *frame = mi_interactive_frame(it, &len);
+            if (frame && len > 0) {
+                if (ws_send_image_header(fd, "frame", mi_interactive_frame_format(it),
+                                         mi_interactive_frame_width(it),
+                                         mi_interactive_frame_height(it), ++seq) != 0) {
+                    alive = 0;
+                } else if (mi_ws_send(fd, MI_WS_BINARY, frame, len) != 0) {
+                    alive = 0;
+                }
+            }
+        } else if (ev == MI_IT_EV_SHOT) {
+            size_t len = 0;
+            const unsigned char *frame = mi_interactive_frame(it, &len);
+            if (frame && len > 0) {
+                if (ws_send_image_header(fd, "shot", mi_interactive_frame_format(it),
+                                         mi_interactive_frame_width(it),
+                                         mi_interactive_frame_height(it), ++seq) != 0) {
+                    alive = 0;
+                } else if (mi_ws_send(fd, MI_WS_BINARY, frame, len) != 0) {
+                    alive = 0;
+                }
+            }
+        } else if (ev == MI_IT_EV_STATE) {
+            const char *state = mi_interactive_state(it);
+            if (state) {
+                /* The state is already a JSON object; wrap it with its type. */
+                mi_json_buf b;
+                mi_json_init(&b);
+                mi_json_raw(&b, "{\"type\":\"state\",\"page\":");
+                mi_json_raw(&b, state);
+                mi_json_raw(&b, "}");
+                if (mi_ws_send(fd, MI_WS_TEXT, mi_json_data(&b), b.len) != 0) alive = 0;
+                mi_json_free(&b);
+            }
+        } else if (ev == MI_IT_EV_CLOSED) {
+            ws_send_closed(fd, mi_interactive_close_reason(it));
+            alive = 0;
+        }
+    }
+
+    mi_interactive_close(it);
+    free(url);
+}
+
 static void handle_request(mi_server *srv, int fd, http_request *req) {
     const char *cors = cors_origin_for(srv, req);
 
@@ -1771,6 +2134,31 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
 
     if (strncmp(req->path, "/api/", 5) != 0) {
         send_error(fd, 404, "Not Found", "unknown path", cors);
+        return;
+    }
+
+    /*
+     * GET /api/v1/interactive?url=…  (WebSocket upgrade)
+     *
+     * Handled before the generic bearer check, because a browser cannot put an
+     * Authorization header on a WebSocket. The token may instead arrive as a
+     * `token` query parameter; the Origin check inside the handler is the other
+     * half of the defence, since a WebSocket handshake is not subject to CORS.
+     */
+    if (!strcmp(req->path, "/api/v1/interactive") && !strcmp(req->method, "GET")) {
+        if (srv->cfg.auth_token) {
+            const char *auth = request_header(req, "Authorization");
+            char *qtok = query_str(req->query, "token");
+            int ok = (auth && !strncmp(auth, "Bearer ", 7) &&
+                      !strcmp(auth + 7, srv->cfg.auth_token)) ||
+                     (qtok && !strcmp(qtok, srv->cfg.auth_token));
+            free(qtok);
+            if (!ok) {
+                send_error(fd, 401, "Unauthorized", "missing or invalid token", cors);
+                return;
+            }
+        }
+        serve_interactive_ws(srv, fd, req);
         return;
     }
 
@@ -1845,6 +2233,25 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             mi_json_key(&b, "cache_misses");
             mi_json_int(&b, (int64_t)misses);
         }
+        mi_json_raw(&b, "}");
+        /* Whether a page can be driven live, and within what bounds. Separate
+         * from rendering because it is a separate opt-in and a separate cost. */
+        mi_json_raw(&b, ",\"interactive\":");
+        mi_json_raw(&b, "{");
+        mi_json_key(&b, "enabled");
+        mi_json_bool(&b, srv->driver != NULL);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "available");
+        mi_json_bool(&b, mi_server_can_drive(srv));
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "max_concurrent");
+        mi_json_int(&b, srv->driver ? mi_interactive_pool_limit(srv->driver) : 0);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "active");
+        mi_json_int(&b, srv->driver ? mi_interactive_pool_active(srv->driver) : 0);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "idle_timeout_seconds");
+        mi_json_int(&b, srv->cfg.interactive_idle_seconds);
         mi_json_raw(&b, "}");
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
@@ -2838,11 +3245,31 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
         srv->renderer = mi_render_pool_new(&rcfg);
         free(cache_dir);
     }
+
+    /* The live-session pool, built the same way and for the same reason: the
+     * gate has to be a property of the process, not of a request. */
+    if (cfg->interactive_enabled) {
+        mi_interactive_config icfg;
+        mi_interactive_config_init(&icfg);
+        icfg.chromium_path = cfg->render_browser;
+        icfg.max_concurrent = cfg->interactive_max_concurrent;
+        icfg.idle_timeout_seconds = cfg->interactive_idle_seconds;
+        icfg.v8_heap_mb = cfg->interactive_v8_heap_mb;
+        icfg.viewport_width = cfg->render_viewport_width;
+        icfg.viewport_height = cfg->render_viewport_height;
+        icfg.user_agent = cfg->user_agent;
+        icfg.profile_root = cfg->render_profile_root;
+        srv->driver = mi_interactive_pool_new(&icfg);
+    }
     return srv;
 }
 
 int mi_server_can_render(const mi_server *srv) {
     return srv && srv->renderer && mi_render_pool_available(srv->renderer);
+}
+
+int mi_server_can_drive(const mi_server *srv) {
+    return srv && srv->driver && mi_interactive_pool_available(srv->driver);
 }
 
 void mi_server_free(mi_server *srv) {
@@ -2852,6 +3279,7 @@ void mi_server_free(mi_server *srv) {
     free(srv->threads);
     free(srv->download_dir);
     mi_render_pool_free(srv->renderer);
+    mi_interactive_pool_free(srv->driver);
     if (srv->listen_fd >= 0) close(srv->listen_fd);
     pthread_mutex_destroy(&srv->lock);
     free(srv);

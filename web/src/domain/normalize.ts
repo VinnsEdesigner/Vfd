@@ -15,13 +15,14 @@ import type {
   ProbeResult,
   StorageConfig,
 } from './media';
-import { browseKindFor, type BrowseItem, type BrowseResult } from './browse';
+import { browseKindFor, type BrowseItem, type BrowseResult, type LiveMessage } from './browse';
 import type {
   WireBrowseResult,
   WireSystemStorage,
   WireCapabilities,
   WireDownload,
   WireDownloadList,
+  WireLiveMessage,
   WireMedia,
   WireProbeResult,
   WireStorageConfig,
@@ -229,7 +230,51 @@ export function normalizeCapabilities(w: WireCapabilities): Capabilities {
           viewportHeight: typeof r.viewport_height === 'number' ? r.viewport_height : 900,
         }
       : null,
+    // The same safe reading for live sessions.
+    interactive: (() => {
+      const i = w.interactive;
+      if (!i) return null;
+      return {
+        enabled: Boolean(i.enabled),
+        available: Boolean(i.available),
+        maxConcurrent: typeof i.max_concurrent === 'number' ? i.max_concurrent : 1,
+        active: typeof i.active === 'number' ? i.active : 0,
+        idleTimeoutSeconds:
+          typeof i.idle_timeout_seconds === 'number' ? i.idle_timeout_seconds : 180,
+      };
+    })(),
   };
+}
+
+/**
+ * A live-session text message, decoded into the domain.
+ *
+ * Returns null for a message the console does not understand, so a newer engine
+ * can add message kinds without breaking an older console — the parser skips
+ * what it cannot place rather than throwing.
+ */
+export function normalizeLiveMessage(w: WireLiveMessage): LiveMessage | null {
+  switch (w.type) {
+    case 'ready':
+      return { kind: 'ready', url: w.url ?? '', width: w.width ?? 0, height: w.height ?? 0 };
+    case 'state':
+      return {
+        kind: 'state',
+        page: {
+          url: w.page?.url ?? '',
+          title: w.page?.title ?? '',
+          loading: Boolean(w.page?.loading),
+        },
+      };
+    case 'closed':
+      return { kind: 'closed', reason: w.reason ?? 'the session closed' };
+    case 'error':
+      return { kind: 'error', message: w.message ?? 'the session reported an error' };
+    // A frame header is only meaningful with the binary that follows it, so it
+    // is not a message on its own; the socket handler pairs them.
+    default:
+      return null;
+  }
 }
 
 export function normalizeStorageConfig(w: WireStorageConfig): StorageConfig {

@@ -73,6 +73,7 @@ VOLUME ["/data"]
 
 ENV MI_WORK_DIR=/data/downloads \
     MI_RENDER=1 \
+    MI_INTERACTIVE=1 \
     MI_HOST=0.0.0.0 \
     MI_PORT=8787
 
@@ -91,7 +92,8 @@ CMD ["serve", \
      "--host", "0.0.0.0", \
      "--port", "8787", \
      "--work-dir", "/data/downloads", \
-     "--render"]
+     "--render", \
+     "--interactive"]
 
 EXPOSE 8787
 

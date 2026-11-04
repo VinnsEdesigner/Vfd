@@ -22,13 +22,19 @@ export {
 export { useProbe, useDetectBytes } from './use-media';
 export { useBrowse, useBrowseUrl, usePageFrame, useRenderPage } from './use-browse';
 export type { UseBrowseArgs } from './use-browse';
+export { useLiveSession } from './use-live';
+export type { UseLiveSession } from './use-live';
 export type {
   FetchedPage,
+  LiveFailure,
+  LiveFrame,
+  LiveMessage,
+  LivePageState,
   RenderFailure,
   RenderMode,
   RenderedPage,
 } from '../domain/browse';
-export type { RenderCapability } from '../domain/media';
+export type { InteractiveCapability, RenderCapability } from '../domain/media';
 export { useLocalMedia } from './use-local-media';
 export type { LocalMediaState } from './use-local-media';
 export type { ProbeVariables } from './use-media';

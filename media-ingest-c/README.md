@@ -13,7 +13,12 @@ Built for ingesting media you own or are licensed to distribute.
 | `src/mi_download.[ch]` | Concurrent, resumable ranged downloader (libcurl + pthreads) |
 | `src/mi_hls.[ch]` | FFmpeg → HLS adaptive-bitrate transcode pipeline |
 | `src/mi_storage.[ch]` | S3-compatible upload (AWS SigV4) + Cloudflare cache purge |
-| `src/mi_util.[ch]` | Helpers, logging, SHA-256/HMAC-SHA256, SigV4 timestamps |
+| `src/mi_util.[ch]` | Helpers, logging, SHA-256/HMAC-SHA256/SHA-1, base64, SigV4 timestamps |
+| `src/mi_render.[ch]` | Headless-Chromium page renderer (picture or sanitised DOM) |
+| `src/mi_cache.[ch]` | Bounded LRU disk cache for rendered pages |
+| `src/mi_sanitize.[ch]` | HTML allowlist sanitiser for rendered DOM |
+| `src/mi_ws.[ch]` | WebSocket framing (RFC 6455), for live page sessions |
+| `src/mi_interactive.[ch]` | Live, driveable page sessions over the Chromium CDP pipe |
 | `src/mi_cli.c` | Command-line front end |
 
 ## Build
@@ -198,6 +203,68 @@ concurrency slot is taken, so a repeat view does not compete with a fresh one:
 measured, the same page goes from a 760 ms miss to a 0 ms hit. `--no-render-cache`
 turns it off; `/api/v1/capabilities` reports entries, bytes, hits and misses.
 
+## Live pages
+
+Rendering draws a page once. That is the wrong shape for a page you want to *use*:
+a picture has no search box you can type in and no link you can follow. `serve
+--interactive` keeps a browser alive instead and streams it, so the page can be
+driven:
+
+```
+GET /api/v1/interactive?url=https://example.com/&w=1024&h=768   (WebSocket upgrade)
+```
+
+The engine streams screencast frames down and takes input events up over one
+socket. A text message introduces each image, then the image arrives as a binary
+frame:
+
+```
+{"type":"ready","url":…,"width":…,"height":…}   once, on connect
+{"type":"state","page":{"url":…,"title":…,"loading":…}}   when the page changes
+{"type":"frame","format":"jpeg","width":…,"height":…,"seq":N}   then one binary frame
+{"type":"shot", …}   then one binary frame, for a full-resolution still
+{"type":"closed","reason":…}   when the session ends
+```
+
+The console sends JSON commands the other way — `navigate`, `reload`, `resize`,
+`screenshot`, and `mouse`/`wheel`/`key`/`text`/`touch` for input. The engine
+acknowledges each screencast frame itself, so the console does not have to.
+
+### How it talks to the browser, and why
+
+Over Chromium's `--remote-debugging-pipe`, **not** a debugging TCP port. A
+debugging port is an unauthenticated control socket that any process on the host
+could drive; a pipe is private to the engine by construction. There is no
+WebSocket *client* in the engine either — the CDP transport is two file
+descriptors, each message a NUL-terminated JSON object.
+
+### Bounds
+
+A live session is a whole browser held open, so it has its own opt-in and its own
+gate, separate from rendering:
+
+- `--interactive-concurrent` (default 1) bounds how many sessions exist at once.
+  A full gate is refused with `503` rather than queued;
+- `--interactive-idle` (default 180 s) closes a session nobody is watching. An
+  abandoned browser is a leak the size of a browser;
+- only public `http(s)` pages are driven — the same URL rules as rendering;
+- the close path kills the browser's whole process group and reaps it, and the
+  engine is a child subreaper so helpers do not accumulate as zombies.
+
+Like a render, a live page runs with `--no-sandbox`: an unprivileged container
+cannot use Chromium's namespace sandbox. **A page driven here runs unsandboxed.**
+That is why the console says so plainly and why the engine only opens pages the
+operator would be willing to visit.
+
+### The Origin check
+
+A WebSocket handshake is **not** subject to CORS, so the engine checks the
+`Origin` header itself against `MI_ALLOW_ORIGINS` and refuses a handshake from an
+origin that is not listed. Without that, any page a user visits could open a
+session to their engine. The bearer token cannot travel as a header on a
+WebSocket, so it is accepted as a `token` query parameter — the Origin check is
+what makes that safe.
+
 ## Deployment
 
 ```bash
@@ -219,6 +286,7 @@ Configuration comes from the environment, which is how a container is configured
 | `MI_AUTH_TOKEN` | bearer token required on every route but `/healthz` |
 | `MI_USER_AGENT` | what the engine calls itself when fetching |
 | `MI_RENDER` | set to anything to turn rendering on |
+| `MI_INTERACTIVE` | set to anything to turn live pages on |
 | `MI_S3_*`, `MI_CF_*` | storage and CDN credentials |
 
 `MI_ALLOW_ORIGINS` matters more than it looks: without the console's origin on it

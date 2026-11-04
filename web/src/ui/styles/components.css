@@ -4467,6 +4467,101 @@ input[type='range']:focus-visible {
   color: var(--text-3);
 }
 
+/* A live page: the engine's browser, streamed as frames into an <img> the user
+   can click and type into. The stage is the input surface, so it takes focus and
+   says so. */
+.live {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.live__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.live__url {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.live__loading {
+  font-size: 12px;
+  color: var(--accent);
+}
+.live__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.live__note {
+  margin-bottom: 4px;
+}
+.live__stage {
+  position: relative;
+  width: 100%;
+  height: min(72vh, 900px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  /* The stage is a control surface, not text: no selection, no text cursor, and
+     no touch scrolling that would fight the forwarded input. */
+  user-select: none;
+  cursor: default;
+  touch-action: none;
+  outline: none;
+}
+.live__stage:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+/* The frame fills the stage. It is the whole point of the view, so it is not
+   letterboxed: the engine is told the stage size and draws to it. */
+.live__frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: top left;
+  pointer-events: none;
+}
+.live__blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.live__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.live__waiting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--text-3);
+}
+.live__retry {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+
 .browse__loading {
   display: flex;
   justify-content: center;

@@ -109,6 +109,57 @@ export type RenderFailure =
   | 'refused'    /* the URL is not one we render */
   | 'failed';    /* anything else */
 
+/*
+ * A live, driveable page.
+ *
+ * The renderer (above) draws a page once; this keeps a browser alive so the page
+ * can be *used* — typed in, scrolled, followed. It is a WebSocket rather than a
+ * request because it is a stream in both directions: frames out, input in.
+ *
+ * The capability that says whether this is possible lives in `media.ts` with the
+ * rest of the engine capabilities; the wire shape is in `wire.ts`.
+ */
+
+/** Why a live session ended, or could not start. */
+export type LiveFailure =
+  | 'disabled'    /* the engine has live sessions turned off */
+  | 'unavailable' /* enabled, but no browser on the host */
+  | 'busy'        /* the gate is full; worth retrying */
+  | 'refused'     /* the URL is not one we drive */
+  | 'closed'      /* the session ended while in use */
+  | 'failed';     /* anything else */
+
+/** The page's own state, as the browser reports it. */
+export interface LivePageState {
+  url: string;
+  title: string;
+  loading: boolean;
+}
+
+/** A single decoded image from a live session. */
+export interface LiveFrame {
+  /** The bytes, as a blob URL the canvas or an <img> can show. */
+  url: string;
+  /** A full-resolution still from a screenshot request, rather than a stream frame. */
+  still: boolean;
+  width: number;
+  height: number;
+  seq: number;
+}
+
+/**
+ * A live-session message the console acts on.
+ *
+ * Image frames are not here: they are binary and arrive with a header, so the
+ * socket handler pairs them into a `LiveFrame` rather than routing them through
+ * this.
+ */
+export type LiveMessage =
+  | { kind: 'ready'; url: string; width: number; height: number }
+  | { kind: 'state'; page: LivePageState }
+  | { kind: 'closed'; reason: string }
+  | { kind: 'error'; message: string };
+
 export interface BrowseResult {
   items: BrowseItem[];
   /** Total the source reports, when it says. -1 when unknown. */

@@ -82,6 +82,23 @@ void mi_hmac_sha256(const void *key, size_t keylen, const void *msg, size_t len,
 /* Lowercase hex encoding; `out` needs 2*len + 1 bytes. */
 void mi_hex_encode(const unsigned char *in, size_t len, char *out);
 
+/* SHA-1 (RFC 3174). Needed only by the WebSocket handshake, which mandates it
+ * for the Sec-WebSocket-Accept value; SHA-256 is the engine's own digest. */
+void mi_sha1(const void *data, size_t len, unsigned char out[20]);
+
+/* ------------------------------------------------------------------ */
+/* Base64 (RFC 4648)                                                   */
+/* ------------------------------------------------------------------ */
+
+/* Standard base64, no line breaks, with padding. Allocated; free the result.
+ * Returns NULL on allocation failure. */
+char *mi_base64_encode(const unsigned char *data, size_t len);
+
+/* Decode base64 into `out` (capacity `cap`). Returns the number of bytes
+ * written, or -1 on malformed input or when it would not fit. Padding and
+ * whitespace are tolerated; anything else is refused. */
+ssize_t mi_base64_decode(const char *in, size_t inlen, unsigned char *out, size_t cap);
+
 /* SHA-256 of a byte range, lowercase hex into `out_hex` (>= 65 bytes). */
 void mi_sha256_hex(const void *data, size_t len, char *out_hex);
 

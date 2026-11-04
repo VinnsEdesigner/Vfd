@@ -7,9 +7,11 @@ import {
   createBrowseResource,
   createPageResource,
   createRenderResource,
+  createLiveResource,
   type BrowseResource,
   type PageResource,
   type RenderResource,
+  type LiveResource,
 } from './browse';
 import { createDownloadsResource, type DownloadsResource } from './downloads';
 import { createMediaResource, type MediaResource } from './media';
@@ -26,6 +28,8 @@ export interface RestApi {
   page: PageResource;
   /** Render a page with the engine's browser, when the host can. */
   render: RenderResource;
+  /** Drive a page live with the engine's browser, over a WebSocket. */
+  live: LiveResource;
 }
 
 export function createRestApi(config: TransportConfig): RestApi {
@@ -38,11 +42,12 @@ export function createRestApi(config: TransportConfig): RestApi {
     browse: createBrowseResource(client),
     page: createPageResource(client),
     render: createRenderResource(client),
+    live: createLiveResource(client),
   };
 }
 
 export type { TransportConfig } from '../api-client';
-export type { BrowseResource, PageResource, RenderResource } from './browse';
+export type { BrowseResource, PageResource, RenderResource, LiveResource } from './browse';
 export type { DownloadsResource } from './downloads';
 export type { MediaResource } from './media';
 export type { SystemResource } from './system';

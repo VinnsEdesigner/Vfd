@@ -148,6 +148,56 @@ export interface WireCapabilities {
   ffmpeg?: boolean;
   /** Absent on engines that predate rendering. */
   render?: WireRenderCapability;
+  /** Absent on engines that predate live sessions. */
+  interactive?: WireInteractiveCapability;
+}
+
+/** Whether a page can be driven live, and within what bounds. */
+export interface WireInteractiveCapability {
+  enabled: boolean;
+  /** Enabled *and* a browser was found on the host. */
+  available: boolean;
+  max_concurrent: number;
+  active: number;
+  /** Absent on an engine that predates the field; 0 means "no idle timeout". */
+  idle_timeout_seconds?: number;
+}
+
+/*
+ * Live-session WebSocket messages.
+ *
+ * The engine speaks two kinds: a JSON text message, and a binary image frame
+ * introduced by a JSON header. Both are described here so the console's parser
+ * has one place to look.
+ */
+
+/** The header sent immediately before a binary image frame. */
+export interface WireLiveImageHeader {
+  type: 'frame' | 'shot';
+  format: string;
+  width: number;
+  height: number;
+  seq: number;
+}
+
+/** The page's own state, as the browser reports it. */
+export interface WireLivePage {
+  url: string;
+  title: string;
+  loading: boolean;
+}
+
+/** A live-session text message from the engine. */
+export interface WireLiveMessage {
+  type: 'ready' | 'state' | 'closed' | 'error' | 'frame' | 'shot';
+  url?: string;
+  width?: number;
+  height?: number;
+  reason?: string;
+  message?: string;
+  page?: WireLivePage;
+  format?: string;
+  seq?: number;
 }
 
 export interface WireStorageConfig {
