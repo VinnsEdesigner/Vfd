@@ -358,49 +358,66 @@ static const allowed_attr *attr_allowed(const char *name, size_t nlen, const cha
 }
 
 /*
+ * Make a reference absolute against the page it came from.
+ *
+ * Returns NULL when it is already absolute or when there is no base to resolve
+ * against. A fragment is not a resource, so it returns NULL too.
+ */
+static char *make_absolute(const char *value, size_t n, const char *base_url) {
+    if (!base_url || n == 0) return NULL;
+    if (value[0] == '#') return NULL;
+    if (strncasecmp(value, "http://", 7) == 0 || strncasecmp(value, "https://", 8) == 0) {
+        return NULL; /* already absolute */
+    }
+    const char *ref = NULL;
+    char *out = NULL;
+    char *refcopy = mi_strndup(value, n);
+    if (!refcopy) return NULL;
+
+    if (value[0] == '/') {
+        /* Root-relative: the origin from the base. */
+        const char *sep = strstr(base_url, "://");
+        if (sep) {
+            const char *host = sep + 3;
+            const char *slash = strchr(host, '/');
+            size_t origin_len = slash ? (size_t)(slash - base_url) : strlen(base_url);
+            char *origin = mi_strndup(base_url, origin_len);
+            if (origin) out = mi_asprintf("%s%s", origin, refcopy);
+            free(origin);
+        }
+    } else {
+        /* Document-relative: the base's directory. */
+        const char *q = strpbrk(base_url, "?#");
+        size_t blen = q ? (size_t)(q - base_url) : strlen(base_url);
+        while (blen > 0 && base_url[blen - 1] != '/') blen--;
+        char *dir = mi_strndup(base_url, blen);
+        if (dir) out = mi_asprintf("%s%s", dir, refcopy);
+        free(dir);
+    }
+    (void)ref;
+    free(refcopy);
+    return out;
+}
+
+/*
  * Rewrite a link so a click stays inside the app.
  *
- * The destination is made absolute against the page it came from, then handed
- * to the renderer's own prefix — so following a link renders the next page
- * rather than navigating the frame somewhere else. A fragment-only link is left
- * alone, because it is a jump within this document.
+ * The destination is made absolute, then handed to the renderer's own prefix —
+ * so following a link renders the next page rather than navigating the frame
+ * somewhere else. A fragment-only link is left alone, because it is a jump
+ * within this document.
  */
 static char *rewrite_link(const char *value, size_t n, const mi_sanitize_config *cfg) {
     if (!cfg || !cfg->link_prefix || !cfg->base_url) return NULL;
-    if (n == 0) return NULL;
-    if (value[0] == '#') return NULL;
-    /* Already absolute with a scheme: hand it straight to the renderer. */
-    if (strncasecmp(value, "http://", 7) == 0 || strncasecmp(value, "https://", 8) == 0) {
-        char *ref = mi_strndup(value, n);
-        if (!ref) return NULL;
-        /* Percent-encode is not needed here: the console encodes it when it
-         * builds the request. */
-        char *out = mi_asprintf("%s%s", cfg->link_prefix, ref);
-        free(ref);
-        return out;
-    }
-    if (value[0] == '/') {
-        /* Root-relative: take the origin from the base. */
-        const char *sep = strstr(cfg->base_url, "://");
-        if (!sep) return NULL;
-        const char *host = sep + 3;
-        const char *slash = strchr(host, '/');
-        size_t origin_len = slash ? (size_t)(slash - cfg->base_url) : strlen(cfg->base_url);
-        char *origin = mi_strndup(cfg->base_url, origin_len);
-        char *ref = mi_strndup(value, n);
-        char *out = (origin && ref) ? mi_asprintf("%s%s%s", cfg->link_prefix, origin, ref) : NULL;
-        free(origin);
-        free(ref);
-        return out;
-    }
-    /* Document-relative: take the base's directory. */
-    const char *q = strpbrk(cfg->base_url, "?#");
-    size_t blen = q ? (size_t)(q - cfg->base_url) : strlen(cfg->base_url);
-    while (blen > 0 && cfg->base_url[blen - 1] != '/') blen--;
-    char *dir = mi_strndup(cfg->base_url, blen);
+    if (n == 0 || value[0] == '#') return NULL;
+
     char *ref = mi_strndup(value, n);
-    char *out = (dir && ref) ? mi_asprintf("%s%s%s", cfg->link_prefix, dir, ref) : NULL;
-    free(dir);
+    if (!ref) return NULL;
+    /* A relative reference is resolved first; an absolute one is used as it is. */
+    char *absolute = make_absolute(value, n, cfg->base_url);
+    const char *target = absolute ? absolute : ref;
+    char *out = mi_asprintf("%s%s", cfg->link_prefix, target);
+    free(absolute);
     free(ref);
     return out;
 }
@@ -415,10 +432,23 @@ static void emit_attr(buf *b, const char *name, size_t nlen, const char *value,
     }
     if (spec->is_style && style_is_dangerous(value, vlen)) return;
 
-    /* A link becomes a renderer request, so following it stays in the app. */
+    /*
+     * URLs are resolved here rather than left relative to a `<base>` tag.
+     *
+     * A base would be the tidy way to make a page's relative images load, but the
+     * policy forbids one (`base-uri 'none'`) — a base tag is how an injected
+     * document rewrites every URL on the page, so allowing it to satisfy the
+     * layout would give up a real protection. Resolving each URL is more work and
+     * cannot be abused.
+     */
     char *rewritten = NULL;
-    if (spec->is_url && !strcasecmp(spec->name, "href") && !strcasecmp(tag, "a")) {
-        rewritten = rewrite_link(value, vlen, cfg);
+    if (spec->is_url) {
+        if (!strcasecmp(spec->name, "href") && !strcasecmp(tag, "a")) {
+            /* A link becomes a renderer request, so it stays in the app. */
+            rewritten = rewrite_link(value, vlen, cfg);
+        } else if (cfg && cfg->base_url) {
+            rewritten = make_absolute(value, vlen, cfg->base_url);
+        }
     }
 
     buf_putc(b, ' ');
@@ -514,24 +544,11 @@ char *mi_sanitize_html(const char *html, size_t len, const mi_sanitize_config *c
     buf_puts(&out, mi_sanitize_csp());
     buf_puts(&out, "\">");
     /*
-     * A base for relative images and fonts, so a page's own assets still load
-     * from the site. It is the *origin only*: giving the full page URL as the
-     * base would also change what a relative link resolves to, which matters
-     * because those links are rewritten before they get here. `target` is
-     * deliberately not set — the frame is sandboxed without allow-popups, so a
-     * link cannot open a tab, and links are rewritten to stay in the app anyway.
+     * No `<base>` tag. Relative URLs are resolved individually instead, because
+     * the policy forbids a base (`base-uri 'none'`) — and it does so for a
+     * reason: a base is how an injected document rewrites every URL on the page.
+     * Trading that protection for tidier markup would be a bad trade.
      */
-    if (cfg && cfg->base_url) {
-        const char *sep = strstr(cfg->base_url, "://");
-        if (sep) {
-            const char *host = sep + 3;
-            const char *slash = strchr(host, '/');
-            size_t origin_len = slash ? (size_t)(slash - cfg->base_url) : strlen(cfg->base_url);
-            buf_puts(&out, "<base href=\"");
-            buf_attr_escaped(&out, cfg->base_url, origin_len);
-            buf_puts(&out, "/\">");
-        }
-    }
     buf_puts(&out, "</head><body>");
 
     while (p < end) {

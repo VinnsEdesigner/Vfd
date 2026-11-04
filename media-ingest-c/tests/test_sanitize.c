@@ -382,6 +382,46 @@ static void test_links_are_rewritten(void) {
     free(out);
 }
 
+/*
+ * Relative image URLs are resolved against the page, and there is no `<base>`.
+ *
+ * A base tag would be the tidy way to do this, but the policy forbids one
+ * (`base-uri 'none'`) because a base is how an injected document rewrites every
+ * URL on the page. Resolving each URL keeps that protection and still lets a
+ * page's own images load. A browser caught the alternative: it reported the
+ * base tag as a policy violation and the images would not have loaded.
+ */
+static void test_images_are_resolved(void) {
+    mi_sanitize_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.link_prefix = "/api/v1/render?url=";
+    cfg.base_url = "https://site.example/docs/page.html";
+
+    const char *src = "<img src=\"/logo.png\" alt=\"a\">";
+    char *out = mi_sanitize_html(src, strlen(src), &cfg);
+    CHECK(has(out, "src=\"https://site.example/logo.png\""),
+          "a root-relative image is made absolute");
+    free(out);
+
+    src = "<img src=\"pics/a.png\">";
+    out = mi_sanitize_html(src, strlen(src), &cfg);
+    CHECK(has(out, "src=\"https://site.example/docs/pics/a.png\""),
+          "a document-relative image resolves against the page's directory");
+    free(out);
+
+    src = "<img src=\"https://cdn.example/a.png\">";
+    out = mi_sanitize_html(src, strlen(src), &cfg);
+    CHECK(has(out, "src=\"https://cdn.example/a.png\""),
+          "an absolute image is left as it is");
+    free(out);
+
+    /* The policy forbids a base, so there must not be one. */
+    src = "<img src=\"/a.png\">";
+    out = mi_sanitize_html(src, strlen(src), &cfg);
+    CHECK(!has(out, "<base"), "no base tag is emitted, which the policy forbids");
+    free(out);
+}
+
 static void test_edge_cases(void) {
     /* An empty document is still a document. */
     char *out = san("");
@@ -429,6 +469,7 @@ int main(void) {
     test_comments_and_doctype();
     test_csp_is_injected();
     test_links_are_rewritten();
+    test_images_are_resolved();
     test_edge_cases();
 
     printf("\n%d checks, %d failures\n", g_checks, g_failures);
