@@ -125,6 +125,17 @@ export interface WireProbeResult {
   media: WireMedia | null;
 }
 
+/** Whether the engine can render pages, and within what bounds. */
+export interface WireRenderCapability {
+  enabled: boolean;
+  /** Enabled *and* a browser was found on the host. */
+  available: boolean;
+  max_concurrent: number;
+  timeout_seconds: number;
+  viewport_width: number;
+  viewport_height: number;
+}
+
 export interface WireCapabilities {
   version: string;
   detectors: string[];
@@ -135,6 +146,8 @@ export interface WireCapabilities {
   workers?: number;
   engine_version?: string;
   ffmpeg?: boolean;
+  /** Absent on engines that predate rendering. */
+  render?: WireRenderCapability;
 }
 
 export interface WireStorageConfig {

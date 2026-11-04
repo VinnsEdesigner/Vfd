@@ -5,8 +5,9 @@
  * component that can be rendered in tests with any transport.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { useQueryClient } from '@tanstack/react-query';
 import { MediaApiProvider, useConnectionStore, useHealth } from '../hooks';
 import { App, BootGate, ToastProvider } from '../ui';
 import { registerServiceWorker } from '../platform/service-worker';
@@ -40,9 +41,39 @@ function ApiConnection({ children }: { children: React.ReactNode }) {
   const authToken = useConnectionStore((s) => s.authToken);
   return (
     <MediaApiProvider baseUrl={baseUrl} authToken={authToken}>
-      {children}
+      {/* Inside the provider, because the client is created by it — calling
+          useQueryClient above it would have nothing to return. */}
+      <DropStaleEngineData endpoint={`${baseUrl}\u0000${authToken}`}>{children}</DropStaleEngineData>
     </MediaApiProvider>
   );
+}
+
+/**
+ * Drops everything cached when the endpoint or token changes.
+ *
+ * Every cached answer belongs to the engine it came from. Without this, one
+ * outlives its endpoint: a capability fetched while the console was still
+ * pointing at its own origin — which is not an engine — stays "fresh" for its
+ * whole stale window, and the UI keeps reporting what the wrong server said.
+ * Changing the endpoint in Settings must mean starting over, not blending two
+ * engines' answers.
+ */
+function DropStaleEngineData({
+  endpoint,
+  children,
+}: {
+  endpoint: string;
+  children: React.ReactNode;
+}) {
+  const queryClient = useQueryClient();
+  const previous = useRef(endpoint);
+  useEffect(() => {
+    if (previous.current !== endpoint) {
+      previous.current = endpoint;
+      queryClient.clear();
+    }
+  }, [endpoint, queryClient]);
+  return <>{children}</>;
 }
 
 /**

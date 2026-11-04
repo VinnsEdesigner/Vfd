@@ -6,11 +6,17 @@
  * debounce where the input is and the caching where the network is.
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useMediaApi } from './provider';
 import { queryKeys } from './query-keys';
 import { searchCommons } from '../rest/browse';
-import type { BrowseFilter, BrowseKind, BrowseResult, FetchedPage } from '../domain/browse';
+import type {
+  BrowseFilter,
+  BrowseKind,
+  BrowseResult,
+  FetchedPage,
+  RenderMode,
+} from '../domain/browse';
 
 export interface UseBrowseArgs {
   term: string;
@@ -57,6 +63,23 @@ export function usePageFrame(url: string | null) {
     enabled: isAbsolute,
     staleTime: 5 * 60_000,
     retry: 0,
+  });
+}
+
+/**
+ * Render a page with the engine's browser.
+ *
+ * A mutation rather than a query, because a render is an *action*: it costs
+ * about half a gigabyte and a second or two, and it should happen when the user
+ * asks rather than whenever a component mounts. Caching it as a query would
+ * re-render on every remount, which is exactly what the engine's narrow gate
+ * cannot afford.
+ */
+export function useRenderPage() {
+  const { api } = useMediaApi();
+  return useMutation({
+    mutationFn: ({ url, mode }: { url: string; mode: RenderMode }) =>
+      api.render.render(url, mode),
   });
 }
 

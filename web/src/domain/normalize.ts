@@ -206,6 +206,7 @@ export function normalizeProbe(w: WireProbeResult): ProbeResult {
 }
 
 export function normalizeCapabilities(w: WireCapabilities): Capabilities {
+  const r = w.render;
   return {
     version: w.version ?? '1',
     engineVersion: w.engine_version ?? null,
@@ -216,6 +217,18 @@ export function normalizeCapabilities(w: WireCapabilities): Capabilities {
     maxBodyBytes: typeof w.max_body_bytes === 'number' ? w.max_body_bytes : null,
     workers: typeof w.workers === 'number' ? w.workers : null,
     ffmpeg: typeof w.ffmpeg === 'boolean' ? w.ffmpeg : null,
+    // An engine that did not report rendering is treated as unable to, which is
+    // the safe reading: the console then never offers a control it cannot honour.
+    render: r
+      ? {
+          enabled: Boolean(r.enabled),
+          available: Boolean(r.available),
+          maxConcurrent: typeof r.max_concurrent === 'number' ? r.max_concurrent : 1,
+          timeoutSeconds: typeof r.timeout_seconds === 'number' ? r.timeout_seconds : 20,
+          viewportWidth: typeof r.viewport_width === 'number' ? r.viewport_width : 1280,
+          viewportHeight: typeof r.viewport_height === 'number' ? r.viewport_height : 900,
+        }
+      : null,
   };
 }
 

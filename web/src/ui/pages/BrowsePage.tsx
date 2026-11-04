@@ -19,7 +19,14 @@ import { Spinner } from '../primitives/Spinner';
 import { Note } from '../primitives/Note';
 import { IconSearch, IconRefresh, IconFolder, IconImage, IconMusic, IconFile } from '../primitives/Icons';
 import { formatBytes } from '../../hooks/view-models';
-import { browseKindLabel, type BrowseFilter, type BrowseItem, type BrowseKind } from '../../hooks';
+import {
+  browseKindLabel,
+  type BrowseFilter,
+  type BrowseItem,
+  type BrowseKind,
+  type RenderFailure,
+  type RenderMode,
+} from '../../hooks';
 
 export interface BrowsePageProps {
   term: string;
@@ -60,12 +67,25 @@ export interface BrowsePageProps {
   filter: BrowseFilter;
   onFilterChange: (filter: BrowseFilter) => void;
 
-  /** Where the engine will serve the page bytes from, for the frame. */
-  frameUrl: string;
-  /** Whether the site permits being shown here; null while unknown. */
-  framable: boolean | null;
-  /** Which header refused framing, when one did. */
-  frameBlocker: string | null;
+  /** Whether the engine can render a page here at all. */
+  canRender: boolean;
+  /**
+   * The rendered page, once one has been made. Null until the user asks, because
+   * a render is an expensive action rather than something a mount should do.
+   */
+  rendered: { url: string; mode: RenderMode } | null;
+  /** True while a render is in flight. */
+  rendering: boolean;
+  /** Why the last render failed, when it did. */
+  renderFailure: RenderFailure | null;
+  /** The page's own title, from the render. */
+  renderedTitle: string | null;
+  /** How long the render took, for the record. */
+  renderMs: number | null;
+  /** Ask for a render in the given mode. */
+  onRender: (mode: RenderMode) => void;
+  /** Clear the rendered result, so the address can be changed. */
+  onClearRender: () => void;
 }
 
 export type BrowseMode = 'search' | 'url' | 'page';
@@ -77,6 +97,48 @@ const KIND_FILTERS: ReadonlyArray<{ id: BrowseKind | 'all'; label: string }> = [
   { id: 'video', label: 'Video' },
   { id: 'document', label: 'Documents' },
 ];
+
+/**
+ * What to say when a render did not happen.
+ *
+ * Each reason gets its own sentence, because they need different responses: a
+ * busy renderer is worth retrying, a disabled one never will be, and a refused
+ * URL needs the address changed.
+ */
+function renderFailureLabel(f: RenderFailure): string {
+  switch (f) {
+    case 'disabled':
+      return 'Rendering is turned off on this engine';
+    case 'unavailable':
+      return 'This engine has no browser installed, so it cannot render pages';
+    case 'busy':
+      return 'The renderer is busy with another page — try again in a moment';
+    case 'timeout':
+      return 'That page took too long to render and was stopped';
+    case 'refused':
+      return 'That address cannot be rendered — only public http(s) pages can';
+    default:
+      return 'That page could not be rendered';
+  }
+}
+
+/** The same, as a longer explanation for the empty state. */
+function renderFailureDetail(f: RenderFailure): string {
+  switch (f) {
+    case 'disabled':
+      return 'The engine has rendering turned off. It is started with --render on a host that has a browser.';
+    case 'unavailable':
+      return 'Rendering needs a browser on the engine host. The engine reports this in its capabilities, so the control is only offered where it works.';
+    case 'busy':
+      return 'Only a few pages can be rendered at once, because each one costs about half a gigabyte. Nothing is queued — ask again shortly.';
+    case 'timeout':
+      return 'A page that never finishes loading is stopped at the engine’s limit rather than left to run.';
+    case 'refused':
+      return 'Only public http(s) pages are rendered. A file:// path would read the engine’s disk, and loopback or link-local addresses are refused.';
+    default:
+      return 'The browser could not produce a picture of that page.';
+  }
+}
 
 /** A glyph per kind, so a card is scannable when it has no thumbnail. */
 function KindGlyph({ kind }: { kind: BrowseKind }) {
@@ -122,9 +184,14 @@ export function BrowsePage(props: BrowsePageProps) {
     sourceTitle,
     filter,
     onFilterChange,
-    frameUrl,
-    framable,
-    frameBlocker,
+    canRender,
+    rendered,
+    rendering,
+    renderFailure,
+    renderedTitle,
+    renderMs,
+    onRender,
+    onClearRender,
   } = props;
 
   const debounced = useDebounced(term, 350);
@@ -134,9 +201,14 @@ export function BrowsePage(props: BrowsePageProps) {
 
   const subtitle = useMemo(() => {
     if (byPage) {
-      if (!sourceUrl.trim()) return 'View a page as a browser would — the engine fetches it, so nothing is bound by CORS';
-      if (framable === null) return 'Fetching…';
-      if (framable === false) return 'That site refuses to be shown inside another page';
+      if (!canRender) return 'This engine cannot render pages';
+      if (!sourceUrl.trim()) return 'View a page as a real browser would — the engine renders it';
+      if (rendering) return 'Rendering that page…';
+      if (renderFailure) return renderFailureLabel(renderFailure);
+      if (rendered) {
+        const label = renderedTitle ? `“${renderedTitle}”` : 'that page';
+        return renderMs ? `${label} — rendered in ${(renderMs / 1000).toFixed(1)}s` : label;
+      }
       return sourceUrl.trim();
     }
     if (byUrl) {
@@ -153,7 +225,23 @@ export function BrowsePage(props: BrowsePageProps) {
     if (items.length === 0) return `No results for “${term.trim()}”`;
     const totalLabel = total > 0 ? ` of about ${total.toLocaleString()}` : '';
     return `${items.length}${totalLabel} result${items.length === 1 ? '' : 's'} for “${term.trim()}”`;
-  }, [byPage, framable, byUrl, sourceUrl, sourceTitle, term, loading, error, items.length, total]);
+  }, [
+    byPage,
+    canRender,
+    rendering,
+    renderFailure,
+    rendered,
+    renderedTitle,
+    renderMs,
+    byUrl,
+    sourceUrl,
+    sourceTitle,
+    term,
+    loading,
+    error,
+    items.length,
+    total,
+  ]);
 
   const empty = byUrl
     ? sourceUrl.trim()
@@ -215,11 +303,13 @@ export function BrowsePage(props: BrowsePageProps) {
             </div>
             <Button
               variant="primary"
-              onClick={onReadUrl}
-              loading={loading}
-              disabled={!/^https?:\/\/\S+$/i.test(sourceUrl.trim())}
+              onClick={() => (byPage ? onRender('image') : onReadUrl())}
+              loading={byPage ? rendering : loading}
+              disabled={
+                !/^https?:\/\/\S+$/i.test(sourceUrl.trim()) || (byPage && !canRender)
+              }
             >
-              <IconSearch /> {byPage ? 'Show' : 'Read'}
+              <IconSearch /> {byPage ? 'Render' : 'Read'}
             </Button>
           </div>
         ) : (
@@ -289,54 +379,102 @@ export function BrowsePage(props: BrowsePageProps) {
         )}
       </Card>
 
-      {/* The page view: the site itself, in a frame, exactly as a browser would
-          show it — or a plain statement of why it cannot be shown here. */}
+      {/* The page view: the site, drawn by the engine's browser. This is what
+          makes a page that forbids framing, or that builds itself with
+          JavaScript, showable at all — the site's policy governs a frame, not a
+          picture we drew ourselves. */}
       {byPage && (
         <>
-          {!sourceUrl.trim() ? (
+          {!canRender ? (
             <Card>
               <EmptyState
-                title="Paste an address to view"
-                description="The engine fetches the page and it is shown here. A site that forbids being embedded cannot be shown, and will say so."
+                title="This engine cannot render pages"
+                description="Rendering needs a browser on the engine host and is turned on deliberately. The engine reports this in its capabilities, so this control is only offered where it works."
               />
             </Card>
-          ) : framable === false ? (
+          ) : rendering ? (
+            <Card>
+              <div className="browse__rendering">
+                <Spinner size="lg" />
+                <p className="browse__rendering-note">
+                  Rendering with a real browser. This takes a second or two, and a page that never
+                  finishes is stopped rather than left to run.
+                </p>
+              </div>
+            </Card>
+          ) : renderFailure ? (
             <Card>
               <EmptyState
-                title="This site does not allow being shown here"
-                description={`It refuses to be embedded in another page${
-                  frameBlocker ? ` (${frameBlocker})` : ''
-                }, which is a rule the browser enforces — not something this app can work around. Open it in a new tab instead.`}
+                title={renderFailureLabel(renderFailure)}
+                description={renderFailureDetail(renderFailure)}
               />
               <div className="browse__page-actions">
-                <a className="btn btn--primary" href={sourceUrl} target="_blank" rel="noreferrer">
+                <Button onClick={() => onRender('image')}>Try again</Button>
+                <a className="btn btn--sm" href={sourceUrl} target="_blank" rel="noreferrer">
                   Open in a new tab
                 </a>
               </div>
             </Card>
-          ) : framable === null ? (
-            <div className="browse__loading">
-              <Spinner size="lg" />
-            </div>
-          ) : (
+          ) : rendered ? (
             <div className="browse__page">
               <div className="browse__page-bar">
                 <span className="browse__page-url" title={sourceUrl}>
                   {sourceUrl}
                 </span>
+                {/* Two ways to look at the same render: a picture, or the DOM
+                    after its scripts ran. The picture is the default because a
+                    PNG cannot be sanitised wrongly. */}
+                <div className="browse__modes" role="group" aria-label="How to show the page">
+                  <button
+                    type="button"
+                    className={rendered.mode === 'image' ? 'browse__mode is-active' : 'browse__mode'}
+                    aria-pressed={rendered.mode === 'image'}
+                    onClick={() => onRender('image')}
+                  >
+                    Picture
+                  </button>
+                  <button
+                    type="button"
+                    className={rendered.mode === 'html' ? 'browse__mode is-active' : 'browse__mode'}
+                    aria-pressed={rendered.mode === 'html'}
+                    onClick={() => onRender('html')}
+                  >
+                    Page text
+                  </button>
+                </div>
+                <Button size="sm" onClick={onClearRender}>
+                  Clear
+                </Button>
                 <a className="btn btn--sm" href={sourceUrl} target="_blank" rel="noreferrer">
                   Open in a new tab
                 </a>
               </div>
-              <iframe
-                className="browse__frame"
-                src={frameUrl}
-                title={sourceUrl}
-                // The engine fetched these bytes; the frame only renders them.
-                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-                referrerPolicy="no-referrer"
-              />
+              {rendered.mode === 'image' ? (
+                <img
+                  className="browse__shot"
+                  src={rendered.url}
+                  alt={`Rendered view of ${sourceUrl}`}
+                />
+              ) : (
+                <iframe
+                  className="browse__frame"
+                  src={rendered.url}
+                  title={`Rendered text of ${sourceUrl}`}
+                  // The rendered DOM still contains the page's own markup, so it
+                  // is framed without same-origin: it can draw itself but cannot
+                  // reach into the console.
+                  sandbox=""
+                  referrerPolicy="no-referrer"
+                />
+              )}
             </div>
+          ) : (
+            <Card>
+              <EmptyState
+                title="Render a page"
+                description="The engine runs a real browser and draws the page, so a site that forbids being embedded — or that builds itself with JavaScript — still shows. Press Render."
+              />
+            </Card>
           )}
         </>
       )}

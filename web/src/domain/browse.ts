@@ -68,6 +68,10 @@ export type BrowseFilter = 'media' | 'all';
  * `framable` is whether the site permits being embedded. A browser enforces the
  * site's own X-Frame-Options / CSP on the framed document, so a refusal is
  * reported up front rather than left as a frame that silently stays blank.
+ *
+ * This is the *fetch* path. A site that refuses framing — or that builds itself
+ * with JavaScript — cannot be shown this way, which is why there is also the
+ * renderer: it runs a real browser and returns a picture instead.
  */
 export interface FetchedPage {
   /** The URL the engine should be asked to serve the bytes from. */
@@ -76,6 +80,34 @@ export interface FetchedPage {
   /** Which header refused framing, when one did. */
   blockedBy: string | null;
 }
+
+/**
+ * What the renderer produced for a page.
+ *
+ *   image  a picture of the page, which is the mode that cannot be got subtly
+ *          wrong: a PNG has no scripts to sanitise.
+ *   html   the rendered DOM, after its scripts have run.
+ */
+export type RenderMode = 'image' | 'html';
+
+/** A rendered page, or the reason there is none. */
+export interface RenderedPage {
+  /** Where the console points an <img> or a frame. */
+  url: string;
+  mode: RenderMode;
+}
+
+/**
+ * Why a render did not happen. Kept as a small set so the console can say
+ * something specific for each rather than one vague failure.
+ */
+export type RenderFailure =
+  | 'disabled'   /* the engine has rendering turned off */
+  | 'unavailable'/* enabled, but no browser on the host */
+  | 'busy'       /* the gate is full; worth retrying */
+  | 'timeout'    /* the page did not settle */
+  | 'refused'    /* the URL is not one we render */
+  | 'failed';    /* anything else */
 
 export interface BrowseResult {
   items: BrowseItem[];

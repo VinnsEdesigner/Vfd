@@ -11,7 +11,18 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
-import { MediaApiProvider, useDownload, useDownloads, useCreateDownload, useConvertDownload, useBrowseUrl, useHealth, useSystemStorage, useSetStorageLocation } from '../src/hooks';
+import {
+  MediaApiProvider,
+  useDownload,
+  useDownloads,
+  useCreateDownload,
+  useConvertDownload,
+  useBrowseUrl,
+  useRenderPage,
+  useHealth,
+  useSystemStorage,
+  useSetStorageLocation,
+} from '../src/hooks';
 import { useConnectionStore, connectionSettings, DEFAULT_CONNECTION } from '../src/stores/connection-store';
 import { useStorageStore, effectiveCredentials } from '../src/stores/storage-store';
 import { useDownloadFormStore } from '../src/stores/download-form-store';
@@ -57,11 +68,16 @@ function makeFetch(routes: Record<string, (init: RequestInit) => unknown>): {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    const result = handler(init) as { status?: number; json: unknown };
+    const result = handler(init) as {
+      status?: number;
+      json: unknown;
+      /** Extra response headers, for the endpoints whose answer is a header. */
+      headers?: Record<string, string>;
+    };
     const status = result.status ?? 200;
     return new Response(JSON.stringify(result.json), {
       status,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(result.headers ?? {}) },
     });
   }) as unknown as typeof fetch;
   return { fetchImpl, calls };
@@ -584,6 +600,102 @@ describe('useBrowseUrl', () => {
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data?.items[0]?.title).toBe('About us');
+  });
+});
+
+describe('useRenderPage', () => {
+  it('reports success with the title and timing from the headers', async () => {
+    const { fetchImpl, calls } = makeFetch({
+      'GET /api/v1/render': () => ({
+        status: 200,
+        headers: {
+          'X-Vyzorix-Render': 'ok',
+          'X-Vyzorix-Title': 'Example Domain',
+          'X-Vyzorix-Render-Ms': '1234',
+        },
+        json: {},
+      }),
+    });
+    const { result } = renderHook(() => useRenderPage(), { wrapper: wrapper(fetchImpl) });
+    let out: { ok: boolean; objectUrl?: string; title?: string | null } | undefined;
+    await act(async () => {
+      out = (await result.current.mutateAsync({
+        url: 'https://example.com/',
+        mode: 'image',
+      })) as { ok: boolean; objectUrl?: string; title?: string | null };
+    });
+    // The mutation's own return value is the result. React Query's `data` only
+    // lands after the observer re-renders, so reading it here would race.
+    expect(out?.ok).toBe(true);
+    if (out?.ok) {
+      // A blob URL, because an <img> cannot send the bearer token: the bytes are
+      // fetched with auth and handed to the browser, not pointed at.
+      expect(out.objectUrl).toMatch(/^blob:/);
+    }
+    // It asks the engine, and asks for the image mode by default.
+    const req = calls.find((c) => c.url.includes('/api/v1/render'));
+    expect(req?.url).toContain('mode=image');
+    expect(req?.url).toContain(encodeURIComponent('https://example.com/'));
+  });
+
+  it('turns a full gate into "busy", so the user is told to retry', async () => {
+    const { fetchImpl } = makeFetch({
+      'GET /api/v1/render': () => ({
+        status: 503,
+        json: { error: 'the renderer is busy', status: 503, retry_after: 3 },
+      }),
+    });
+    const { result } = renderHook(() => useRenderPage(), { wrapper: wrapper(fetchImpl) });
+    let out: { ok: boolean; failure?: string } | undefined;
+    await act(async () => {
+      out = (await result.current.mutateAsync({
+        url: 'https://example.com/',
+        mode: 'image',
+      })) as { ok: boolean; failure?: string };
+    });
+    expect(out?.ok).toBe(false);
+    expect(out?.failure).toBe('busy');
+  });
+
+  it('separates "turned off" from "no browser", which are both 503', async () => {
+    for (const [detail, expected] of [
+      ['rendering is not enabled on this engine', 'disabled'],
+      ['no browser is installed on the engine host', 'unavailable'],
+    ] as const) {
+      const { fetchImpl } = makeFetch({
+        'GET /api/v1/render': () => ({ status: 503, json: { error: detail, status: 503 } }),
+      });
+      const { result } = renderHook(() => useRenderPage(), { wrapper: wrapper(fetchImpl) });
+      let out: { ok: boolean; failure?: string } | undefined;
+      await act(async () => {
+        out = (await result.current.mutateAsync({
+          url: 'https://example.com/',
+          mode: 'image',
+        })) as { ok: boolean; failure?: string };
+      });
+      expect(out?.failure).toBe(expected);
+    }
+  });
+
+  it('reports a timeout and a refusal distinctly', async () => {
+    const cases = [
+      [504, { error: 'the page did not finish within 20 seconds', status: 504 }, 'timeout'],
+      [400, { error: 'only public http(s) pages can be rendered', status: 400 }, 'refused'],
+    ] as const;
+    for (const [status, json, expected] of cases) {
+      const { fetchImpl } = makeFetch({
+        'GET /api/v1/render': () => ({ status, json }),
+      });
+      const { result } = renderHook(() => useRenderPage(), { wrapper: wrapper(fetchImpl) });
+      let out: { ok: boolean; failure?: string } | undefined;
+      await act(async () => {
+        out = (await result.current.mutateAsync({
+          url: 'https://example.com/',
+          mode: 'image',
+        })) as { ok: boolean; failure?: string };
+      });
+      expect(out?.failure).toBe(expected);
+    }
   });
 });
 

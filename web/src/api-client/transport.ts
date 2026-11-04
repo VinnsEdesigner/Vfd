@@ -32,6 +32,19 @@ export interface Transport {
    * for instance. The body is read and discarded so the connection is released.
    */
   head(options: RequestOptions): Promise<ResponseHeaders>;
+  /**
+   * Fetch bytes *and* headers together, with the same auth as any other request.
+   *
+   * Needed because an `<img>` or `<iframe>` sends no Authorization header, so a
+   * protected resource cannot simply be pointed at — the console fetches it and
+   * hands the browser a blob instead. Without this, a render would work on an
+   * open engine and 401 on a secured one, which is the worst kind of difference:
+   * it only shows up once someone turns auth on.
+   *
+   * The headers come back too, because for these endpoints the metadata *is* the
+   * answer — whether a render succeeded, and why it did not.
+   */
+  fetchWithHeaders(options: RequestOptions): Promise<{ blob: Blob; headers: ResponseHeaders }>;
   /** Resolve a path to an absolute URL (for links shown in the UI). */
   resolve(path: string): string;
 }
@@ -146,6 +159,33 @@ export function createTransport(config: TransportConfig): Transport {
       // body that is huge or not text must not be parsed here.
       await res.arrayBuffer().catch(() => undefined);
       return out;
+    },
+
+    async fetchWithHeaders(
+      options: RequestOptions,
+    ): Promise<{ blob: Blob; headers: ResponseHeaders }> {
+      const url = `${base}${options.path}${buildQuery(options.query)}`;
+      const headers: Record<string, string> = { ...config.defaultHeaders, ...options.headers };
+      if (config.authToken) headers['Authorization'] = `Bearer ${config.authToken}`;
+
+      let res: Response;
+      try {
+        res = await fetchImpl(url, {
+          method: options.method ?? 'GET',
+          headers,
+          signal: options.signal,
+        });
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
+        throw new NetworkError(`network request to ${options.path} failed`, cause);
+      }
+      if (!res.ok) await parseError(res);
+
+      const out: ResponseHeaders = {};
+      res.headers.forEach((value, key) => {
+        out[key.toLowerCase()] = value;
+      });
+      return { blob: await res.blob(), headers: out };
     },
   };
 }

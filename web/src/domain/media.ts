@@ -144,6 +144,26 @@ export interface Capabilities {
   workers: number | null;
   /** Whether the host actually has ffmpeg, probed by the engine. */
   ffmpeg: boolean | null;
+  /**
+   * Whether a page can be rendered here, and within what bounds.
+   *
+   * Null when the engine predates rendering, or did not report it — which is
+   * treated the same as unavailable, so the console never offers a control the
+   * engine cannot honour.
+   */
+  render: RenderCapability | null;
+}
+
+/** How the engine can render a page. */
+export interface RenderCapability {
+  enabled: boolean;
+  /** Enabled *and* a browser was found. Only this means "can do it". */
+  available: boolean;
+  /** How many renders run at once. More than one means a request may have to wait. */
+  maxConcurrent: number;
+  timeoutSeconds: number;
+  viewportWidth: number;
+  viewportHeight: number;
 }
 
 export interface StorageConfig {

@@ -20,9 +20,15 @@ export {
   useConvertDownload,
 } from './use-downloads';
 export { useProbe, useDetectBytes } from './use-media';
-export { useBrowse, useBrowseUrl, usePageFrame } from './use-browse';
+export { useBrowse, useBrowseUrl, usePageFrame, useRenderPage } from './use-browse';
 export type { UseBrowseArgs } from './use-browse';
-export type { FetchedPage } from '../domain/browse';
+export type {
+  FetchedPage,
+  RenderFailure,
+  RenderMode,
+  RenderedPage,
+} from '../domain/browse';
+export type { RenderCapability } from '../domain/media';
 export { useLocalMedia } from './use-local-media';
 export type { LocalMediaState } from './use-local-media';
 export type { ProbeVariables } from './use-media';

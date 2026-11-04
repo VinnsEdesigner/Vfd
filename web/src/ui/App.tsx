@@ -49,7 +49,7 @@ import {
   useCapabilities,
   useBrowse,
   useBrowseUrl,
-  usePageFrame,
+  useRenderPage,
   useSetStorageLocation,
   useCreateDownload,
   useCancelDownload,
@@ -71,6 +71,8 @@ import {
   type BrowseFilter,
   type BrowseItem,
   type BrowseKind,
+  type RenderFailure,
+  type RenderMode,
 } from '../hooks';
 import { useToast } from './feedback';
 import { ConfirmDialog } from './primitives/ConfirmDialog';
@@ -188,6 +190,19 @@ export function App({ initialView = 'overview' }: AppProps) {
   const [browseUrlSubmitted, setBrowseUrlSubmitted] = useState<string | null>(null);
   /** How much of a URL's page to list: only media, or everything on it. */
   const [browseFilter, setBrowseFilter] = useState<BrowseFilter>('media');
+  /**
+   * The rendered page and how it went.
+   *
+   * Held here rather than in a query because a render is an action: it costs
+   * about half a gigabyte and a second or two, so it happens when asked and not
+   * again on a remount. `rendered` is the URL to show; `renderMs` and the title
+   * come from the engine's headers.
+   */
+  const [rendered, setRendered] = useState<{ url: string; mode: RenderMode } | null>(null);
+  const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
+  const [renderMs, setRenderMs] = useState<number | null>(null);
+  const [renderFailure, setRenderFailure] = useState<RenderFailure | null>(null);
+  const renderPage = useRenderPage();
   const [browseQueueingId, setBrowseQueueingId] = useState<string | null>(null);
   /** A browse result being previewed, if any. */
   const [browsePreview, setBrowsePreview] = useState<BrowseItem | null>(null);
@@ -232,8 +247,6 @@ export function App({ initialView = 'overview' }: AppProps) {
   const setStorageLocation = useSetStorageLocation();
   const browseQuery = useBrowse({ term: browseTerm, kind: browseKind, page: browsePage });
   const browseUrlQuery = useBrowseUrl(browseUrlSubmitted, browseFilter);
-  // Only consulted in the page mode; the query stays idle otherwise.
-  const pageFrameQuery = usePageFrame(browseMode === 'page' ? browseUrlSubmitted : null);
   const createDownload = useCreateDownload();
   const cancelDownload = useCancelDownload();
   const probeUrl = useProbe();
@@ -389,6 +402,57 @@ export function App({ initialView = 'overview' }: AppProps) {
     },
     [cancelDownload, toast],
   );
+
+  /**
+   * Render the page at the address, in the given mode.
+   *
+   * The engine's answer decides what is shown: a success gives the URL to point
+   * at (the image is streamed by the browser, not fetched into JS), and a
+   * failure gives the reason. Nothing is guessed from a missing image, because
+   * an image that never loads cannot say why.
+   */
+  const renderBrowsedPage = useCallback(
+    (mode: RenderMode) => {
+      const url = browseUrl.trim();
+      if (!url) return;
+      setRenderFailure(null);
+      setRendered(null);
+      renderPage
+        .mutateAsync({ url, mode })
+        .then((result) => {
+          if (result.ok) {
+            setRendered({ url: result.objectUrl, mode });
+            setRenderedTitle(result.title);
+            setRenderMs(result.elapsedMs);
+            if (result.truncated) {
+              toast.info('The page was large, so the result was cut short');
+            }
+          } else {
+            setRenderFailure(result.failure);
+          }
+        })
+        .catch((e: unknown) => {
+          setRenderFailure('failed');
+          toast.error('Could not render that page', describeError(e));
+        });
+    },
+    [api.render, browseUrl, renderPage, toast],
+  );
+
+  /**
+   * Release the previous render's blob when a new one replaces it, or when the
+   * view goes away.
+   *
+   * A blob URL pins its bytes in memory until it is revoked, so a user rendering
+   * a dozen pages would otherwise hold a dozen screenshots alive for the life of
+   * the tab. The cleanup runs on every change of the URL and on unmount, which
+   * covers both replacing it and leaving.
+   */
+  useEffect(() => {
+    const url = rendered?.url;
+    if (!url || !url.startsWith('blob:')) return undefined;
+    return () => URL.revokeObjectURL(url);
+  }, [rendered?.url]);
 
   /** The MP4 the engine produced, or null for anything it does not hold. */
   const convertedUrlFor = useCallback(
@@ -1196,17 +1260,19 @@ export function App({ initialView = 'overview' }: AppProps) {
             sourceTitle={browseUrlQuery.data?.title ?? null}
             filter={browseFilter}
             onFilterChange={setBrowseFilter}
-            frameUrl={
-              browseUrlSubmitted
-                ? api.page.frameUrl(browseUrlSubmitted)
-                : ''
-            }
-            framable={
-              browseMode === 'page' && browseUrlSubmitted
-                ? (pageFrameQuery.data?.framable ?? null)
-                : null
-            }
-            frameBlocker={pageFrameQuery.data?.blockedBy ?? null}
+            canRender={Boolean(capabilities?.render?.available)}
+            rendered={rendered}
+            rendering={renderPage.isPending}
+            renderFailure={renderFailure}
+            renderedTitle={renderedTitle}
+            renderMs={renderMs}
+            onRender={renderBrowsedPage}
+            onClearRender={() => {
+              setRendered(null);
+              setRenderedTitle(null);
+              setRenderMs(null);
+              setRenderFailure(null);
+            }}
           />
         )}
 

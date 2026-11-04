@@ -4436,6 +4436,33 @@ input[type='range']:focus-visible {
   border-radius: var(--r-lg);
   background: #fff;
 }
+/* A rendered page: an image, so it cannot run anything. `contain` keeps the
+   whole page visible rather than cropping it; the checkerboard from the image
+   viewer is not wanted here, so the backdrop is the surface. */
+.browse__shot {
+  display: block;
+  width: 100%;
+  max-height: min(78vh, 1000px);
+  object-fit: contain;
+  object-position: top center;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+}
+.browse__rendering {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 48px 24px;
+  text-align: center;
+}
+.browse__rendering-note {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 13px;
+  color: var(--text-3);
+}
 
 .browse__loading {
   display: flex;

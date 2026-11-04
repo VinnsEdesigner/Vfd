@@ -12,7 +12,7 @@
  * this app is for.
  */
 
-import type { ApiClient } from '../api-client';
+import { isApiError, type ApiClient } from '../api-client';
 import { normalizeBrowseResult } from '../domain/normalize';
 import {
   browseKindFor,
@@ -22,6 +22,8 @@ import {
   type BrowseQuery,
   type BrowseResult,
   type FetchedPage,
+  type RenderFailure,
+  type RenderMode,
 } from '../domain/browse';
 import type { WireBrowseResult } from '../domain/wire';
 
@@ -178,6 +180,80 @@ export function createPageResource(client: ApiClient) {
 }
 
 export type PageResource = ReturnType<typeof createPageResource>;
+
+/**
+ * Rendering a page with the engine's browser.
+ *
+ * The image is not fetched here: the console points an <img> at the engine's
+ * render URL, so the browser streams and caches it the way it does any other
+ * image, and a large render never passes through JS memory.
+ *
+ * What *is* asked for is the outcome, because a render can fail in ways a
+ * broken image cannot explain — the gate may be full, the page may never
+ * settle, the URL may be one we refuse. A header-only request reads that.
+ */
+export function createRenderResource(client: ApiClient) {
+  const path = (url: string, mode: RenderMode) =>
+    `/api/v1/render?url=${encodeURIComponent(url)}&mode=${mode}`;
+
+  return {
+    /** Where a rendered page is served from, for a link or a new tab. */
+    url(url: string, mode: RenderMode = 'image'): string {
+      return client.transport.resolve(path(url, mode));
+    },
+
+    /**
+     * Render a page and return a URL the browser can display.
+     *
+     * The bytes are fetched *here* rather than by pointing an `<img>` at the
+     * engine, because an image request carries no Authorization header: it would
+     * work on an open engine and 401 on a secured one, silently showing a broken
+     * image. Fetching with the same auth as every other call, then handing over a
+     * blob, makes the two cases identical.
+     *
+     * The outcome comes from the response headers, so a failure is a specific
+     * reason rather than an image that never loads.
+     */
+    async render(url: string, mode: RenderMode = 'image', signal?: AbortSignal) {
+      try {
+        const res = await client.transport.fetchWithHeaders({
+          method: 'GET',
+          path: path(url, mode),
+          ...(signal ? { signal } : {}),
+        });
+        const objectUrl = URL.createObjectURL(res.blob);
+        return {
+          ok: true as const,
+          /** The blob URL to display. The caller must revoke it when done. */
+          objectUrl,
+          status: res.headers['x-vyzorix-render'] ?? 'ok',
+          title: res.headers['x-vyzorix-title'] ?? null,
+          elapsedMs: Number(res.headers['x-vyzorix-render-ms'] ?? 0),
+          truncated: res.headers['x-vyzorix-render-truncated'] === 'yes',
+        };
+      } catch (e) {
+        return { ok: false as const, failure: renderFailureFor(e) };
+      }
+    },
+  };
+}
+
+export type RenderResource = ReturnType<typeof createRenderResource>;
+
+/** Map a failed render request onto the reason the console should show. */
+function renderFailureFor(e: unknown): RenderFailure {
+  const status = isApiError(e) ? e.status : 0;
+  const detail = isApiError(e) ? (e.detail ?? '') : '';
+  if (status === 503) {
+    // Both "not enabled" and "no browser" are 503, so the detail decides which.
+    if (/not enabled/i.test(detail)) return 'disabled';
+    if (/no browser/i.test(detail)) return 'unavailable';
+    return 'busy';
+  }
+  if (status === 504) return 'timeout';
+  if (status === 400) return 'refused';
+  return 'failed';
+}
 
 /**
  * Search Commons. Returns candidates only — nothing is downloaded here.
