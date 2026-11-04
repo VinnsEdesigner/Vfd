@@ -27,6 +27,14 @@ export type { UseLiveSession } from './use-live';
 export { useLiveVideo } from './use-live-video';
 export type { UseLiveVideo, LiveVideoStatus } from './use-live-video';
 export type { LiveVideoState, LiveVideoViewport } from '../domain/rtc';
+/* The media a live page loaded, and how to read its numbers. Re-exported here
+ * because `ui` may only reach `domain` through this layer. */
+export type {
+  LiveMediaItem,
+  LiveMediaKind,
+  LiveMediaVariant,
+} from '../domain/live-media';
+export { formatMediaSize, formatBandwidth, mediaFormatLabel } from '../domain/live-media';
 export type { LiveStreamStats } from '../rest/browse';
 export type {
   FetchedPage,

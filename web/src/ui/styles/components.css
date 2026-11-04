@@ -4833,3 +4833,232 @@ input[type='range']:focus-visible {
   font-size: 11px;
   color: var(--text-3);
 }
+/* ------------------------------------------------------------------ */
+/* The media HUD                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The overlay sits over the stage rather than beside it.
+ *
+ * The page underneath is the point of the view, so a listing that pushed it
+ * aside would make you choose between seeing the page and seeing what it offers.
+ * An overlay keeps both, and dismissing it does not end the session.
+ *
+ * The stage is `position: relative` for this to anchor to, which it already is
+ * for the blank/loading states.
+ */
+.hud {
+  position: absolute;
+  inset: 8px 8px 8px auto;
+  width: min(380px, calc(100% - 16px));
+  max-height: calc(100% - 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  z-index: 5;
+  /* The list scrolls, not the page behind it. */
+  overscroll-behavior: contain;
+}
+
+.hud__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.hud__title {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.hud__count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+}
+
+.hud__bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.hud__more {
+  flex: 0 0 auto;
+  text-align: left;
+  font-size: 12px;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.hud__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.hud__row {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hud__row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hud__kind {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.hud__kind--manifest {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.hud__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.hud__name {
+  font-size: 12px;
+  color: var(--text);
+  /* A URL can be long; one line keeps every row the same height and the list
+   * scannable, and the full value is in the title attribute. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hud__tag {
+  font-size: 11px;
+  color: var(--text-3);
+  background: var(--surface-3);
+  border-radius: var(--r-sm);
+  padding: 1px 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud__row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.hud__remove {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.hud__remove:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+/* The qualities of a manifest, as a row of choices. */
+.hud__variants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hud__variant {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.hud__variant.is-active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.hud__variant-rate {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 8px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.hud__empty p {
+  margin: 0;
+}
+
+/* The count on the toolbar button that opens the overlay. */
+.live__badge {
+  margin-left: 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}

@@ -161,9 +161,18 @@ export interface LiveFrame {
  * socket handler pairs them into a `LiveFrame` rather than routing them through
  * this.
  */
+import type {
+  LiveMediaItem,
+  LiveMediaKind,
+  LiveMediaVariant,
+} from './live-media';
+
+export type { LiveMediaItem, LiveMediaKind, LiveMediaVariant };
+
 export type LiveMessage =
   | { kind: 'ready'; url: string; width: number; height: number }
   | { kind: 'state'; page: LivePageState }
+  | { kind: 'media'; items: LiveMediaItem[] }
   | { kind: 'closed'; reason: string }
   | { kind: 'error'; message: string };
 

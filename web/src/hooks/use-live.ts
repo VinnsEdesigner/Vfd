@@ -21,7 +21,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMediaApi } from './provider';
-import type { LiveFailure, LiveFrame, LiveMessage, LivePageState } from '../domain/browse';
+import type {
+  LiveFailure,
+  LiveFrame,
+  LiveMediaItem,
+  LiveMessage,
+  LivePageState,
+} from '../domain/browse';
 import type { LiveSession, LiveStreamStats } from '../rest/browse';
 
 export type LiveStatus = 'idle' | 'connecting' | 'open' | 'closed';
@@ -82,6 +88,22 @@ export interface UseLiveSession {
   viewport: { width: number; height: number } | null;
   /** What the stream is doing: frames received, skipped, and the worst gap. */
   stats: LiveStreamStats | null;
+  /**
+   * The media the page has loaded, newest first.
+   *
+   * Empty until the HUD asks the engine to start collecting: the collection is
+   * per-request bookkeeping on the engine, and a viewer who never opens the list
+   * should not pay for it.
+   */
+  media: LiveMediaItem[];
+  /** Whether the engine is collecting. */
+  watchingMedia: boolean;
+  /** Turn collection on or off. */
+  watchMedia: (on: boolean) => void;
+  /** Forget one entry, for this viewing. */
+  forgetMedia: (url: string) => void;
+  /** Ask the engine to re-read the page for media. */
+  rescanMedia: () => void;
   /** Why the session ended, when it did. Null while it is alive or idle. */
   failure: LiveFailure | null;
   /** A sentence describing the failure or close. */
@@ -104,6 +126,16 @@ export function useLiveSession(): UseLiveSession {
   const [page, setPage] = useState<LivePageState | null>(null);
   const [failure, setFailure] = useState<LiveFailure | null>(null);
   const [reason, setReason] = useState<string | null>(null);
+  const [media, setMedia] = useState<LiveMediaItem[]>([]);
+  const [watchingMedia, setWatchingMedia] = useState(false);
+  /**
+   * Entries the viewer has removed.
+   *
+   * Held here rather than on the engine, because "not interested in this one" is
+   * about this viewing, not about the page: a rescan would otherwise bring it
+   * straight back.
+   */
+  const forgottenRef = useRef<Set<string>>(new Set());
 
   const sessionRef = useRef<LiveSession | null>(null);
   /** The previous frame's blob URL, so it can be revoked when replaced. */
@@ -135,6 +167,8 @@ export function useLiveSession(): UseLiveSession {
       setPage(null);
       setFailure(null);
       setReason(null);
+      setMedia([]);
+      forgottenRef.current = new Set();
 
       /*
        * On a touch device the viewport is fixed, not the caller's size.
@@ -161,6 +195,11 @@ export function useLiveSession(): UseLiveSession {
         },
         onMessage: (m: LiveMessage) => {
           if (m.kind === 'state') setPage(m.page);
+          else if (m.kind === 'media') {
+            // Filter out what the viewer removed, so a rescan does not undo it.
+            const keep = m.items.filter((i) => !forgottenRef.current.has(i.url));
+            setMedia(keep);
+          }
           else if (m.kind === 'closed') {
             setFailure('closed');
             setReason(m.reason);
@@ -235,6 +274,23 @@ export function useLiveSession(): UseLiveSession {
     sessionRef.current?.send(message);
   }, []);
 
+  const watchMedia = useCallback(
+    (on: boolean) => {
+      setWatchingMedia(on);
+      sessionRef.current?.send({ type: 'watch', on });
+    },
+    [],
+  );
+
+  const forgetMedia = useCallback((url: string) => {
+    forgottenRef.current.add(url);
+    setMedia((prev) => prev.filter((i) => i.url !== url));
+  }, []);
+
+  const rescanMedia = useCallback(() => {
+    sessionRef.current?.send({ type: 'rescan' });
+  }, []);
+
   // A session left open when the component goes away would be a browser held for
   // nobody, so it is closed on unmount.
   useEffect(
@@ -247,5 +303,21 @@ export function useLiveSession(): UseLiveSession {
     [],
   );
 
-  return { status, viewport, frame, page, stats, failure, reason, open, close, send };
+  return {
+    status,
+    viewport,
+    frame,
+    page,
+    stats,
+    media,
+    watchingMedia,
+    watchMedia,
+    forgetMedia,
+    rescanMedia,
+    failure,
+    reason,
+    open,
+    close,
+    send,
+  };
 }

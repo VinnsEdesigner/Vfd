@@ -398,6 +398,31 @@ export function IconMove(props: IconProps) {
   );
 }
 
+export function IconDownload(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <path d="M10 3.5v8M6.8 8.6L10 11.8l3.2-3.2" {...stroke} strokeWidth={1.6} />
+      <path d="M4 14.5h12" {...stroke} strokeWidth={1.6} />
+    </svg>
+  );
+}
+
+export function IconArrowLeft(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <path d="M11.5 5.5L7 10l4.5 4.5" {...stroke} strokeWidth={1.6} />
+    </svg>
+  );
+}
+
+export function IconArrowRight(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>
+      <path d="M8.5 5.5L13 10l-4.5 4.5" {...stroke} strokeWidth={1.6} />
+    </svg>
+  );
+}
+
 export function IconChevronDown(props: IconProps) {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>

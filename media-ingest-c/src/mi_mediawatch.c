@@ -125,7 +125,7 @@ static mw_entry *find(mi_mediawatch *w, const char *url) {
 
 int mi_mediawatch_note(mi_mediawatch *w, const char *url, const char *mime,
                        const char *resource_type, int64_t bytes) {
-    if (!w || !w->enabled || !url || !*url) return 0;
+    if (!w || !url || !*url) return 0;
 
     const char *kind = classify(mime, resource_type, url);
     if (!kind) return 0;
@@ -140,6 +140,31 @@ int mi_mediawatch_note(mi_mediawatch *w, const char *url, const char *mime,
     if (strstr(url, ".ts") || strstr(url, ".m4s") || strstr(url, ".cmfv") ||
         strstr(url, ".cmfa"))
         return 0;
+
+    /*
+     * A URL with no media type and no media extension is not media.
+     *
+     * The network view always knows the content type, but a *rescan* only has
+     * what the page's markup says — and a page's markup is full of URLs that are
+     * not media: inline scripts, stylesheets, tracking beacons. Listing those
+     * would bury the handful of things someone actually wants, so an entry with
+     * no type is only kept when its extension says it is media.
+     */
+    if (!mime || !*mime) {
+        static const char *const EXTS[] = {
+            ".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".flv",
+            ".mp3", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac", ".wav",
+            ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".svg",
+            ".m3u8", ".mpd",
+            NULL};
+        int ok = 0;
+        for (size_t i = 0; EXTS[i]; i++) {
+            size_t el = strlen(EXTS[i]);
+            size_t ul = strlen(url);
+            if (ul >= el && !strncasecmp(url + ul - el, EXTS[i], el)) { ok = 1; break; }
+        }
+        if (!ok) return 0;
+    }
 
     mw_entry *e = find(w, url);
     if (e) {

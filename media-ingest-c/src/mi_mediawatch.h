@@ -41,8 +41,15 @@ void mi_mediawatch_free(mi_mediawatch *w);
  * is not what this one has. */
 void mi_mediawatch_clear(mi_mediawatch *w);
 
-/* Whether to record at all. Off means the events are ignored, so a viewer that
- * never opens the list pays nothing. */
+/*
+ * Whether the list is being published.
+ *
+ * The collection itself always runs: it is a bounded list of URLs and sizes, and
+ * the alternative is a list that is empty when someone first opens it, because
+ * the page's requests happened before they asked. What this switches is whether
+ * a change is *reported* — that is the part with a cost, since it is a socket
+ * message per change.
+ */
 void mi_mediawatch_set_enabled(mi_mediawatch *w, int on);
 int mi_mediawatch_enabled(const mi_mediawatch *w);
 

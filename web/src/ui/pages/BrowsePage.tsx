@@ -113,6 +113,10 @@ export interface BrowsePageProps {
    */
   canStreamVideo: boolean;
   video: NonNullable<InteractiveViewProps['video']>;
+  /** The media the live page has loaded, and the controls for collecting it. */
+  liveMedia: NonNullable<InteractiveViewProps['media']>;
+  /** Queue a download for something the live page loaded. */
+  onDownloadLive: (url: string, quality?: string) => void;
 }
 
 export type BrowseMode = 'search' | 'url' | 'page';
@@ -243,6 +247,8 @@ export function BrowsePage(props: BrowsePageProps) {
     live,
     canStreamVideo,
     video,
+    liveMedia,
+    onDownloadLive,
   } = props;
 
   /**
@@ -539,9 +545,21 @@ export function BrowsePage(props: BrowsePageProps) {
               )}
 
               {videoActive ? (
-                <InteractiveView url={sourceUrl.trim()} live={live} video={video} useVideo />
+                <InteractiveView
+                  url={sourceUrl.trim()}
+                  live={live}
+                  video={video}
+                  useVideo
+                  media={liveMedia}
+                  onDownload={onDownloadLive}
+                />
               ) : canGoLive && (pageView === 'live' || !canRender) ? (
-                <InteractiveView url={sourceUrl.trim()} live={live} />
+                <InteractiveView
+                  url={sourceUrl.trim()}
+                  live={live}
+                  media={liveMedia}
+                  onDownload={onDownloadLive}
+                />
               ) : rendering ? (
                 <Card>
                   <div className="browse__rendering">

@@ -23,7 +23,7 @@ export default tseslint.config(
   // `e2e-*.cjs` is a Node tool that drives a real browser against the built
   // console; it is not application code, so the browser globals the app is
   // linted against do not apply to it.
-  { ignores: ['dist', 'node_modules', 'coverage', 'mock/**', 'scripts/**', 'e2e-*.cjs'] },
+  { ignores: ['dist', 'node_modules', 'coverage', 'mock/**', 'scripts/**', 'e2e-*.cjs', 'hud-e2e.cjs'] },
   {
     // The service worker runs in a worker global scope, not a window, so its
     // globals (self, caches, fetch) are not the browser ones ESLint knows.

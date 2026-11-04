@@ -794,6 +794,35 @@ export function App({ initialView = 'overview' }: AppProps) {
     [createDownload, runAction],
   );
 
+  /**
+   * Download something the live page loaded.
+   *
+   * A manifest is a *set* of qualities, so the engine transcodes it rather than
+   * fetching one file — that is what `hls: true` asks for, and the chosen
+   * quality is passed along so the engine can prefer it.
+   */
+  const downloadFromLivePage = useCallback(
+    (url: string, quality?: string) => {
+      void runAction(
+        'live-download',
+        async () => {
+          await createDownload.mutateAsync({
+            input: {
+              url,
+              hls: true,
+              upload: false,
+              purge: false,
+              connections: 8,
+              ...(quality ? { quality } : {}),
+            },
+          });
+        },
+        { success: 'Queued', failure: 'Could not queue that media' },
+      );
+    },
+    [createDownload, runAction],
+  );
+
   /** Save a browse result straight onto this device, without the engine. */
   const saveBrowsedToDevice = useCallback(
     (item: BrowseItem) => {
@@ -1347,6 +1376,14 @@ export function App({ initialView = 'overview' }: AppProps) {
             renderedSanitized={renderedSanitized}
             canGoLive={Boolean(capabilities?.interactive?.available)}
             canStreamVideo={Boolean(capabilities?.rtc?.available)}
+            liveMedia={{
+              items: live.media,
+              watching: live.watchingMedia,
+              watch: live.watchMedia,
+              forget: live.forgetMedia,
+              rescan: live.rescanMedia,
+            }}
+            onDownloadLive={downloadFromLivePage}
             video={{
               status: video.status,
               viewport: video.viewport,

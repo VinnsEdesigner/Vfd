@@ -23,12 +23,22 @@
  * this view says plainly that the page is live.
  */
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../primitives/Button';
 import { Spinner } from '../primitives/Spinner';
 import { Note } from '../primitives/Note';
 import { EmptyState } from '../primitives/EmptyState';
-import { IconRefresh, IconExternal, IconX, IconImage } from '../primitives/Icons';
+import {
+  IconRefresh,
+  IconExternal,
+  IconX,
+  IconImage,
+  IconDownload,
+  IconArrowLeft,
+  IconArrowRight,
+} from '../primitives/Icons';
+import { MediaHud } from './MediaHud';
+import type { LiveMediaItem, LiveMediaVariant } from '../../hooks';
 import type { LiveFailure, LiveFrame, LivePageState, LiveStreamStats } from '../../hooks';
 
 import {
@@ -88,6 +98,24 @@ export interface InteractiveViewProps {
   };
   /** Whether to show the video session rather than the JPEG one. */
   useVideo?: boolean;
+  /**
+   * The media the page has loaded, and the controls for collecting it.
+   *
+   * Optional so a caller that has no download facility — a test, a preview —
+   * still renders the page; the HUD button is simply not offered.
+   */
+  media?: {
+    items: LiveMediaItem[];
+    watching: boolean;
+    watch: (on: boolean) => void;
+    forget: (url: string) => void;
+    rescan: () => void;
+  };
+  /** Queue a download for a URL. `quality` is the variant label, when one was
+   *  chosen from a manifest. */
+  onDownload?: (url: string, quality?: string) => void;
+  /** URLs already queued, so a row can say so. */
+  queued?: ReadonlySet<string>;
 }
 
 /** The label for a failure, in the words a person would use. */
@@ -133,7 +161,15 @@ function buttonName(button: number): 'left' | 'middle' | 'right' | 'none' {
   return 'none';
 }
 
-export function InteractiveView({ url, live, video, useVideo }: InteractiveViewProps) {
+export function InteractiveView({
+  url,
+  live,
+  video,
+  useVideo,
+  media,
+  onDownload,
+  queued,
+}: InteractiveViewProps) {
   const { status, frame, page, viewport, stats, failure, reason, onOpen, onClose, send } = live;
   /* Video replaces the picture when it is chosen and a session is possible.
    * Everything else — the input bridge, the sizing, the toolbar — is shared,
@@ -195,6 +231,8 @@ export function InteractiveView({ url, live, video, useVideo }: InteractiveViewP
    * stage inert — no input, no sizing, and nothing to see.
    */
   const isLive = status === 'open' || status === 'connecting' || videoOn;
+  /** Whether the media overlay is showing. Off until asked for. */
+  const [hudOpen, setHudOpen] = useState(false);
 
   /**
    * Tell the engine the size the page should be drawn at.
@@ -569,9 +607,59 @@ export function InteractiveView({ url, live, video, useVideo }: InteractiveViewP
         </span>
         {page?.loading && <span className="live__loading">Loading…</span>}
         <div className="live__actions">
+          {/*
+            Navigation, as a browser's own controls. Back and Forward are
+            disabled when there is nowhere to go rather than doing nothing, which
+            is what a browser does and what makes the state legible.
+          */}
+          <Button
+            size="sm"
+            onClick={() => send({ type: 'back' })}
+            disabled={!isLive}
+            title="Back"
+            aria-label="Back"
+          >
+            <IconArrowLeft />
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => send({ type: 'forward' })}
+            disabled={!isLive}
+            title="Forward"
+            aria-label="Forward"
+          >
+            <IconArrowRight />
+          </Button>
           <Button size="sm" onClick={() => send({ type: 'reload' })} disabled={!isLive}>
             <IconRefresh /> Reload
           </Button>
+          <Button
+            size="sm"
+            onClick={() => send({ type: 'stop' })}
+            disabled={!isLive || !page?.loading}
+            title="Stop loading"
+          >
+            <IconX /> Stop
+          </Button>
+          {media && onDownload ? (
+            <Button
+              size="sm"
+              variant={hudOpen ? 'primary' : undefined}
+              onClick={() => {
+                // Opening the HUD is also what starts collecting: a viewer who
+                // never opens it never pays for the bookkeeping.
+                if (!hudOpen && !media.watching) media.watch(true);
+                setHudOpen(!hudOpen);
+              }}
+              aria-pressed={hudOpen}
+              title="Everything this page has loaded"
+            >
+              <IconDownload /> Media
+              {media.items.length > 0 ? (
+                <span className="live__badge">{media.items.length}</span>
+              ) : null}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             onClick={() => send({ type: 'screenshot' })}
@@ -580,8 +668,8 @@ export function InteractiveView({ url, live, video, useVideo }: InteractiveViewP
           >
             <IconImage /> Still
           </Button>
-          <Button size="sm" onClick={onClose} disabled={!isLive}>
-            <IconX /> Stop
+          <Button size="sm" onClick={onClose} disabled={!isLive} title="End the session">
+            <IconX /> Close
           </Button>
           <a className="btn btn--sm" href={liveUrl} target="_blank" rel="noreferrer">
             <IconExternal /> New tab
@@ -699,6 +787,32 @@ export function InteractiveView({ url, live, video, useVideo }: InteractiveViewP
                 <span>Waiting for the first frame…</span>
               </div>
             )}
+            {/*
+              The media overlay.
+
+              Inside the stage, because it overlays *the page*: as a sibling it
+              anchored to the page and the top bar sat over it. An overlay rather
+              than a panel, because the page underneath is the point of the view —
+              a listing that pushed it aside would make you choose between seeing
+              the page and seeing what it offers. Dismissing it does not end the
+              session.
+            */}
+            {hudOpen && media && onDownload ? (
+              <MediaHud
+                items={media.items}
+                watching={media.watching}
+                queued={queued}
+                onWatch={media.watch}
+                onRescan={media.rescan}
+                onRemove={media.forget}
+                onClose={() => setHudOpen(false)}
+                onDownload={(item: LiveMediaItem, variant?: LiveMediaVariant) =>
+                  // The variant's own URL when one was chosen, because that is the
+                  // playlist for that quality; the manifest URL otherwise.
+                  onDownload(variant?.url ?? item.url, variant?.label)
+                }
+              />
+            ) : null}
           </div>
           <p className="live__hint">
             Tap or click the page to focus it, then type. Escape releases the keyboard. Scrolling is

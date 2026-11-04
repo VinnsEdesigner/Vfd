@@ -198,8 +198,32 @@ export interface WireLivePage {
 }
 
 /** A live-session text message from the engine. */
+/** One quality behind a manifest, as the engine reports it. */
+export interface WireLiveMediaVariant {
+  label?: string;
+  width?: number;
+  height?: number;
+  bandwidth?: number;
+  url?: string;
+}
+
+/**
+ * One thing the page loaded that can be downloaded.
+ *
+ * `bytes` is what the browser actually received, and is -1 when the response
+ * had no length — normal for a live stream.
+ */
+export interface WireLiveMedia {
+  url?: string;
+  kind?: string;
+  mime?: string;
+  bytes?: number;
+  manifest?: boolean;
+  variants?: WireLiveMediaVariant[];
+}
+
 export interface WireLiveMessage {
-  type: 'ready' | 'state' | 'closed' | 'error' | 'frame' | 'shot';
+  type: 'ready' | 'state' | 'closed' | 'error' | 'frame' | 'shot' | 'media';
   url?: string;
   width?: number;
   height?: number;
@@ -208,6 +232,8 @@ export interface WireLiveMessage {
   page?: WireLivePage;
   format?: string;
   seq?: number;
+  /** The list, on a `media` message. */
+  items?: WireLiveMedia[];
 }
 
 /**

@@ -264,6 +264,8 @@ export function normalizeCapabilities(w: WireCapabilities): Capabilities {
  * can add message kinds without breaking an older console — the parser skips
  * what it cannot place rather than throwing.
  */
+import { normalizeLiveMedia } from './live-media';
+
 export function normalizeLiveMessage(w: WireLiveMessage): LiveMessage | null {
   switch (w.type) {
     case 'ready':
@@ -278,6 +280,8 @@ export function normalizeLiveMessage(w: WireLiveMessage): LiveMessage | null {
           editing: Boolean(w.page?.editing),
         },
       };
+    case 'media':
+      return { kind: 'media', items: normalizeLiveMedia(w) };
     case 'closed':
       return { kind: 'closed', reason: w.reason ?? 'the session closed' };
     case 'error':

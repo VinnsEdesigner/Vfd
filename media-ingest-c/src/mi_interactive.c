@@ -764,7 +764,6 @@ static void media_reset_for_navigation(mi_interactive *it) {
 
 /* A response's headers arrived: remember what it is, keyed by request id. */
 static void on_response_received(mi_interactive *it, const mi_json *params) {
-    if (!mi_mediawatch_enabled(it->media)) return;
     const mi_json *resp = mi_json_get(params, "response");
     if (!resp) return;
     const char *url = mi_json_get_string(resp, "url", NULL);
@@ -795,9 +794,11 @@ static void on_loading_finished(mi_interactive *it, const mi_json *params) {
     int64_t bytes = (int64_t)mi_json_get_number(params, "encodedDataLength", -1);
     if (bytes <= 0) bytes = (int64_t)mi_json_get_number(params, "decodedBodySize", -1);
 
-    if (mi_mediawatch_enabled(it->media) && p->url) {
+    if (p->url) {
         if (mi_mediawatch_note(it->media, p->url, p->mime, p->type, bytes)) {
-            it->ev_media = 1;
+            /* Recorded either way; reported only when the list is being
+             * published, so a viewer who has not asked is not sent messages. */
+            if (mi_mediawatch_enabled(it->media)) it->ev_media = 1;
             /* A manifest is worth reading, so its qualities can be shown. */
             if (strstr(p->url, ".m3u8")) request_manifest(it, p->url);
         }
@@ -908,7 +909,8 @@ static void handle_message(mi_interactive *it, const char *json) {
                     if (n > 0) {
                         char *u = mi_strndup(p, n);
                         if (u) {
-                            if (mi_mediawatch_note(it->media, u, "", "Media", -1))
+                            if (mi_mediawatch_note(it->media, u, "", "Media", -1) &&
+                                mi_mediawatch_enabled(it->media))
                                 it->ev_media = 1;
                             free(u);
                         }
@@ -927,7 +929,8 @@ static void handle_message(mi_interactive *it, const char *json) {
             if (body && *body) {
                 char *vars = hls_variants_json(body, it->manifest_url);
                 if (vars) {
-                    if (mi_mediawatch_note_variants(it->media, it->manifest_url, vars))
+                    if (mi_mediawatch_note_variants(it->media, it->manifest_url, vars) &&
+                        mi_mediawatch_enabled(it->media))
                         it->ev_media = 1;
                     free(vars);
                 }
@@ -1675,7 +1678,15 @@ const char *mi_interactive_media_json(mi_interactive *it) {
 void mi_interactive_watch_media(mi_interactive *it, int on) {
     if (!it || !it->media) return;
     mi_mediawatch_set_enabled(it->media, on);
-    if (on) it->ev_media = 1; /* so the caller gets the current list at once */
+    if (on) {
+        /* Publish at once, so the list shows what the page has *already* loaded
+         * rather than waiting for it to load something new — which is what
+         * someone opening the list expects to see. */
+        it->ev_media = 1;
+        /* And re-read the page, since the network view only knows what has been
+         * fetched, not everything the page offers. */
+        mi_interactive_rescan_media(it);
+    }
 }
 
 void mi_interactive_rescan_media(mi_interactive *it) {
@@ -1688,10 +1699,21 @@ void mi_interactive_rescan_media(mi_interactive *it) {
      * not started. This asks the page for its own media URLs and offers them
      * too, so a list is complete rather than only current.
      */
+    /*
+     * Every element that names a source, not only the video ones.
+     *
+     * A page's media is very often images, and a rescan that looked only at
+     * <video>/<audio> reported nothing on a gallery — which is exactly the page
+     * someone would open the list on. `data:` and `blob:` URLs are skipped: the
+     * first is inline bytes with no URL to fetch, the second is a handle that
+     * only exists in that page.
+     */
     static const char *EXPR =
-        "(function(){var o=[];var s=document.querySelectorAll('video,audio,source');"
-        "for(var i=0;i<s.length;i++){var u=s[i].currentSrc||s[i].src;"
-        "if(u&&u.indexOf('blob:')!==0)o.push(u);}"
+        "(function(){var o=[];"
+        "var s=document.querySelectorAll('video,audio,source,img');"
+        "for(var i=0;i<s.length;i++){var u=s[i].currentSrc||s[i].src||'';"
+        "if(!u||u.indexOf('data:')===0||u.indexOf('blob:')===0)continue;"
+        "o.push(u);}"
         "return o.join('\\n');})()";
     char params[1024];
     snprintf(params, sizeof params, "{\"expression\":\"%s\",\"returnByValue\":true}", EXPR);
