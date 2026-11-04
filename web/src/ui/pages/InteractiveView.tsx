@@ -47,6 +47,8 @@ export interface LiveViewProps {
   status: LiveStatus;
   frame: LiveFrame | null;
   page: LivePageState | null;
+  /** The size the engine is drawing at, once open. Locks the stage's shape. */
+  viewport: { width: number; height: number } | null;
   failure: LiveFailure | null;
   reason: string | null;
   onOpen: (url: string, width: number, height: number) => void;
@@ -104,7 +106,7 @@ function buttonName(button: number): 'left' | 'middle' | 'right' | 'none' {
 }
 
 export function InteractiveView({ url, live }: InteractiveViewProps) {
-  const { status, frame, page, failure, reason, onOpen, onClose, send } = live;
+  const { status, frame, page, viewport, failure, reason, onOpen, onClose, send } = live;
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   /**
@@ -121,10 +123,11 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
   const isLive = status === 'open' || status === 'connecting';
 
   /**
-   * Tell the engine the size the page should be drawn at, so its frames match
-   * the stage rather than being scaled and blurry. Debounced through a frame, and
-   * skipped when the size has not really changed, because a resize observer
-   * fires for sub-pixel jitter.
+   * Tell the engine the size the page should be drawn at.
+   *
+   * Only used when the viewport is *not* fixed — on a phone it is, so this is
+   * inert there. Re-fitting a live page on every stage resize is what made the
+   * page reflow under the user's finger as the URL bar and keyboard moved.
    */
   const pushSize = useCallback(
     (width: number, height: number) => {
@@ -138,8 +141,16 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
     [send],
   );
 
-  // Keep the browser's viewport in step with the stage.
+  /*
+   * Keep the browser's viewport in step with the stage — but only on a desktop.
+   *
+   * A fixed viewport is the whole point of the mobile behaviour: the page is
+   * drawn at the phone's shape and the stage is fitted to *it*, rather than the
+   * page being re-fitted to a stage that keeps changing size.
+   */
+  const fixedViewport = viewport !== null;
   useEffect(() => {
+    if (fixedViewport) return;
     const el = stageRef.current;
     if (!el || !isLive) return;
     const observer = new ResizeObserver((entries) => {
@@ -151,7 +162,7 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
     // An initial size, in case the observer's first callback is delayed.
     pushSize(el.clientWidth, el.clientHeight);
     return () => observer.disconnect();
-  }, [isLive, pushSize]);
+  }, [fixedViewport, isLive, pushSize]);
 
   /**
    * A wheel must be forwarded and its default stopped, or the page scrolls the
@@ -391,12 +402,41 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
     const el = kbdRef.current;
     if (!el || !isLive) return;
 
+    /*
+     * Composition state, which is what a phone's keyboard uses.
+     *
+     * On a touch device the keyboard does not send a key per character; it
+     * composes a word and only commits it at the end. Clearing the field during a
+     * composition discards the word before it is ever committed, which is why
+     * typing appeared to do nothing. The field is left alone until the
+     * composition ends.
+     */
+    let composing = false;
+
+    const onNativeCompositionStart = () => {
+      composing = true;
+    };
+
+    const onNativeCompositionEnd = () => {
+      composing = false;
+      // The committed text is in the field now; forward it and clear.
+      const text = el.value;
+      el.value = '';
+      if (text) send(textMessage(text));
+    };
+
     const onNativeKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         el.blur();
         return;
       }
       if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) return;
+      // During a composition the field is being built; leave it alone.
+      if (composing || e.isComposing) return;
+      // A phone keyboard reports a character it cannot name as "Unidentified" or
+      // "Process"; those are not keys to forward, and the character itself arrives
+      // through `input`.
+      if (e.key === 'Unidentified' || e.key === 'Process') return;
       // A printable character comes through `input` instead, so it is not sent
       // twice. Everything else is a named key.
       const printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
@@ -416,6 +456,9 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
     };
 
     const onNativeInput = () => {
+      // Mid-composition the text is a draft: sending it now would type it twice,
+      // once as a draft and once when it commits.
+      if (composing) return;
       const text = el.value;
       // Clear immediately: the field is a keyboard, not a text box, and leaving
       // the value in place would let it grow without bound.
@@ -432,10 +475,14 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
       }
     };
 
+    el.addEventListener('compositionstart', onNativeCompositionStart);
+    el.addEventListener('compositionend', onNativeCompositionEnd);
     el.addEventListener('keydown', onNativeKeyDown);
     el.addEventListener('input', onNativeInput);
     el.addEventListener('paste', onNativePaste);
     return () => {
+      el.removeEventListener('compositionstart', onNativeCompositionStart);
+      el.removeEventListener('compositionend', onNativeCompositionEnd);
       el.removeEventListener('keydown', onNativeKeyDown);
       el.removeEventListener('input', onNativeInput);
       el.removeEventListener('paste', onNativePaste);
@@ -529,10 +576,15 @@ export function InteractiveView({ url, live }: InteractiveViewProps) {
             spellCheck={false}
           />
           <div
-            className="live__stage"
+            className={fixedViewport ? 'live__stage live__stage--fixed' : 'live__stage'}
             ref={stageRef}
             role="application"
             aria-label={`Live page ${liveUrl}`}
+            style={
+              fixedViewport && viewport
+                ? ({ '--live-ar': `${viewport.width} / ${viewport.height}` } as React.CSSProperties)
+                : undefined
+            }
             onMouseDown={onMouseDown}
             onMouseUp={onMouseUp}
             onMouseMove={onMouseMove}

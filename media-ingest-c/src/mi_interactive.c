@@ -93,6 +93,15 @@ struct mi_interactive {
     size_t frame_len;
     char frame_format[8];
     int frame_w, frame_h;
+    /*
+     * Whether this session is emulating a mobile device.
+     *
+     * It has to be remembered, not inferred: `Emulation.setDeviceMetricsOverride`
+     * carries the flag, and a resize that sent `mobile: false` would silently
+     * switch a phone layout back to a desktop one the first time the console
+     * re-fit the stage — which is exactly what happened.
+     */
+    int mobile;
 
     /* Page state, emitted as JSON only when it changes. */
     char *state_json;
@@ -793,6 +802,7 @@ mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
         wait_for_id(it, rid, tmo);
         it->frame_w = width;
         it->frame_h = height;
+        it->mobile = touch;
     }
 
     /* 4b. Touch, when the console is on a touch device. A phone sends a finger,
@@ -995,9 +1005,12 @@ void mi_interactive_resize(mi_interactive *it, int width, int height) {
     if (width > 4096) width = 4096;
     if (height > 4096) height = 4096;
     char params[160];
+    /* The `mobile` flag is carried over, not reset: a resize must not change how
+     * the page is laid out, only how big it is. Sending `false` here is what
+     * turned a phone layout back into a desktop one on the first re-fit. */
     snprintf(params, sizeof params,
-             "{\"width\":%d,\"height\":%d,\"deviceScaleFactor\":1,\"mobile\":false}",
-             width, height);
+             "{\"width\":%d,\"height\":%d,\"deviceScaleFactor\":1,\"mobile\":%s}",
+             width, height, it->mobile ? "true" : "false");
     cdp_command(it, "Emulation.setDeviceMetricsOverride", params);
     it->frame_w = width;
     it->frame_h = height;

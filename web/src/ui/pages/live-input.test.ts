@@ -15,6 +15,7 @@ import {
   navigateMessage,
   resizeMessage,
   textMessage,
+  displayedFrameRect,
   toFrameCoords,
   touchMessage,
   wheelMessage,
@@ -59,6 +60,66 @@ describe('toFrameCoords', () => {
       x: 0,
       y: 0,
     });
+  });
+
+  it('accounts for letterboxing when the box is a different shape from the frame', () => {
+    // A tall box (9:19.5) holding a wider frame (9:16): the frame is fitted by
+    // width and the bars are top and bottom. Mapping against the box instead
+    // would put every tap too far down — the bug this guards.
+    const tall = { left: 0, top: 0, width: 400, height: 800 };
+    // The frame is 400 wide and 400*16/9 = 711.1 tall, so the centre of the frame
+    // is at y = 355.6, not y = 400.
+    const centre = toFrameCoords(200, 355.555, tall, 900, 1600);
+    expect(centre.x).toBeCloseTo(450, 1);
+    expect(centre.y).toBeCloseTo(800, 1);
+
+    // A point on the bottom edge of the *frame* is above the bottom of the box.
+    const bottom = toFrameCoords(200, 711.111, tall, 900, 1600);
+    expect(bottom.y).toBeCloseTo(1600, 1);
+  });
+
+  it('accounts for letterboxing when the box is wider than the frame', () => {
+    // A wide box holding a tall frame: bars on the left and right. The frame is
+    // pinned to the top-left (the CSS `object-position`), so the bars are all on
+    // the right and the bottom.
+    const wide = { left: 0, top: 0, width: 1000, height: 500 };
+    // The frame is 500 tall and 500*390/844 = 231.0 wide, at the left edge.
+    const centre = toFrameCoords(115.5, 250, wide, 390, 844);
+    expect(centre.x).toBeCloseTo(195, 0);
+    expect(centre.y).toBeCloseTo(422, 0);
+
+    // A point inside the right-hand bar clamps to the frame's right edge rather
+    // than reporting a coordinate past the page.
+    const inBar = toFrameCoords(800, 250, wide, 390, 844);
+    expect(inBar.x).toBe(390);
+  });
+
+  it('is the identity when the box matches the frame shape', () => {
+    const box = { left: 10, top: 20, width: 400, height: 800 };
+    const p = toFrameCoords(210, 420, box, 400, 800);
+    expect(p.x).toBeCloseTo(200, 1);
+    expect(p.y).toBeCloseTo(400, 1);
+  });
+});
+
+describe('displayedFrameRect', () => {
+  it('fits the frame inside the box at the frame shape', () => {
+    const r = displayedFrameRect({ left: 0, top: 0, width: 400, height: 800 }, 900, 1600);
+    expect(r.width).toBeCloseTo(400, 1);
+    expect(r.height).toBeCloseTo(711.1, 1);
+    expect(r.left).toBe(0);
+    expect(r.top).toBe(0);
+  });
+
+  it('centres when asked', () => {
+    const r = displayedFrameRect({ left: 0, top: 0, width: 1000, height: 500 }, 390, 844, 'center');
+    expect(r.left).toBeCloseTo(384.48, 1);
+    expect(r.top).toBe(0);
+  });
+
+  it('passes the box through when the frame size is unknown', () => {
+    const box = { left: 1, top: 2, width: 3, height: 4 };
+    expect(displayedFrameRect(box, 0, 0)).toEqual(box);
   });
 });
 

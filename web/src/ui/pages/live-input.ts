@@ -169,11 +169,35 @@ export function resizeMessage(width: number, height: number): LiveResizeMessage 
 }
 
 /**
- * Map a point on a displayed canvas onto the frame's own pixel grid.
+ * The rectangle the frame actually occupies inside its box.
  *
- * The canvas is usually shown at a different size from the frame it holds, so
- * a click at the visual position must be scaled to the frame's coordinates or
- * every click lands in the wrong place on a high-DPI or a shrunken view.
+ * `object-fit: contain` letterboxes the image when its aspect ratio differs from
+ * the box's, so the image does not fill its box. Mapping a click against the box
+ * would then be wrong by the size of the bars — on a phone, where the frame is a
+ * fixed phone shape and the box is whatever the screen gives, that is a large
+ * error, and it is why a tap landed away from the field it was aimed at.
+ */
+export function displayedFrameRect(
+  box: { left: number; top: number; width: number; height: number },
+  frameWidth: number,
+  frameHeight: number,
+  align: 'top-left' | 'center' = 'top-left',
+): { left: number; top: number; width: number; height: number } {
+  if (frameWidth <= 0 || frameHeight <= 0 || box.width <= 0 || box.height <= 0) return box;
+  const scale = Math.min(box.width / frameWidth, box.height / frameHeight);
+  const width = frameWidth * scale;
+  const height = frameHeight * scale;
+  const left = align === 'center' ? box.left + (box.width - width) / 2 : box.left;
+  const top = align === 'center' ? box.top + (box.height - height) / 2 : box.top;
+  return { left, top, width, height };
+}
+
+/**
+ * Map a point on a displayed frame onto the frame's own pixel grid.
+ *
+ * The frame is drawn at a different size from the one it holds, so a click must
+ * be scaled to the frame's coordinates or it lands in the wrong place. The
+ * letterboxing is taken into account, because the frame does not fill its box.
  */
 export function toFrameCoords(
   clientX: number,
@@ -183,7 +207,9 @@ export function toFrameCoords(
   frameHeight: number,
 ): { x: number; y: number } {
   if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
-  const x = ((clientX - rect.left) / rect.width) * frameWidth;
-  const y = ((clientY - rect.top) / rect.height) * frameHeight;
+  const shown = displayedFrameRect(rect, frameWidth, frameHeight);
+  if (shown.width <= 0 || shown.height <= 0) return { x: 0, y: 0 };
+  const x = ((clientX - shown.left) / shown.width) * frameWidth;
+  const y = ((clientY - shown.top) / shown.height) * frameHeight;
   return { x: Math.max(0, Math.min(frameWidth, x)), y: Math.max(0, Math.min(frameHeight, y)) };
 }

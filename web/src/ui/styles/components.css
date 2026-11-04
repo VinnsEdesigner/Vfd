@@ -4522,6 +4522,22 @@ input[type='range']:focus-visible {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
 }
+/*
+ * A fixed viewport: the stage takes the page's own shape, sized to fit the space
+ * available, instead of the page being re-fitted to a fluid stage.
+ *
+ * `aspect-ratio` with `width: auto` and a max on both axes means the stage is as
+ * large as it can be at the page's shape — so the frame fills it exactly, with no
+ * letterboxing for a tap to be mapped through.
+ */
+.live__stage--fixed {
+  width: auto;
+  height: auto;
+  aspect-ratio: var(--live-ar, 9 / 19.5);
+  max-width: 100%;
+  max-height: min(78vh, 900px);
+  margin: 0 auto;
+}
 /* The frame fills the stage. It is the whole point of the view, so it is not
    letterboxed: the engine is told the stage size and draws to it. */
 .live__frame {

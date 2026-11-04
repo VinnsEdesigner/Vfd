@@ -132,6 +132,20 @@ static void test_live(void) {
         const char *st = mi_interactive_state(it);
         CHECK(st != NULL && strstr(st, "\"url\"") != NULL, "the state carries the page url");
 
+        /*
+         * A resize must change the size, not the kind of device.
+         *
+         * `Emulation.setDeviceMetricsOverride` carries the mobile flag, and a
+         * resize that sent `mobile: false` would switch a phone layout back to a
+         * desktop one the first time the console re-fit the stage. This session
+         * was opened as a desktop one, so the check is that the new size is
+         * reported and the session is still usable afterwards.
+         */
+        mi_interactive_resize(it, 1024, 768);
+        mi_interactive_pump(it, 300);
+        CHECK(mi_interactive_frame_width(it) == 1024, "a resize changes the reported width");
+        CHECK(mi_interactive_frame_height(it) == 768, "a resize changes the reported height");
+
         mi_interactive_close(it);
         CHECK(mi_interactive_pool_active(pool) == 0, "closing releases the slot");
     }

@@ -43,12 +43,43 @@ export function isTouchDevice(): boolean {
   return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
 }
 
+/**
+ * The viewport to give the engine on a touch device.
+ *
+ * Deliberately *fixed*, not the stage's size. On a phone the stage's height
+ * changes constantly — the URL bar hides as you scroll, the on-screen keyboard
+ * opens and closes — and re-fitting the browser on every change makes the page
+ * reflow under your finger, which is the awkward behaviour this replaces. A
+ * fixed phone-shaped viewport is what every other mobile browser gives a page.
+ *
+ * The device's own CSS viewport is used when it is available and sane, so the
+ * page sees the same size it would in the phone's browser; a floor and ceiling
+ * keep a stray value (a desktop-class width reported as coarse, a 0 during
+ * startup) from producing a silly layout.
+ */
+export function mobileViewport(): { width: number; height: number } {
+  const fallback = { width: 390, height: 844 };
+  if (typeof window === 'undefined') return fallback;
+  const w = Math.round(window.innerWidth);
+  const h = Math.round(window.innerHeight);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w < 240 || h < 320) return fallback;
+  return { width: Math.min(w, 768), height: Math.min(h, 1024) };
+}
+
 export interface UseLiveSession {
   status: LiveStatus;
   /** The latest frame. A still (from a screenshot) replaces a stream frame. */
   frame: LiveFrame | null;
   /** The page's own state, as the browser reports it. */
   page: LivePageState | null;
+  /**
+   * The size the engine is drawing at, once a session is open.
+   *
+   * The view locks its stage to this so the frame is shown at its natural shape
+   * rather than being stretched or letterboxed into whatever space is available —
+   * which is what makes the coordinates a tap maps to correct.
+   */
+  viewport: { width: number; height: number } | null;
   /** Why the session ended, when it did. Null while it is alive or idle. */
   failure: LiveFailure | null;
   /** A sentence describing the failure or close. */
@@ -64,6 +95,7 @@ export interface UseLiveSession {
 export function useLiveSession(): UseLiveSession {
   const { api } = useMediaApi();
   const [status, setStatus] = useState<LiveStatus>('idle');
+  const [viewport, setViewport] = useState<{ width: number; height: number } | null>(null);
   const [frame, setFrame] = useState<LiveFrame | null>(null);
   const [page, setPage] = useState<LivePageState | null>(null);
   const [failure, setFailure] = useState<LiveFailure | null>(null);
@@ -100,7 +132,19 @@ export function useLiveSession(): UseLiveSession {
       setFailure(null);
       setReason(null);
 
-      const session = api.live.open(url, width, height, {
+      /*
+       * On a touch device the viewport is fixed, not the caller's size.
+       *
+       * The caller passes the stage's size, which on a phone changes as the URL
+       * bar and the on-screen keyboard come and go. Giving the browser that size
+       * would make the page reflow under the user's finger; a fixed phone-shaped
+       * viewport is what every other mobile browser does.
+       */
+      const touch = isTouchDevice();
+      const vp = touch ? mobileViewport() : { width, height };
+      setViewport(vp);
+
+      const session = api.live.open(url, vp.width, vp.height, {
         onOpen: () => setStatus('open'),
         onFrame: acceptFrame,
         onMessage: (m: LiveMessage) => {
@@ -191,5 +235,5 @@ export function useLiveSession(): UseLiveSession {
     [],
   );
 
-  return { status, frame, page, failure, reason, open, close, send };
+  return { status, viewport, frame, page, failure, reason, open, close, send };
 }

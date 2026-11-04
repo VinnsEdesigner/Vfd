@@ -1284,6 +1284,7 @@ export function App({ initialView = 'overview' }: AppProps) {
               status: live.status,
               frame: live.frame,
               page: live.page,
+              viewport: live.viewport,
               failure: live.failure,
               reason: live.reason,
               onOpen: live.open,
