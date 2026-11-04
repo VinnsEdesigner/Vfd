@@ -24,6 +24,7 @@
 #include "mi_detect.h"
 #include "mi_download.h"
 #include "mi_hls.h"
+#include "mi_identify.h"
 #include "mi_interactive.h"
 #include "mi_json.h"
 #include "mi_render.h"
@@ -856,8 +857,32 @@ static char *source_filename(const mi_download_rec *j) {
     }
     if (!base) base = mi_strdup("source");
     if (!base) return NULL;
-    if (strrchr(base, '.')) return base;
-    char *with_ext = mi_asprintf("%s.%s", base, extension_for_kind(j->media_kind));
+
+    /*
+     * The extension is corrected when the content says otherwise.
+     *
+     * A site that serves an MP4 as `clip.bin` — or as `download.php`, or with no
+     * extension at all — otherwise leaves a file whose name lies about what it
+     * is, so the OS opens it in a text editor and no player will touch it. When
+     * the detector or ffprobe has named the kind, that name wins over whatever
+     * the URL claimed.
+     *
+     * An unknown kind keeps the URL's own extension: replacing it with "bin"
+     * would throw away the only hint available.
+     */
+    const char *want = extension_for_kind(j->media_kind);
+    const int known = j->media_kind && strcmp(j->media_kind, "unknown") != 0;
+    char *dot = strrchr(base, '.');
+    if (dot && dot != base) {
+        if (known && strcasecmp(dot + 1, want) != 0) {
+            /* Replace only the extension, keeping the rest of the name. */
+            char *replaced = mi_asprintf("%.*s.%s", (int)(dot - base), base, want);
+            free(base);
+            return replaced;
+        }
+        return base;
+    }
+    char *with_ext = mi_asprintf("%s.%s", base, want);
     free(base);
     return with_ext;
 }
@@ -1505,6 +1530,44 @@ static void *download_worker(void *arg) {
     j->total_bytes = res.bytes_written;
     j->media_kind = mi_strdup(mi_kind_name(res.media.kind));
     j->container = mi_strdup(res.media.container);
+
+    /*
+     * When the built-in detector could not name the file — a `.bin`, a URL with
+     * no extension, a content type the server did not send — ask ffprobe what it
+     * actually is. The detector reads magic bytes and is right about the
+     * containers it knows; this is the second opinion for everything else, and it
+     * is what turns an unnamed blob into a file with a real extension and a
+     * correct "can the browser play this" answer.
+     *
+     * Only consulted when the detector was unsure: a probe is a subprocess, and
+     * paying for it when the answer is already known would be waste.
+     */
+    if (res.media.kind == MI_KIND_UNKNOWN) {
+        mi_identify id;
+        if (mi_identify_probe(dest, NULL, &id) == 0 && id.probed) {
+            if (id.extension && strcmp(id.extension, "bin") != 0) {
+                free(j->media_kind);
+                j->media_kind = mi_strdup(id.extension);
+            }
+            if (id.format[0]) {
+                free(j->container);
+                j->container = mi_strdup(id.format);
+            }
+            if (id.width > 0) j->media_width = id.width;
+            if (id.height > 0) j->media_height = id.height;
+            if (id.has_video) j->media_is_video = 1;
+            if (id.has_audio && !id.has_video) j->media_is_audio = 1;
+            /* An image reports as a video stream in ffprobe, so it is recognised
+             * by its codec and marked as one here. */
+            if (!strcmp(id.video_codec, "png") || !strcmp(id.video_codec, "mjpeg") ||
+                !strcmp(id.video_codec, "gif") || !strcmp(id.video_codec, "webp") ||
+                !strcmp(id.video_codec, "bmp") || !strcmp(id.video_codec, "tiff")) {
+                j->media_is_image = 1;
+                j->media_is_video = 0;
+            }
+        }
+    }
+
     /* Rename source.bin to a real extension so the OS can associate a player
      * with it when the user picks "Open with", and to the item's own name so
      * the library on disk reads like the library in the app. */
@@ -1518,11 +1581,13 @@ static void *download_worker(void *arg) {
             free(renamed);
         }
     }
-    j->media_is_video = res.media.is_video;
-    j->media_is_image = res.media.is_image;
-    j->media_is_audio = res.media.is_audio;
-    j->media_width = res.media.width;
-    j->media_height = res.media.height;
+    if (res.media.kind != MI_KIND_UNKNOWN) {
+        j->media_is_video = res.media.is_video;
+        j->media_is_image = res.media.is_image;
+        j->media_is_audio = res.media.is_audio;
+        j->media_width = res.media.width;
+        j->media_height = res.media.height;
+    }
     j->sha256 = sha;
     j->master_playlist = master;
     j->artifact_urls = urls;
@@ -1667,6 +1732,10 @@ static int run_converter(char *const argv[]) {
  *
  * `+faststart` moves the index to the front of the file, without which the
  * browser has to fetch the whole thing before it will start playing.
+ *
+ * A file that arrives without a useful extension — a `.bin`, a `.php`, a URL
+ * with nothing after it — reaches here the same way: the input is whatever is on
+ * disk, and ffmpeg reads it by content rather than by name.
  */
 static int convert_to_mp4(const char *input, const char *output, char *err, size_t err_size) {
     char *argv_copy[] = {

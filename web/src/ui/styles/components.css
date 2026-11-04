@@ -221,11 +221,25 @@
   display: flex;
   flex-direction: column;
   gap: 7px;
+  /*
+   * A flex item's default `min-width: auto` refuses to shrink below its content,
+   * so one long value inside a field — a URL, a path — widened the whole page
+   * past the device's width. On a phone that makes the browser widen the layout
+   * viewport to fit, which reads as "it jumped into desktop mode" and makes the
+   * layout lurch as you type. `min-width: 0` lets the field shrink and the text
+   * inside it ellipsise instead.
+   */
+  min-width: 0;
 }
 .field label {
   font-size: 13px;
   font-weight: 500;
   color: var(--text);
+  /* A label is one line of text, never a reason to widen the page. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .field__hint {
   font-size: 12px;
@@ -241,6 +255,9 @@
   background: var(--surface);
   font-size: 13.5px;
   width: 100%;
+  /* An input's intrinsic width is its `size` attribute, which is wide; without
+     this it resists shrinking and pushes the layout wider than the screen. */
+  min-width: 0;
   transition: border-color 0.14s, box-shadow 0.14s;
 }
 .field input[type='text'],
@@ -969,6 +986,17 @@
   gap: 20px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /*
+   * The last line of defence against a wide child widening the *page*.
+   *
+   * On a phone, content wider than the screen makes the browser expand the
+   * layout viewport to fit, so the whole app lurches into a desktop-sized layout
+   * and back — which is exactly what one long URL in a field used to do.
+   * `min-width: 0` lets this column shrink, and `overflow-x: hidden` contains any
+   * element that still refuses to, so the app can never be wider than the screen.
+   */
+  min-width: 0;
+  overflow-x: hidden;
 }
 .stack {
   display: flex;
@@ -1025,6 +1053,15 @@
     overflow-x: auto;
     border-right: none;
     border-bottom: 1px solid var(--border);
+    /*
+     * `overflow-x: auto` scrolls, but the box itself still refuses to be narrower
+     * than its content unless it is allowed to shrink — so a row of nav items
+     * widened the whole page past the screen and the browser expanded the layout
+     * viewport to fit. `min-width: 0` keeps the bar inside the screen and lets it
+     * scroll instead.
+     */
+    min-width: 0;
+    max-width: 100vw;
   }
   .sidebar__top {
     display: flex;
