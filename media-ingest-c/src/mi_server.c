@@ -1930,6 +1930,22 @@ static void ws_dispatch(mi_interactive *it, const mi_json *m) {
                            (int)mi_json_get_number(m, "modifiers", 0));
     } else if (!strcmp(type, "text")) {
         mi_interactive_text(it, mi_json_get_string(m, "text", NULL));
+    } else if (!strcmp(type, "back")) {
+        mi_interactive_go_back(it);
+    } else if (!strcmp(type, "forward")) {
+        mi_interactive_go_forward(it);
+    } else if (!strcmp(type, "stop")) {
+        mi_interactive_stop(it);
+    } else if (!strcmp(type, "watch")) {
+        /*
+         * Whether to collect the media the page loads.
+         *
+         * Off until asked: the collection is per-request bookkeeping, and a viewer
+         * that never opens the list should not pay for it.
+         */
+        mi_interactive_watch_media(it, mi_json_get_bool(m, "on", 1));
+    } else if (!strcmp(type, "rescan")) {
+        mi_interactive_rescan_media(it);
     } else if (!strcmp(type, "touch")) {
         /* Both point shapes are accepted; see mi_interactive_parse_points. */
         double coords[32];
@@ -2591,6 +2607,18 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
                                mi_interactive_frame_width(it), mi_interactive_frame_height(it),
                                ++seq, frame, len);
             }
+        } else if (ev == MI_IT_EV_MEDIA) {
+            /* The set of things to download changed. Sent whole rather than as a
+             * delta: the list is short, and a client that joined late or missed a
+             * message is then never out of step. */
+            const char *list = mi_interactive_media_json(it);
+            mi_json_buf b;
+            mi_json_init(&b);
+            mi_json_raw(&b, "{\"type\":\"media\",\"items\":");
+            mi_json_raw(&b, list ? list : "[]");
+            mi_json_raw(&b, "}");
+            ws_queue_text(out, mi_json_data(&b), b.len, 0);
+            mi_json_free(&b);
         } else if (ev == MI_IT_EV_STATE) {
             const char *state = mi_interactive_state(it);
             if (state) {

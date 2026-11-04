@@ -33,6 +33,7 @@
 #include <unistd.h>
 
 #include "mi_json.h"
+#include "mi_mediawatch.h"
 #include "mi_render.h" /* one set of URL rules for both render and live sessions */
 #include "mi_util.h"
 
@@ -64,6 +65,20 @@ struct mi_interactive_pool {
     int in_use;
     pthread_mutex_t reap_lock;
 };
+
+/*
+ * One in-flight request.
+ *
+ * CDP reports a response when its headers arrive and the byte count when it
+ * finishes, keyed by a request id — so the two have to be joined. A short table
+ * is enough: a page has a few dozen requests in flight at once, not thousands.
+ */
+typedef struct {
+    char id[32];
+    char *url;
+    char *mime;
+    char *type;
+} mw_pending;
 
 struct mi_interactive {
     mi_interactive_pool *pool;
@@ -120,8 +135,38 @@ struct mi_interactive {
      */
     int editing;
 
+    /*
+     * What the page has loaded, so the HUD can list it.
+     *
+     * Collected from the browser's network activity rather than by reading the
+     * markup, so a streaming player's manifest and its media are found, with the
+     * sizes the browser actually received.
+     */
+    mi_mediawatch *media;
+    mw_pending *pending;
+    size_t pending_count, pending_cap;
+    /* An outstanding read of a manifest's body, and the URL it belongs to, so
+     * the variants can be attached to the right entry. */
+    int manifest_probe_id;
+    char *manifest_url;
+    /* An outstanding read of the page's own media elements. */
+    int media_probe_id;
+    int history_probe_id;
+
+    /*
+     * The page's history, so Back and Forward can be offered.
+     *
+     * `Page.navigateToHistoryEntry` addresses an entry by the id the browser
+     * assigned, so the ids have to be kept. Bounded to a reasonable depth: a
+     * viewer only ever goes a few steps either way, and a history that grew
+     * without limit would be a leak on a long browsing session.
+     */
+    int history_entries[64];
+    size_t history_count;
+    int history_index;
+
     /* What the last pump turned up. */
-    int ev_frame, ev_shot, ev_state;
+    int ev_frame, ev_shot, ev_state, ev_media;
 
     /*
      * Two different clocks, and the difference matters.
@@ -294,6 +339,11 @@ static double mono_seconds(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
+
+/* Declared here because a navigation handler earlier in the file needs
+ * them, and both are defined further down. */
+static void media_reset_for_navigation(mi_interactive *it);
+static void refresh_history(mi_interactive *it);
 
 static void set_close_reason(mi_interactive *it, const char *why) {
     snprintf(it->close_reason, sizeof it->close_reason, "%s", why);
@@ -489,7 +539,276 @@ static void on_frame_navigated(mi_interactive *it, const mi_json *params) {
     if (url && strcmp(url, it->url) != 0) {
         snprintf(it->url, sizeof it->url, "%s", url);
         set_state_changed(it);
+        /* A new document: what the last page loaded is not this one's. */
+        media_reset_for_navigation(it);
     }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* What the page has loaded                                            */
+/* ------------------------------------------------------------------ */
+
+static mw_pending *pending_find(mi_interactive *it, const char *id, int create) {
+    for (size_t i = 0; i < it->pending_count; i++) {
+        if (!strcmp(it->pending[i].id, id)) return &it->pending[i];
+    }
+    if (!create) return NULL;
+    if (it->pending_count == it->pending_cap) {
+        size_t cap = it->pending_cap ? it->pending_cap * 2 : 16;
+        /* Bounded: a page cannot hold more than a few hundred requests in
+         * flight, and a table that grew without limit would be a leak. */
+        if (cap > 512) return NULL;
+        mw_pending *grown = mi_realloc(it->pending, cap * sizeof *grown);
+        if (!grown) return NULL;
+        it->pending = grown;
+        it->pending_cap = cap;
+    }
+    mw_pending *p = &it->pending[it->pending_count++];
+    memset(p, 0, sizeof *p);
+    snprintf(p->id, sizeof p->id, "%s", id);
+    return p;
+}
+
+static void pending_drop(mi_interactive *it, const char *id) {
+    for (size_t i = 0; i < it->pending_count; i++) {
+        if (strcmp(it->pending[i].id, id) != 0) continue;
+        free(it->pending[i].url);
+        free(it->pending[i].mime);
+        free(it->pending[i].type);
+        it->pending[i] = it->pending[it->pending_count - 1];
+        it->pending_count--;
+        return;
+    }
+}
+
+static void pending_clear(mi_interactive *it) {
+    for (size_t i = 0; i < it->pending_count; i++) {
+        free(it->pending[i].url);
+        free(it->pending[i].mime);
+        free(it->pending[i].type);
+    }
+    it->pending_count = 0;
+}
+
+/* A Content-Type with its parameters stripped, which is what a list wants to
+ * show and what the classifier reads. */
+static char *mime_only(const char *raw) {
+    if (!raw) return mi_strdup("");
+    const char *semi = strchr(raw, ';');
+    size_t n = semi ? (size_t)(semi - raw) : strlen(raw);
+    char *out = mi_malloc(n + 1);
+    if (!out) return NULL;
+    memcpy(out, raw, n);
+    out[n] = '\0';
+    /* Trim, because a server may pad it. */
+    while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t')) out[--n] = '\0';
+    return out;
+}
+
+/*
+ * An HLS master playlist, parsed for its variants.
+ *
+ * A manifest is one URL with several qualities behind it, so the list shows them
+ * under the manifest rather than as separate entries. Each `#EXT-X-STREAM-INF`
+ * carries the bandwidth and, usually, the resolution; the line after it is the
+ * playlist for that quality.
+ */
+static char *hls_variants_json(const char *body, const char *base_url) {
+    if (!body || !strstr(body, "#EXT-X-STREAM-INF")) return NULL;
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "[");
+    int n = 0;
+    const char *p = body;
+    while ((p = strstr(p, "#EXT-X-STREAM-INF:")) != NULL) {
+        const char *eol = strchr(p, '\n');
+        if (!eol) break;
+        /* The attributes, between ':' and the newline. */
+        const char *attrs = p + strlen("#EXT-X-STREAM-INF:");
+        size_t alen = (size_t)(eol - attrs);
+
+        int bandwidth = 0;
+        int width = 0, height = 0;
+        {
+            const char *bw = strstr(attrs, "BANDWIDTH=");
+            if (bw && (size_t)(bw - attrs) < alen) bandwidth = atoi(bw + 10);
+            const char *res = strstr(attrs, "RESOLUTION=");
+            if (res && (size_t)(res - attrs) < alen) {
+                const char *x = strchr(res + 11, 'x');
+                if (x) {
+                    width = atoi(res + 11);
+                    height = atoi(x + 1);
+                }
+            }
+        }
+
+        /* The URI is the next line that is not a comment or blank. */
+        const char *u = eol + 1;
+        while (*u == '#' || *u == '\r' || *u == '\n') {
+            const char *nl = strchr(u, '\n');
+            if (!nl) { u = NULL; break; }
+            u = nl + 1;
+        }
+        if (!u || !*u) break;
+        const char *uend = u;
+        while (*uend && *uend != '\r' && *uend != '\n') uend++;
+        size_t ulen = (size_t)(uend - u);
+        if (ulen == 0) { p = eol + 1; continue; }
+
+        /* The variant's own URL, made absolute against the manifest's. */
+        char *variant_url = NULL;
+        if (ulen >= 7 && !strncasecmp(u, "http://", 7)) {
+            variant_url = mi_strndup(u, ulen);
+        } else if (ulen >= 8 && !strncasecmp(u, "https://", 8)) {
+            variant_url = mi_strndup(u, ulen);
+        } else if (base_url) {
+            /* Resolve against the manifest's directory. */
+            const char *slash = strrchr(base_url, '/');
+            if (slash) {
+                size_t plen = (size_t)(slash - base_url) + 1;
+                variant_url = mi_asprintf("%.*s%.*s", (int)plen, base_url, (int)ulen, u);
+            }
+        }
+
+        if (n) mi_json_raw(&b, ",");
+        mi_json_raw(&b, "{\"label\":");
+        if (height > 0) {
+            char label[32];
+            snprintf(label, sizeof label, "%dp", height);
+            mi_json_string(&b, label);
+        } else if (bandwidth > 0) {
+            char label[32];
+            snprintf(label, sizeof label, "%dkbps", bandwidth / 1000);
+            mi_json_string(&b, label);
+        } else {
+            mi_json_string(&b, "variant");
+        }
+        mi_json_raw(&b, ",\"width\":");
+        mi_json_int(&b, width);
+        mi_json_raw(&b, ",\"height\":");
+        mi_json_int(&b, height);
+        mi_json_raw(&b, ",\"bandwidth\":");
+        mi_json_int(&b, bandwidth);
+        mi_json_raw(&b, ",\"url\":");
+        mi_json_string(&b, variant_url ? variant_url : "");
+        mi_json_raw(&b, "}");
+        free(variant_url);
+        n++;
+        p = uend;
+    }
+    mi_json_raw(&b, "]");
+    if (n == 0) {
+        mi_json_free(&b);
+        return NULL;
+    }
+    char *out = mi_strdup(mi_json_data(&b));
+    mi_json_free(&b);
+    return out;
+}
+
+/*
+ * Ask for a manifest's body, so its variants can be listed.
+ *
+ * Fetched over the browser's own network stack, not the engine's: the manifest
+ * may need the page's cookies or referrer, and the browser already has them.
+ * `Runtime.evaluate` with an await is the one way to read a body from here
+ * without a second CDP domain.
+ */
+static void request_manifest(mi_interactive *it, const char *url) {
+    if (!it || !url || !*url) return;
+    /* Only HLS is parsed here; a DASH MPD needs XML, and is listed as one item
+     * with its own URL, which is still downloadable. */
+    if (!strstr(url, ".m3u8")) return;
+    if (it->manifest_probe_id) return; /* one at a time */
+
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"expression\":");
+    mi_json_buf e;
+    mi_json_init(&e);
+    mi_json_raw(&e, "fetch(");
+    mi_json_string(&e, url);
+    mi_json_raw(&e, ").then(r=>r.text()).catch(()=>'')");
+    mi_json_string(&b, mi_json_data(&e));
+    mi_json_free(&e);
+    mi_json_raw(&b, ",\"awaitPromise\":true,\"returnByValue\":true}");
+    it->manifest_probe_id = cdp_command(it, "Runtime.evaluate", mi_json_data(&b));
+    /* Remembered so the answer can be matched to the entry it belongs to. */
+    free(it->manifest_url);
+    it->manifest_url = mi_strdup(url);
+    mi_json_free(&b);
+}
+
+/* Page.navigatedWithinDocument / frameNavigated: the page moved, so what the
+ * last one loaded is not this one's. */
+/*
+ * Re-read the browser's history, so Back and Forward know where they are.
+ *
+ * The browser is the authority on this; asking it rather than tracking
+ * navigations by hand is what keeps the two from disagreeing after a redirect
+ * or a same-document navigation.
+ */
+static void refresh_history(mi_interactive *it) {
+    if (!it || it->closed) return;
+    it->history_probe_id = cdp_command(it, "Page.getNavigationHistory", NULL);
+}
+
+static void media_reset_for_navigation(mi_interactive *it) {
+    if (!it || !it->media) return;
+    mi_mediawatch_clear(it->media);
+    pending_clear(it);
+    it->ev_media = 1;
+    refresh_history(it);
+}
+
+/* A response's headers arrived: remember what it is, keyed by request id. */
+static void on_response_received(mi_interactive *it, const mi_json *params) {
+    if (!mi_mediawatch_enabled(it->media)) return;
+    const mi_json *resp = mi_json_get(params, "response");
+    if (!resp) return;
+    const char *url = mi_json_get_string(resp, "url", NULL);
+    const char *id = mi_json_get_string(params, "requestId", NULL);
+    if (!url || !id) return;
+
+    /* Only what the page itself asked for. A data: or blob: URL has no bytes a
+     * download could fetch. */
+    if (!strncasecmp(url, "data:", 5) || !strncasecmp(url, "blob:", 5)) return;
+
+    mw_pending *p = pending_find(it, id, 1);
+    if (!p) return;
+    free(p->url);
+    free(p->mime);
+    free(p->type);
+    p->url = mi_strdup(url);
+    p->mime = mime_only(mi_json_get_string(resp, "mimeType", ""));
+    p->type = mi_strdup(mi_json_get_string(params, "type", ""));
+}
+
+/* A response finished: now the byte count is known, so the entry can be made. */
+static void on_loading_finished(mi_interactive *it, const mi_json *params) {
+    const char *id = mi_json_get_string(params, "requestId", NULL);
+    if (!id) return;
+    mw_pending *p = pending_find(it, id, 0);
+    if (!p) return;
+
+    int64_t bytes = (int64_t)mi_json_get_number(params, "encodedDataLength", -1);
+    if (bytes <= 0) bytes = (int64_t)mi_json_get_number(params, "decodedBodySize", -1);
+
+    if (mi_mediawatch_enabled(it->media) && p->url) {
+        if (mi_mediawatch_note(it->media, p->url, p->mime, p->type, bytes)) {
+            it->ev_media = 1;
+            /* A manifest is worth reading, so its qualities can be shown. */
+            if (strstr(p->url, ".m3u8")) request_manifest(it, p->url);
+        }
+    }
+    pending_drop(it, id);
+}
+
+/* A response failed: nothing was loaded, so forget it. */
+static void on_loading_failed(mi_interactive *it, const mi_json *params) {
+    const char *id = mi_json_get_string(params, "requestId", NULL);
+    if (id) pending_drop(it, id);
 }
 
 static void handle_event(mi_interactive *it, const char *method, const mi_json *params) {
@@ -502,6 +821,14 @@ static void handle_event(mi_interactive *it, const char *method, const mi_json *
     } else if (!strcmp(method, "Page.loadEventFired") ||
                !strcmp(method, "Page.frameStoppedLoading")) {
         if (it->loading) { it->loading = 0; set_state_changed(it); }
+    } else if (!strcmp(method, "Network.responseReceived")) {
+        on_response_received(it, params);
+    } else if (!strcmp(method, "Network.loadingFinished")) {
+        on_loading_finished(it, params);
+    } else if (!strcmp(method, "Network.loadingFailed")) {
+        on_loading_failed(it, params);
+    } else if (!strcmp(method, "Page.navigatedWithinDocument")) {
+        media_reset_for_navigation(it);
     } else if (!strcmp(method, "Page.javascriptDialogOpening")) {
         /* An alert()/confirm() blocks the page until answered. A browsing
          * surface must not freeze, so dialogs are dismissed automatically. */
@@ -539,6 +866,75 @@ static void handle_message(mi_interactive *it, const char *json) {
          * it is published; an unchanged answer is dropped, because this runs after
          * every tap and would otherwise flood the console with the same message.
          */
+        /*
+         * A manifest's body, for its variants.
+         *
+         * The playlist is the only place the qualities of a stream are named, and
+         * a list that shows one row per manifest without them is much less useful
+         * than one that shows 480p/720p/1080p with their bitrates.
+         */
+        /* The page's history, for Back and Forward. */
+        if (it->resp_ok && id == it->history_probe_id) {
+            it->history_probe_id = 0;
+            const mi_json *result = mi_json_get(root, "result");
+            const mi_json *entries = mi_json_get(result, "entries");
+            int cur = (int)mi_json_get_number(result, "currentIndex", -1);
+            if (entries && entries->type == MI_JSON_ARRAY) {
+                it->history_count = 0;
+                for (size_t i = 0; i < entries->count && it->history_count < 64; i++) {
+                    int64_t eid = mi_json_get_int(entries->items[i], "id", 0);
+                    if (eid > 0) it->history_entries[it->history_count++] = (int)eid;
+                }
+                it->history_index = (cur >= 0 && (size_t)cur < it->history_count) ? cur : 0;
+            }
+        }
+        /*
+         * The page's own media elements.
+         *
+         * The network view only knows what has already been fetched; a video that
+         * has not been played yet is still a thing to download. This adds those,
+         * so the list is complete as well as current.
+         */
+        if (it->resp_ok && id == it->media_probe_id) {
+            it->media_probe_id = 0;
+            const mi_json *result = mi_json_get(root, "result");
+            const mi_json *inner = mi_json_get(result, "result");
+            const char *list = mi_json_get_string(inner, "value", NULL);
+            if (list && *list) {
+                const char *p = list;
+                while (*p) {
+                    const char *nl = strchr(p, '\n');
+                    size_t n = nl ? (size_t)(nl - p) : strlen(p);
+                    if (n > 0) {
+                        char *u = mi_strndup(p, n);
+                        if (u) {
+                            if (mi_mediawatch_note(it->media, u, "", "Media", -1))
+                                it->ev_media = 1;
+                            free(u);
+                        }
+                    }
+                    if (!nl) break;
+                    p = nl + 1;
+                }
+            }
+        }
+        if (it->resp_ok && id == it->manifest_probe_id && it->manifest_url) {
+            it->manifest_probe_id = 0;
+            const mi_json *result = mi_json_get(root, "result");
+            const mi_json *inner = mi_json_get(result, "result");
+            /* A returnByValue result carries the value under `value`. */
+            const char *body = mi_json_get_string(inner, "value", NULL);
+            if (body && *body) {
+                char *vars = hls_variants_json(body, it->manifest_url);
+                if (vars) {
+                    if (mi_mediawatch_note_variants(it->media, it->manifest_url, vars))
+                        it->ev_media = 1;
+                    free(vars);
+                }
+            }
+            free(it->manifest_url);
+            it->manifest_url = NULL;
+        }
         if (it->resp_ok && id == it->editing_probe_id) {
             it->editing_probe_id = 0;
             const mi_json *result = mi_json_get(root, "result");
@@ -864,6 +1260,17 @@ mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
         wait_for_id(it, rid, tmo);
         rid = cdp_command(it, "Runtime.enable", NULL);
         wait_for_id(it, rid, tmo);
+        /*
+         * Network, so the page's own requests can be watched.
+         *
+         * This is what makes the media list real: whatever a player fetched is a
+         * media URL that works, with the size the browser actually received. A
+         * listing read from the markup cannot know either. The domain is enabled
+         * always, because it has to be on *before* the page loads to see what the
+         * page loads; the recording itself stays off until asked.
+         */
+        rid = cdp_command(it, "Network.enable", NULL);
+        wait_for_id(it, rid, tmo);
     }
 
     /* 4. The viewport the console asked for. Without this the browser paints at
@@ -950,6 +1357,10 @@ mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
         it->last_ping = now;
         it->last_heard = now;
     }
+    /* Off until the console asks: a viewer that never opens the list should not
+     * pay for the per-request bookkeeping. */
+    it->media = mi_mediawatch_new();
+    if (it->media) mi_mediawatch_set_enabled(it->media, 0);
     *out = it;
     return MI_IT_OK;
 
@@ -1000,6 +1411,7 @@ mi_it_event mi_interactive_pump(mi_interactive *it, int ms) {
      * frame next call.
      */
     if (it->ev_state) { it->ev_state = 0; return MI_IT_EV_STATE; }
+    if (it->ev_media) { it->ev_media = 0; return MI_IT_EV_MEDIA; }
     if (it->ev_shot) { it->ev_shot = 0; return MI_IT_EV_SHOT; }
     if (it->ev_frame) { it->ev_frame = 0; return MI_IT_EV_FRAME; }
     return MI_IT_EV_NONE;
@@ -1250,6 +1662,73 @@ void mi_interactive_touch(mi_interactive *it, const char *type, const double *po
     if (!strcmp(type, "touchEnd") || !strcmp(type, "touchCancel")) refresh_editing(it);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* What the page has loaded                                            */
+/* ------------------------------------------------------------------ */
+
+const char *mi_interactive_media_json(mi_interactive *it) {
+    if (!it || !it->media) return "[]";
+    return mi_mediawatch_json(it->media);
+}
+
+void mi_interactive_watch_media(mi_interactive *it, int on) {
+    if (!it || !it->media) return;
+    mi_mediawatch_set_enabled(it->media, on);
+    if (on) it->ev_media = 1; /* so the caller gets the current list at once */
+}
+
+void mi_interactive_rescan_media(mi_interactive *it) {
+    if (!it || it->closed) return;
+    /*
+     * Re-read the page for what it offers.
+     *
+     * The network view only knows what has already been fetched, which is the
+     * truth about what a player is using but misses a media element the page has
+     * not started. This asks the page for its own media URLs and offers them
+     * too, so a list is complete rather than only current.
+     */
+    static const char *EXPR =
+        "(function(){var o=[];var s=document.querySelectorAll('video,audio,source');"
+        "for(var i=0;i<s.length;i++){var u=s[i].currentSrc||s[i].src;"
+        "if(u&&u.indexOf('blob:')!==0)o.push(u);}"
+        "return o.join('\\n');})()";
+    char params[1024];
+    snprintf(params, sizeof params, "{\"expression\":\"%s\",\"returnByValue\":true}", EXPR);
+    it->media_probe_id = cdp_command(it, "Runtime.evaluate", params);
+}
+
+int mi_interactive_go_back(mi_interactive *it) {
+    if (!it || it->closed) return 0;
+    if (it->history_index <= 0) return 0;
+    /* `Page.getNavigationHistory` is the authority; stepping the index here and
+     * asking for that entry keeps the two in step without a second round trip
+     * before the command. */
+    it->history_index--;
+    char params[64];
+    snprintf(params, sizeof params, "{\"entryId\":%d}", it->history_entries[it->history_index]);
+    cdp_command(it, "Page.navigateToHistoryEntry", params);
+    touched(it);
+    return 1;
+}
+
+int mi_interactive_go_forward(mi_interactive *it) {
+    if (!it || it->closed) return 0;
+    if (it->history_index + 1 >= (int)it->history_count) return 0;
+    it->history_index++;
+    char params[64];
+    snprintf(params, sizeof params, "{\"entryId\":%d}", it->history_entries[it->history_index]);
+    cdp_command(it, "Page.navigateToHistoryEntry", params);
+    touched(it);
+    return 1;
+}
+
+void mi_interactive_stop(mi_interactive *it) {
+    if (!it || it->closed) return;
+    cdp_command(it, "Page.stopLoading", NULL);
+    touched(it);
+}
+
 /* ------------------------------------------------------------------ */
 /* Closing                                                             */
 /* ------------------------------------------------------------------ */
@@ -1280,6 +1759,10 @@ void mi_interactive_close(mi_interactive *it) {
     free(it->frame);
     free(it->state_json);
     free(it->resp_json);
+    free(it->manifest_url);
+    pending_clear(it);
+    free(it->pending);
+    mi_mediawatch_free(it->media);
     if (it->pool) {
         reap_children(it->pool);
         pool_release(it->pool);

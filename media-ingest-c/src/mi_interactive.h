@@ -94,6 +94,7 @@ typedef enum {
     MI_IT_EV_FRAME,    /* a screencast frame is ready */
     MI_IT_EV_SHOT,     /* a full-resolution screenshot is ready */
     MI_IT_EV_STATE,    /* the page's url/title/loading changed */
+    MI_IT_EV_MEDIA,    /* the set of downloadable media changed */
     MI_IT_EV_CLOSED    /* the browser went away, or the deadline passed */
 } mi_it_event;
 
@@ -150,6 +151,30 @@ int mi_interactive_silence_limit(const mi_interactive *it);
  * until the next pump. */
 const char *mi_interactive_state(mi_interactive *it);
 
+/*
+ * The media the page has actually loaded, as a JSON array.
+ *
+ * Taken from the browser's own network activity rather than by re-reading the
+ * HTML: whatever a player fetched is a real media URL, with a real size and a
+ * real content type, and it is what a download would use. A page that streams
+ * (an HLS or DASH manifest, a progressive MP4) therefore lists exactly what it
+ * played, which is the thing a listing of <video src> cannot know.
+ *
+ * Owned by the session; valid until the next pump.
+ */
+const char *mi_interactive_media_json(mi_interactive *it);
+
+/* Ask the browser to re-read what is on the page, so a listing is refreshed
+ * after the user has interacted with it. */
+void mi_interactive_rescan_media(mi_interactive *it);
+
+/*
+ * Whether to collect media at all. Off until asked, because the collection is
+ * per-resource bookkeeping on every request the page makes, and a viewer that
+ * never opens the HUD should not pay for it.
+ */
+void mi_interactive_watch_media(mi_interactive *it, int on);
+
 /* Why the session closed, for a farewell message. Never NULL. */
 const char *mi_interactive_close_reason(mi_interactive *it);
 
@@ -158,6 +183,22 @@ const char *mi_interactive_close_reason(mi_interactive *it);
 void mi_interactive_navigate(mi_interactive *it, const char *url);
 void mi_interactive_reload(mi_interactive *it);
 void mi_interactive_resize(mi_interactive *it, int width, int height);
+
+/* --- Navigation, as a browser's own controls. All are no-ops once closed. --- */
+
+/*
+ * Go back or forward in the page's own history.
+ *
+ * `Page.navigateToHistoryEntry` needs an entry id, so the engine keeps the
+ * browser's history in step from `Page.frameNavigated` and the frame tree. The
+ * return says whether there was somewhere to go, so a control can be disabled
+ * rather than doing nothing.
+ */
+int mi_interactive_go_back(mi_interactive *it);
+int mi_interactive_go_forward(mi_interactive *it);
+
+/* Stop loading the page. */
+void mi_interactive_stop(mi_interactive *it);
 void mi_interactive_screenshot(mi_interactive *it);
 
 /* A mouse event. `type` is a CDP mouse type (mousePressed/mouseReleased/

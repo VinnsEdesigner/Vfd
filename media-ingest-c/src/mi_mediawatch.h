@@ -1,0 +1,79 @@
+/* mi_mediawatch.h - what a live page has actually loaded.
+ *
+ * WHY THIS IS NOT AN HTML SCAN
+ *
+ * A listing built by reading the page's markup finds the media a page *mentions*.
+ * That is not the same as the media a page *plays*: a player fetches a manifest,
+ * then segments, then perhaps a separate audio track, and none of those are in
+ * the HTML. It also cannot give a real size or a real content type, because
+ * nothing has been requested yet.
+ *
+ * So this watches the browser's own network activity instead. Every response the
+ * page receives is offered here, and the ones that are media are kept — with the
+ * URL that actually served, the byte count the browser received, and the content
+ * type the server sent. That is what a download would use, and it is measured
+ * rather than guessed.
+ *
+ * WHAT IT KEEPS
+ *
+ *   - progressive media: an MP4, WebM, MP3, and so on, by content type;
+ *   - manifests: an HLS playlist or a DASH MPD, which is a *set* of qualities
+ *     rather than one file, so it is marked as such and its variants are read
+ *     from the playlist itself;
+ *   - images, separately, because a page's images are usually not what someone
+ *     means by "download this" and would otherwise drown the list.
+ *
+ * Duplicates are folded: the same URL fetched twice (a range request, a
+ * re-fetch after a seek) is one entry with the larger byte count.
+ */
+#ifndef MI_MEDIAWATCH_H
+#define MI_MEDIAWATCH_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct mi_mediawatch mi_mediawatch;
+
+mi_mediawatch *mi_mediawatch_new(void);
+void mi_mediawatch_free(mi_mediawatch *w);
+
+/* Forget everything. Called when the page navigates: what the last page loaded
+ * is not what this one has. */
+void mi_mediawatch_clear(mi_mediawatch *w);
+
+/* Whether to record at all. Off means the events are ignored, so a viewer that
+ * never opens the list pays nothing. */
+void mi_mediawatch_set_enabled(mi_mediawatch *w, int on);
+int mi_mediawatch_enabled(const mi_mediawatch *w);
+
+/*
+ * Note a response the page received.
+ *
+ * `url` is absolute; `mime` is the Content-Type the server sent, without its
+ * parameters; `bytes` is what the browser actually got (-1 when the response had
+ * no length, which is normal for a live stream). `resource_type` is the CDP
+ * ResourceType, which says what the browser thought it was — useful because a
+ * server can send a wrong content type, and the browser's own classification is
+ * the tie-breaker.
+ *
+ * Returns 1 when this added or changed an entry, so a caller knows to publish.
+ */
+int mi_mediawatch_note(mi_mediawatch *w, const char *url, const char *mime,
+                       const char *resource_type, int64_t bytes);
+
+/*
+ * Note that a manifest's variants are known.
+ *
+ * A playlist is one URL with several qualities behind it, so the variants are
+ * attached to the entry rather than listed as separate items. `variants_json` is
+ * an array of `{ "label", "bytes", "url" }`, already JSON.
+ */
+int mi_mediawatch_note_variants(mi_mediawatch *w, const char *url, const char *variants_json);
+
+/* The list as JSON, newest first. Owned by the watcher. */
+const char *mi_mediawatch_json(mi_mediawatch *w);
+
+/* How many entries are kept, for a cheap "did anything change" check. */
+size_t mi_mediawatch_count(const mi_mediawatch *w);
+
+#endif /* MI_MEDIAWATCH_H */
