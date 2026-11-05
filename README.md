@@ -97,6 +97,31 @@ retries, then falls back to installing one package at a time. Useful flags:
 | Script | Purpose |
 |---|---|
 | `scripts/install-toolchain.sh` | install everything the repository needs, in one command |
+| `scripts/server.sh` | start Vyzor, point the console at it, and publish it |
+
+### server.sh
+
+One command to bring the whole stack up:
+
+```bash
+./scripts/server.sh            # start Vyzor, build + deploy the console
+./scripts/server.sh status     # what is running, and where
+./scripts/server.sh stop       # stop Vyzor
+```
+
+It exists because the console is a static bundle with Vyzor's URL baked in at
+build time, and this sandbox's public host is per-sandbox — so after a restart
+the old bundle points at a host that no longer exists. Doing start, point and
+publish together is what keeps them from drifting apart.
+
+It derives the public address from `RUNTIME_ID` rather than hardcoding it, and
+reads the console's URL back from Cloudflare rather than assuming it is
+`<project>.pages.dev` (it need not be — a Pages subdomain is assigned at
+creation and does not move when a project is renamed).
+
+Useful flags: `--foreground` (run attached), `--no-deploy` (build only),
+`--local` (build for `localhost`), `--port N`, `--no-render`,
+`--no-interactive`, `--allow-origin O`.
 
 ## Testing
 
