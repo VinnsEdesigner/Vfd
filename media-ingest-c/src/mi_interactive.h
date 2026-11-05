@@ -175,6 +175,29 @@ void mi_interactive_rescan_media(mi_interactive *it);
  */
 void mi_interactive_watch_media(mi_interactive *it, int on);
 
+/*
+ * Read the page's links, for a caller that wants to walk the site.
+ *
+ * The answer arrives asynchronously: call `mi_interactive_read_dom`, pump until
+ * `mi_interactive_dom_links` returns non-NULL, and read it. The links are the
+ * browser's own view of the document, so a page whose list is built in
+ * JavaScript — invisible to a plain fetch — is readable here.
+ */
+void mi_interactive_read_dom(mi_interactive *it);
+const char *mi_interactive_dom_links(mi_interactive *it);
+
+/*
+ * Click, as a user would, to reach a listing that only appears on interaction.
+ *
+ * `mi_interactive_click_selector` matches a CSS selector and clicks in the page;
+ * it returns 1 when the command was sent, but whether the selector matched is
+ * only knowable from the effect, so a caller re-reads the links afterwards.
+ * `mi_interactive_click_at` is the coordinate form, for a target with no
+ * selector.
+ */
+int mi_interactive_click_selector(mi_interactive *it, const char *selector);
+void mi_interactive_click_at(mi_interactive *it, double x, double y);
+
 /* Why the session closed, for a farewell message. Never NULL. */
 const char *mi_interactive_close_reason(mi_interactive *it);
 

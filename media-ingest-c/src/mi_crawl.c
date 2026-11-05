@@ -22,6 +22,7 @@
 
 #include "mi_browse.h"
 #include "mi_download.h"
+#include "mi_interactive.h"
 #include "mi_json.h"
 #include "mi_render.h"
 #include "mi_util.h"
@@ -43,6 +44,10 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->use_browser_fallback = 1;
     cfg->user_agent = NULL;
     cfg->render_pool = NULL;
+    cfg->interactive_pool = NULL;
+    cfg->click_selectors = NULL;
+    cfg->click_selector_count = 0;
+    cfg->settle_seconds = 2.0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -340,6 +345,136 @@ static int is_asset(const char *url) {
 }
 
 /**
+ * Read a page by *driving* a browser, rather than only looking at it.
+ *
+ * A render loads a page, waits, and dumps the DOM. That is enough for a page
+ * that builds its list on load, and useless for one that fetches the list by XHR
+ * after settling, or hides it behind a tab, a consent button or a "show all".
+ *
+ * A session can do both: wait for the network to go quiet, click whatever the
+ * caller says needs clicking, and then read the links the browser actually has —
+ * including ones the DOM dump misses because they were attached after it was
+ * taken.
+ *
+ * Returns the number of hits added. `*rendered` is set when the browser was
+ * actually used, so the caller can report that the page needed it.
+ */
+static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
+                            frontier *f, strset *visited, const char *url, int depth,
+                            const char *term, double deadline, int *rendered) {
+    *rendered = 0;
+    if (!cfg->interactive_pool || !mi_interactive_pool_available(cfg->interactive_pool)) {
+        return 0;
+    }
+
+    mi_interactive *it = NULL;
+    char err[256];
+    err[0] = '\0';
+    /* A viewport wide enough that a desktop listing is not collapsed into a
+     * mobile layout, which often hides columns of a file table. */
+    mi_it_status st = mi_interactive_open(cfg->interactive_pool, url, 1280, 900, 0, &it,
+                                          err, sizeof err);
+    if (st != MI_IT_OK || !it) return 0;
+    *rendered = 1;
+    /* Counted on the result as well as reported to the caller: the summary the
+     * API returns is built from the result, so a browser that was used but not
+     * counted would make the crawl look like it never needed one. */
+    res->rendered++;
+
+    int max_hits = cfg->max_hits > 0 ? cfg->max_hits : 50;
+    int hits = 0;
+    int links = 0;
+
+    /*
+     * Let the page settle, then click, then read.
+     *
+     * The order matters: clicking before the page has finished loading misses
+     * elements that do not exist yet, and reading before clicking misses the
+     * listing the click produces. The settle window is bounded by the crawl's
+     * own deadline so a slow page cannot run past the budget.
+     */
+    double settle_until = now_seconds() + (cfg->settle_seconds > 0 ? cfg->settle_seconds : 2.0);
+    if (settle_until > deadline) settle_until = deadline;
+    int closed = 0;
+    while (now_seconds() < settle_until && !closed) {
+        if (mi_interactive_pump(it, 200) == MI_IT_EV_CLOSED) closed = 1;
+    }
+
+    for (size_t i = 0; i < cfg->click_selector_count && !closed; i++) {
+        if (now_seconds() >= deadline) break;
+        mi_interactive_click_selector(it, cfg->click_selectors[i]);
+        /* Give the click's effect time to arrive: a click that fetches a list
+         * does so over the network, and reading immediately would miss it. */
+        double until = now_seconds() + 1.5;
+        while (now_seconds() < until && !closed) {
+            if (mi_interactive_pump(it, 200) == MI_IT_EV_CLOSED) closed = 1;
+        }
+    }
+
+    /* Ask for the links, then pump until the answer arrives. */
+    mi_interactive_read_dom(it);
+    const char *links_text = NULL;
+    double read_until = now_seconds() + 3.0;
+    while (now_seconds() < read_until && !closed) {
+        if (mi_interactive_pump(it, 100) == MI_IT_EV_CLOSED) { closed = 1; break; }
+        links_text = mi_interactive_dom_links(it);
+        if (links_text) break;
+    }
+
+    if (links_text && *links_text) {
+        /* One URL per line, as the reader returns them. */
+        const char *p = links_text;
+        int room = max_hits - (int)res->hit_count;
+        if (room < 0) room = 0;
+        while (*p && hits < room) {
+            const char *nl = strchr(p, '\n');
+            size_t n = nl ? (size_t)(nl - p) : strlen(p);
+            if (n > 0 && n < 2048) {
+                char *u = mi_strndup(p, n);
+                if (u) {
+                    links++;
+                    if (!is_asset(u)) {
+                        const char *slash = strrchr(u, '/');
+                        const char *q = strchr(u, '?');
+                        size_t flen = 0;
+                        if (slash) {
+                            const char *end = q && q > slash ? q : u + strlen(u);
+                            flen = (size_t)(end - (slash + 1));
+                        }
+                        char *fname = flen ? mi_strndup(slash + 1, flen) : mi_strdup(u);
+                        if (fname) {
+                            int score = mi_crawl_score(fname, fname, term);
+                            if (score > 0) {
+                                mi_browse_item item;
+                                memset(&item, 0, sizeof item);
+                                item.url = u;
+                                item.filename = fname;
+                                item.title = NULL;
+                                item.mime = (char *)"";
+                                item.bytes = -1;
+                                if (add_hit(res, &item, score, url, 1)) hits++;
+                            }
+                            free(fname);
+                        }
+                        /* Follow it if it looks like a page to walk into. */
+                        if (is_page(u) && depth < cfg->max_depth && !strset_has(visited, u)) {
+                            frontier_push(f, u, depth + 1);
+                        }
+                    }
+                    free(u);
+                }
+            }
+            if (!nl) break;
+            p = nl + 1;
+        }
+    }
+
+    mi_interactive_close(it);
+    add_page(res, url, links, hits, 1, 200);
+    return hits;
+}
+
+/**
  * Read one page and record what it yields.
  *
  * The static fetch is tried first. If it finds no matching file and the browser
@@ -415,43 +550,63 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
     /*
      * The browser fallback.
      *
-     * Only when the static pass found nothing matching on this page, and only
-     * when the pool can take it. Rendering every page would be far more
-     * expensive than the crawl is worth; rendering the pages that look empty is
-     * what recovers a JavaScript-built site.
+     * Only when the static pass found nothing matching on this page. Driving a
+     * browser costs far more than the crawl is worth, so it is reserved for the
+     * pages that look empty — which are exactly the ones a plain fetch cannot
+     * read.
+     *
+     * The driven session is preferred when there is one: it can wait for the
+     * network to settle and click what needs clicking, so a listing fetched by
+     * XHR or hidden behind a tab is reachable. The renderer is the fallback for
+     * when there is no session available, and can only look.
      */
-    if (hits == 0 && cfg->use_browser_fallback && cfg->render_pool &&
-        mi_render_pool_available(cfg->render_pool) && now_seconds() < deadline) {
-        mi_render_result rr;
-        memset(&rr, 0, sizeof rr);
-        if (mi_render_run(cfg->render_pool, url, MI_RENDER_DOM, &rr) == MI_RENDER_OK &&
-            rr.data && rr.len > 0) {
-            rendered = 1;
-            res->rendered++;
-            mi_browse_result br;
-            if (mi_browse_parse((const char *)rr.data, rr.len, url, MI_BROWSE_ALL, &br) == MI_OK) {
-                if ((int)br.count > links) links = (int)br.count;
-                for (size_t i = 0; i < br.count; i++) {
-                    const mi_browse_item *item = &br.items[i];
-                    if (!item->url || is_asset(item->url)) continue;
-                    int score = mi_crawl_score(item->filename, item->title, term);
-                    if (score > 0) {
-                        if (hits >= room) break;
-                        if (add_hit(res, item, score, url, 1)) hits++;
-                    }
-                }
-                if (depth < cfg->max_depth) {
-                    for (size_t i = 0; i < br.count; i++) {
-                        const char *u = br.items[i].url;
-                        if (!u || !is_page(u)) continue;
-                        if (strset_has(visited, u)) continue;
-                        frontier_push(f, u, depth + 1);
-                    }
-                }
-                mi_browse_result_free(&br);
+    if (hits == 0 && cfg->use_browser_fallback && now_seconds() < deadline) {
+        if (cfg->interactive_pool && mi_interactive_pool_available(cfg->interactive_pool)) {
+            int was_rendered = 0;
+            hits += read_page_driven(res, cfg, f, visited, url, depth, term, deadline,
+                                     &was_rendered);
+            if (was_rendered) {
+                /*
+                 * read_page_driven recorded this page's entry itself, so return
+                 * rather than recording a second one for the same URL. The
+                 * caller still gets the hit count, which is what it uses.
+                 */
+                (void)rendered;
+                return hits;
             }
         }
-        mi_render_result_free(&rr);
+        if (cfg->render_pool && mi_render_pool_available(cfg->render_pool)) {
+            mi_render_result rr;
+            memset(&rr, 0, sizeof rr);
+            if (mi_render_run(cfg->render_pool, url, MI_RENDER_DOM, &rr) == MI_RENDER_OK &&
+                rr.data && rr.len > 0) {
+                rendered = 1;
+                res->rendered++;
+                mi_browse_result br;
+                if (mi_browse_parse((const char *)rr.data, rr.len, url, MI_BROWSE_ALL, &br) == MI_OK) {
+                    if ((int)br.count > links) links = (int)br.count;
+                    for (size_t i = 0; i < br.count; i++) {
+                        const mi_browse_item *item = &br.items[i];
+                        if (!item->url || is_asset(item->url)) continue;
+                        int score = mi_crawl_score(item->filename, item->title, term);
+                        if (score > 0) {
+                            if (hits >= room) break;
+                            if (add_hit(res, item, score, url, 1)) hits++;
+                        }
+                    }
+                    if (depth < cfg->max_depth) {
+                        for (size_t i = 0; i < br.count; i++) {
+                            const char *u = br.items[i].url;
+                            if (!u || !is_page(u)) continue;
+                            if (strset_has(visited, u)) continue;
+                            frontier_push(f, u, depth + 1);
+                        }
+                    }
+                    mi_browse_result_free(&br);
+                }
+            }
+            mi_render_result_free(&rr);
+        }
     }
 
     (void)started;

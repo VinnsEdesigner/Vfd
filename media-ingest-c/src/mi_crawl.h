@@ -109,6 +109,29 @@ typedef struct {
      * a crawl must share it rather than start a second one.
      */
     struct mi_render_pool *render_pool;
+    /*
+     * The interactive pool, used for the fallback when it is available.
+     *
+     * A render only *looks* at a page: it loads it, waits, and dumps the DOM. A
+     * session can be *driven* — wait for the network to settle, click what needs
+     * clicking, and then read the links the browser actually has. For a listing
+     * assembled by script, or one behind a "Load more" or a category tab, that
+     * is the difference between finding the file and reporting nothing. Falls
+     * back to the renderer when this is NULL.
+     */
+    struct mi_interactive_pool *interactive_pool;
+    /*
+     * CSS selectors to click before reading, in order, once the page has loaded.
+     *
+     * A page's listing is often behind one: a consent button, a tab, a "show
+     * all". Clicking what matches is what makes those reachable. Each is tried
+     * and any that matches has an effect; a selector that matches nothing costs
+     * one round trip.
+     */
+    const char *const *click_selectors;
+    size_t click_selector_count;
+    /* Seconds to let a page settle after load before reading it. */
+    double settle_seconds;
 } mi_crawl_config;
 
 void mi_crawl_config_init(mi_crawl_config *cfg);

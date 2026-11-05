@@ -154,6 +154,17 @@ struct mi_interactive {
     /* An outstanding read of the page's own media elements. */
     int media_probe_id;
     int history_probe_id;
+    /*
+     * An outstanding read of the page's links, and the answer to it.
+     *
+     * A caller that wants to *walk* a page — a crawler — needs the links the
+     * browser can see, which is more than the served HTML has: a page that
+     * assembles its list in JavaScript has none of it in the source. The read is
+     * asynchronous like every other evaluate, so the answer is kept here until
+     * the caller collects it.
+     */
+    int dom_probe_id;
+    char *dom_links;
 
     /*
      * The page's history, so Back and Forward can be offered.
@@ -1133,6 +1144,14 @@ static void handle_message(mi_interactive *it, const char *json) {
                 }
             }
         }
+        if (it->resp_ok && id == it->dom_probe_id) {
+            it->dom_probe_id = 0;
+            const mi_json *result = mi_json_get(root, "result");
+            const mi_json *inner = mi_json_get(result, "result");
+            const char *list = mi_json_get_string(inner, "value", NULL);
+            free(it->dom_links);
+            it->dom_links = (list && *list) ? mi_strdup(list) : NULL;
+        }
         if (it->resp_ok && id == it->manifest_probe_id && it->manifest_url) {
             it->manifest_probe_id = 0;
             const mi_json *result = mi_json_get(root, "result");
@@ -1961,11 +1980,123 @@ void mi_interactive_rescan_media(mi_interactive *it) {
         "for(var i=0;i<s.length;i++){var u=s[i].currentSrc||s[i].src||'';"
         "if(!u||u.indexOf('data:')===0||u.indexOf('blob:')===0)continue;"
         "o.push(u);}"
-        "return o.join('\\n');})()";
-    char params[1024];
-    snprintf(params, sizeof params, "{\"expression\":\"%s\",\"returnByValue\":true}", EXPR);
-    it->media_probe_id = cdp_command(it, "Runtime.evaluate", params);
+        "return o.join(String.fromCharCode(10));})()";
+    /*
+     * Built with the string encoder, not with snprintf.
+     *
+     * Pasting the expression into a format string means its backslashes are not
+     * escaped for JSON: `join('\n')` in C becomes a JSON `\n`, which decodes to
+     * a *raw newline inside a JavaScript string literal* — a SyntaxError, so the
+     * evaluate silently returned nothing. `String.fromCharCode(10)` avoids the
+     * escape entirely, and mi_json_string does the quoting.
+     */
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"expression\":");
+    mi_json_string(&b, EXPR);
+    mi_json_raw(&b, ",\"returnByValue\":true}");
+    it->media_probe_id = cdp_command(it, "Runtime.evaluate", mi_json_data(&b));
+    mi_json_free(&b);
 
+}
+
+/*
+ * Ask the browser for the links on the page.
+ *
+ * The answer is what a crawler needs and the served HTML cannot give: a page
+ * that builds its list in JavaScript has no links in its source, and a page that
+ * fetches them by XHR has them only after the scripts have run. Reading
+ * `document.links` is therefore the one way to see what is actually there.
+ *
+ * The result is collected by `mi_interactive_dom_links` once the pump has seen
+ * the reply, so this returns immediately like every other command.
+ */
+void mi_interactive_read_dom(mi_interactive *it) {
+    if (!it || it->closed) return;
+    if (it->dom_probe_id) return; /* one at a time */
+    /*
+     * Every anchor's href, resolved by the browser against the document, plus
+     * any element carrying a download or a data-src — the shapes a file listing
+     * uses. One URL per line, so the answer is a simple list rather than JSON
+     * that would have to be parsed twice.
+     */
+    static const char *EXPR =
+        "(function(){var o=[];"
+        "var a=document.querySelectorAll('a[href]');"
+        "for(var i=0;i<a.length;i++){var u=a[i].href;"
+        "if(u&&u.indexOf('javascript:')!==0)o.push(u);}"
+        "var d=document.querySelectorAll('[data-src],[data-href],[download]');"
+        "for(var j=0;j<d.length;j++){"
+        "var v=d[j].getAttribute('data-src')||d[j].getAttribute('data-href')||d[j].href;"
+        "if(v&&o.indexOf(v)<0)o.push(v);}"
+        "return o.join(String.fromCharCode(10));})()";
+    /*
+     * Quoted by the JSON encoder rather than pasted into a format string.
+     *
+     * A backslash written in C is not escaped for JSON, so the old form sent a
+     * literal `\n` that decoded to a raw newline inside the JavaScript string —
+     * a SyntaxError, and the read returned nothing at all.
+     */
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"expression\":");
+    mi_json_string(&b, EXPR);
+    mi_json_raw(&b, ",\"returnByValue\":true}");
+    it->dom_probe_id = cdp_command(it, "Runtime.evaluate", mi_json_data(&b));
+    mi_json_free(&b);
+    touched(it);
+}
+
+/*
+ * The links the last completed read returned, or NULL.
+ *
+ * Newline-separated, and owned by the session: valid until the next read. NULL
+ * means the answer has not arrived yet — the caller pumps and asks again.
+ */
+const char *mi_interactive_dom_links(mi_interactive *it) {
+    if (!it || it->closed) return NULL;
+    return it->dom_links;
+}
+
+/*
+ * Click at a point, as a user would.
+ *
+ * A listing that only appears after a click — "Load more", a category tab — is
+ * unreachable by reading the page, and this is how the crawler reaches it. The
+ * press and release are dispatched as a pair because that is what the browser
+ * treats as a click; a press alone leaves the element held.
+ */
+void mi_interactive_click_at(mi_interactive *it, double x, double y) {
+    if (!it || it->closed) return;
+    mi_interactive_mouse(it, "mousePressed", x, y, "left", 1, 1, 0);
+    mi_interactive_mouse(it, "mouseReleased", x, y, "left", 1, 0, 0);
+}
+
+/*
+ * Click the first element matching a CSS selector, if there is one.
+ *
+ * Returns 1 when an element was found and clicked, 0 when the selector matched
+ * nothing. The click is done *in the page* rather than by synthesising a mouse
+ * event at a coordinate: an element that is off-screen or behind an overlay has
+ * coordinates that would miss it, while `element.click()` is what the page's own
+ * handler would receive from a user's click.
+ */
+int mi_interactive_click_selector(mi_interactive *it, const char *selector) {
+    if (!it || it->closed || !selector || !*selector) return 0;
+    /* The selector is a caller-supplied string, so it is embedded as a JSON
+     * string rather than pasted into the expression — a quote in it would
+     * otherwise break the script, and a crafted one could run code. */
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"expression\":\"(function(){var e=document.querySelector(");
+    mi_json_string(&b, selector);
+    mi_json_raw(&b, ");if(!e)return 0;e.click();return 1;})()\",\"returnByValue\":true}");
+    cdp_command(it, "Runtime.evaluate", mi_json_data(&b));
+    mi_json_free(&b);
+    touched(it);
+    /* The caller cannot know whether it matched, since the answer is
+     * asynchronous; it learns from whether the link count grows. */
+    return 1;
 }
 
 int mi_interactive_go_back(mi_interactive *it) {
@@ -2030,6 +2161,7 @@ void mi_interactive_close(mi_interactive *it) {
     free(it->state_json);
     free(it->resp_json);
     free(it->manifest_url);
+    free(it->dom_links);
     pending_clear(it);
     free(it->pending);
     mi_mediawatch_free(it->media);

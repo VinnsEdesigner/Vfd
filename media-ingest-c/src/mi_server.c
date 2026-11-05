@@ -2997,6 +2997,13 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_crawl_config_init(&ccfg);
         ccfg.user_agent = srv->cfg.user_agent;
         ccfg.render_pool = srv->renderer;
+        /*
+         * The interactive pool is preferred for the fallback: a session can be
+         * driven — wait for the network to settle, click what needs clicking —
+         * which is what reaches a listing assembled by script or hidden behind a
+         * tab. The renderer is only used when there is no session pool.
+         */
+        ccfg.interactive_pool = srv->driver;
         int depth = (int)mi_json_get_number(in, "depth", 0);
         int pages = (int)mi_json_get_number(in, "max_pages", 0);
         int budget = (int)mi_json_get_number(in, "budget_seconds", 0);
@@ -3005,6 +3012,37 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         if (budget > 0) ccfg.budget_seconds = budget;
         ccfg.same_host_only = mi_json_get_bool(in, "same_host_only", 0);
         ccfg.use_browser_fallback = mi_json_get_bool(in, "use_browser", 1);
+        /*
+         * Selectors to click before reading, so a listing behind a consent
+         * button, a tab or a "show all" is reachable. A caller that knows the
+         * site can name them; the defaults cover the common consent shapes,
+         * which are otherwise what a crawl hits first and never gets past.
+         */
+        static const char *DEFAULT_CLICKS[] = {
+            "button[aria-label*='accept' i]", "button[aria-label*='Accept' i]",
+            "#onetrust-accept-btn-handler", ".cookie-accept", ".accept-cookies",
+            "button[class*='consent' i]", "button[class*='accept' i]",
+        };
+        const char *user_clicks[8];
+        size_t user_click_count = 0;
+        const mi_json *clicks = mi_json_get(in, "click_selectors");
+        if (clicks && clicks->type == MI_JSON_ARRAY) {
+            for (size_t i = 0; i < clicks->count && user_click_count < 8; i++) {
+                const mi_json *el = clicks->items[i];
+                if (el && el->type == MI_JSON_STRING && el->string && *el->string) {
+                    user_clicks[user_click_count++] = el->string;
+                }
+            }
+        }
+        if (user_click_count > 0) {
+            ccfg.click_selectors = user_clicks;
+            ccfg.click_selector_count = user_click_count;
+        } else if (mi_json_get_bool(in, "click_consent", 1)) {
+            ccfg.click_selectors = DEFAULT_CLICKS;
+            ccfg.click_selector_count = sizeof DEFAULT_CLICKS / sizeof DEFAULT_CLICKS[0];
+        }
+        int settle = (int)mi_json_get_number(in, "settle_seconds", 0);
+        if (settle > 0) ccfg.settle_seconds = settle;
 
         mi_crawl_result cr;
         int rc = mi_crawl(&ccfg, url, term, &cr);
