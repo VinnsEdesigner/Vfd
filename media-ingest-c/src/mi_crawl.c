@@ -22,6 +22,7 @@
 
 #include "mi_browse.h"
 #include "mi_download.h"
+#include "mi_extract.h"
 #include "mi_interactive.h"
 #include "mi_json.h"
 #include "mi_render.h"
@@ -48,6 +49,8 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->same_host_only = 0;
     cfg->use_browser_fallback = 1;
     cfg->max_browser_pages = 3;
+    cfg->extract_enabled = 1;
+    cfg->extractor_path = NULL;
     cfg->user_agent = NULL;
     cfg->render_pool = NULL;
     cfg->interactive_pool = NULL;
@@ -288,6 +291,7 @@ static mi_crawl_hit *add_hit(mi_crawl_result *res, const mi_browse_item *item,
     h->score = score;
     h->found_on = mi_strdup(found_on);
     h->via_browser = via_browser;
+    h->resolved = 0;
     return h;
 }
 
@@ -617,6 +621,59 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
      * when there is no session available, and can only look.
      */
     /*
+     * The extractor's media, when the page has one.
+     *
+     * This is the *hardening* of the walk rather than a separate feature: a
+     * streaming page's media URL is not in its links — it is signed and computed
+     * at play time — so a crawl that only reads links reports the channel as the
+     * result and misses the video. Asking the extractor is the same job a crawl
+     * does, done by the tool that can.
+     *
+     * Deliberately *not* gated on `hits == 0`. A streaming page's links include
+     * its own channel and navigation, so the walk usually has a hit already —
+     * measured: a watch page matched `@RickAstleyYT` and the video was never
+     * looked for. When the extractor knows the page it is the authority, so it
+     * is asked regardless and its result is placed first.
+     *
+     * The hit's URL is the *page*, not a stream URL: a stream URL is signed,
+     * bound to this session, and expires within hours, so storing one would give
+     * a download that fails tomorrow. Recording the page means the download
+     * resolves it again when it runs.
+     */
+    if (cfg->extract_enabled && now_seconds() < deadline) {
+        mi_extract_config ecfg;
+        mi_extract_config_init(&ecfg);
+        ecfg.binary = cfg->extractor_path;
+        if (mi_extract_available(&ecfg)) {
+            mi_extract_result er;
+            if (mi_extract(&ecfg, url, &er) == MI_OK && er.format_count > 0) {
+                /*
+                 * Scored on the page's title, because that is what the caller
+                 * searched for — the format list is a technical detail.
+                 */
+                int score = mi_crawl_score(er.title, er.title, term);
+                if (score > 0) {
+                    mi_browse_item item;
+                    memset(&item, 0, sizeof item);
+                    item.url = (char *)url;
+                    item.filename = er.title ? er.title : (char *)url;
+                    item.title = er.title;
+                    item.mime = (char *)"";
+                    item.bytes = -1;
+                    if (add_hit(res, &item, score, url, 0)) {
+                        hits++;
+                        /* Marked so it ranks above the page's own links at an
+                         * equal score — a channel link matches a search just as
+                         * well as the video does. */
+                        res->hits[res->hit_count - 1].resolved = 1;
+                    }
+                }
+            }
+            mi_extract_result_free(&er);
+        }
+    }
+
+    /*
      * The browser fallback, and what bounds it.
      *
      * A browser costs several seconds a page, and there is no cheap way to know
@@ -704,6 +761,15 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
  */
 static int prefers_over(const mi_crawl_hit *a, const mi_crawl_hit *b) {
     if (a->score != b->score) return a->score > b->score;
+    /*
+     * A hit the extractor produced outranks a link the walk found.
+     *
+     * A streaming page's own links are its channel and its navigation, and one
+     * of them will match the term just as well as the video does — measured: a
+     * watch page returned `@RickAstleyYT` and the video both at score 80. The
+     * extractor's answer is the thing the caller asked for, so it goes first.
+     */
+    if (a->resolved != b->resolved) return a->resolved;
     /*
      * A raw/download path first, because it is the explicit statement that this
      * URL is the bytes. It has to be checked before `is_page`, which cannot help

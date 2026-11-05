@@ -45,6 +45,15 @@ typedef struct {
     char *found_on;
     /* 1 when this page had to be rendered to see the link. */
     int via_browser;
+    /*
+     * 1 when a media extractor resolved this page, so the hit is the *media*
+     * rather than a link the walk found.
+     *
+     * Worth distinguishing because a streaming page's own links match a search
+     * just as well as its video does, and the extractor's answer is the one the
+     * caller asked for — so it ranks first at an equal score.
+     */
+    int resolved;
 } mi_crawl_hit;
 
 /* One page the crawl visited, and what it yielded. Kept so the caller can
@@ -110,6 +119,16 @@ typedef struct {
      * page, not behind every page on the site.
      */
     int max_browser_pages;
+    /*
+     * Whether the walk may ask a media extractor about a page.
+     *
+     * On by default when the extractor is installed. A streaming page's media
+     * URL is not among its links, so without this a crawl of one reports the
+     * channel rather than the video — which is what it did before this existed.
+     */
+    int extract_enabled;
+    /* The extractor binary; NULL uses "yt-dlp" from PATH. */
+    const char *extractor_path;
     /* The User-Agent to send. NULL uses the built-in default. */
     const char *user_agent;
     /*

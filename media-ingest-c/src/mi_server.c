@@ -1503,6 +1503,14 @@ static void *download_worker(void *arg) {
      * playlist text and reported success.
      */
     dcfg.ffmpeg_path = srv->cfg.ffmpeg_path;
+    /*
+     * A URL that probes as a page may be one the extractor knows. Enabled here
+     * so a streaming page downloads its streams rather than its HTML — the
+     * extractor is tried only when the URL is not already recognisable media, so
+     * an ordinary file download never pays for it.
+     */
+    dcfg.extract_pages = 1;
+    dcfg.extractor_path = srv->cfg.extractor_path;
     /* A host that refuses a non-browser agent is a host the operator may have
      * told Vyzor how to present itself to. */
     dcfg.user_agent = srv->cfg.user_agent;
@@ -3122,7 +3130,15 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
          * which is what reaches a listing assembled by script or hidden behind a
          * tab. The renderer is only used when there is no session pool.
          */
+        ccfg.max_browser_pages = 3;
         ccfg.interactive_pool = srv->driver;
+        /*
+         * The extractor, for a page whose media is not among its links. On by
+         * default; a caller can turn it off, and it is skipped anyway when the
+         * binary is not installed.
+         */
+        ccfg.extract_enabled = mi_json_get_bool(in, "use_extractor", 1);
+        ccfg.extractor_path = srv->cfg.extractor_path;
         int depth = (int)mi_json_get_number(in, "depth", 0);
         int pages = (int)mi_json_get_number(in, "max_pages", 0);
         int budget = (int)mi_json_get_number(in, "budget_seconds", 0);

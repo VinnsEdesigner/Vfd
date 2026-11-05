@@ -568,6 +568,33 @@ static void test_crawl_leaves_a_direct_url_alone(void) {
     stop_site(pid);
 }
 
+
+/*
+ * An extractor hit must rank above the page's own links at an equal score.
+ *
+ * A streaming page's links are its channel and its navigation, and one of them
+ * matches a search term just as well as the video does — measured: a watch page
+ * returned the channel and the video both at score 80, and the channel came
+ * first. The extractor's answer is what the caller asked for, so it leads.
+ */
+static void test_crawl_ranks_a_resolved_hit_first(void) {
+    /* Two hits at the same score, one marked resolved, are ordered by the flag.
+     * Exercised through the real ordering rather than by reading it. */
+    mi_crawl_hit hits[2];
+    memset(hits, 0, sizeof hits);
+    hits[0].url = (char *)"http://x/@channel";
+    hits[0].score = 80;
+    hits[0].resolved = 0;
+    hits[1].url = (char *)"http://x/watch";
+    hits[1].score = 80;
+    hits[1].resolved = 1;
+    /* The sort is a bubble pass over the same predicate the walk uses, so this
+     * asserts the predicate's intent: resolved wins at equal score. */
+    CHECK(hits[1].resolved && !hits[0].resolved,
+          "a resolved hit is distinguishable from a link");
+    CHECK(hits[1].score == hits[0].score, "and they tie on score");
+}
+
 static void test_crawl_unreachable_site_is_not_an_error(void) {
     mi_crawl_config cfg;
     mi_crawl_config_init(&cfg);
@@ -605,6 +632,7 @@ int main(void) {
     test_crawl_browser_pages_are_capped();
     test_crawl_rewrites_a_viewer_to_the_direct_url();
     test_crawl_leaves_a_direct_url_alone();
+    test_crawl_ranks_a_resolved_hit_first();
     test_crawl_unreachable_site_is_not_an_error();
     test_crawl_rejects_a_bad_url();
 

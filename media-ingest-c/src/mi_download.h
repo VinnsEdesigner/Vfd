@@ -67,6 +67,17 @@ typedef struct {
      * which fetches every segment and muxes them. NULL uses "ffmpeg" from PATH.
      */
     const char *ffmpeg_path;
+    /*
+     * Whether to ask the extractor when the URL is a *page* rather than a file.
+     *
+     * A streaming site's media is not at the page URL, so an ordinary transfer
+     * of it fetches HTML. With this set, a URL that probes as a non-video
+     * document is offered to the extractor first, and its streams are muxed.
+     * Off by default so a plain file download never pays for a subprocess.
+     */
+    int extract_pages;
+    /* The extractor binary; NULL uses "yt-dlp" from PATH. */
+    const char *extractor_path;
 } mi_download_config;
 
 typedef struct {

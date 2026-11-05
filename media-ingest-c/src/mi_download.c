@@ -12,6 +12,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "mi_extract.h"
 #include "mi_util.h"
 
 #define MI_HEADER_SNIFF 8192
@@ -890,6 +891,8 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->user_agent = NULL;
     cfg->control = NULL;
     cfg->ffmpeg_path = NULL;
+    cfg->extract_pages = 0;
+    cfg->extractor_path = NULL;
 }
 
 void mi_download_result_free(mi_download_result *res) {
@@ -1004,6 +1007,130 @@ static int download_manifest(const mi_download_config *cfg, const char *url,
     return MI_OK;
 }
 
+/*
+ * A streaming *page*, resolved to its streams and muxed.
+ *
+ * A video the extractor can read is not one URL. Measured on a YouTube watch
+ * page: the video and the audio arrive as two separate streams — zero formats
+ * carried both — so neither alone is a playable file. ffmpeg muxes them, and
+ * this is where that happens.
+ *
+ * The page is resolved *here*, at download time, rather than when the crawl
+ * found it. A resolved stream URL is signed and bound to the session that asked,
+ * and expires within hours, so a URL recorded by a crawl would be dead by the
+ * time anyone downloaded it.
+ */
+static int download_stream_page(const mi_download_config *cfg, const char *page_url,
+                                const char *dest, mi_progress_fn on_progress, void *user,
+                                mi_download_result *out) {
+    mi_extract_config ecfg;
+    mi_extract_config_init(&ecfg);
+    ecfg.binary = cfg->extractor_path;
+
+    mi_extract_result er;
+    if (mi_extract(&ecfg, page_url, &er) != MI_OK) return MI_ERR_NET;
+
+    /*
+     * The best video and the best audio, chosen by resolution and then bitrate.
+     * A muxed format is preferred when one exists, because it needs no second
+     * input.
+     */
+    const mi_extract_format *video = NULL;
+    const mi_extract_format *audio = NULL;
+    const mi_extract_format *muxed = NULL;
+    for (size_t i = 0; i < er.format_count; i++) {
+        const mi_extract_format *f = &er.formats[i];
+        if (f->has_video && f->has_audio) {
+            if (!muxed || f->height > muxed->height) muxed = f;
+        } else if (f->has_video) {
+            if (!video || f->height > video->height) video = f;
+        } else if (f->has_audio) {
+            if (!audio || f->bitrate > audio->bitrate) audio = f;
+        }
+    }
+
+    if (!muxed && !video) {
+        mi_extract_result_free(&er);
+        mi_logf(MI_LOG_ERROR, "the extractor found no video stream");
+        return MI_ERR_ARG;
+    }
+
+    const char *ffmpeg = cfg->ffmpeg_path ? cfg->ffmpeg_path : "ffmpeg";
+    const char *argv[32];
+    int a = 0;
+    argv[a++] = ffmpeg;
+    argv[a++] = "-nostdin";
+    argv[a++] = "-loglevel";
+    argv[a++] = "error";
+    argv[a++] = "-y";
+    argv[a++] = "-i";
+    argv[a++] = muxed ? muxed->url : video->url;
+    /* The second input is the audio, when the video did not carry it. */
+    if (!muxed && audio) {
+        argv[a++] = "-i";
+        argv[a++] = audio->url;
+    }
+    /* Copy both streams: they are already encoded, so this is a mux, not an
+     * encode — which is why it takes seconds rather than the length of the
+     * video. */
+    argv[a++] = "-c";
+    argv[a++] = "copy";
+    /* Map explicitly: with two inputs, ffmpeg's default picks one stream from
+     * each, and being explicit is what stops a video-only file being produced. */
+    if (!muxed && audio) {
+        argv[a++] = "-map";
+        argv[a++] = "0:v:0";
+        argv[a++] = "-map";
+        argv[a++] = "1:a:0";
+    }
+    argv[a++] = "-f";
+    argv[a++] = "mp4";
+    argv[a++] = dest;
+    argv[a] = NULL;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        mi_extract_result_free(&er);
+        return MI_ERR_IO;
+    }
+    if (pid == 0) {
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+
+    int status = 0;
+    for (;;) {
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) break;
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            mi_extract_result_free(&er);
+            return MI_ERR_IO;
+        }
+        if (on_progress) {
+            mi_progress p;
+            memset(&p, 0, sizeof p);
+            p.total_bytes = -1;
+            p.downloaded_bytes = mi_file_size(dest);
+            on_progress(&p, user);
+        }
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 500 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    mi_extract_result_free(&er);
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        mi_logf(MI_LOG_ERROR, "ffmpeg could not mux the streams (exit %d)",
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        return MI_ERR_NET;
+    }
+    int64_t written = mi_file_size(dest);
+    if (written <= 0) return MI_ERR_IO;
+    out->bytes_written = written;
+    mi_detect_file(dest, MI_HEADER_SNIFF, &out->media);
+    return MI_OK;
+}
+
 int mi_download(const mi_download_config *cfg, const char *url, const char *dest,
                 mi_progress_fn on_progress, void *user,
                 mi_download_result *out) {
@@ -1060,6 +1187,37 @@ int mi_download(const mi_download_config *cfg, const char *url, const char *dest
         (plan.media.kind == MI_KIND_HLS || plan.media.kind == MI_KIND_DASH)) {
         rc = download_manifest(cfg, plan.final_url ? plan.final_url : url, dest,
                                on_progress, user, out);
+    } else if (cfg->extract_pages && (!plan.have_media || !plan.media.is_video)) {
+        /*
+         * A page the extractor can read, rather than a file.
+         *
+         * The probe of a streaming page finds an HTML document, so the media
+         * check either refuses it or reports no video. The page is where the
+         * streams are, so the extractor is asked — and if it knows the page, the
+         * download is its streams muxed together.
+         *
+         * Tried *before* the ordinary paths because a page that the extractor
+         * recognises is not something a ranged copy can fetch: the bytes are not
+         * at this URL at all.
+         */
+        int src = download_stream_page(cfg, plan.final_url ? plan.final_url : url, dest,
+                                       on_progress, user, out);
+        if (src == MI_OK) {
+            rc = MI_OK;
+        } else if (!plan.have_media || plan.total_bytes <= 0) {
+            /* The extractor did not know it and there is nothing to copy. */
+            rc = src;
+        } else {
+            /* The extractor did not know it, but the URL is a real object, so
+             * fall through to the ordinary transfer. */
+            rc = plan.accept_ranges && plan.total_bytes > 0
+                     ? download_ranged(cfg, plan.final_url ? plan.final_url : url,
+                                       plan.total_bytes, dest, on_progress, user, out,
+                                       plan.have_media ? &plan.media : NULL)
+                     : download_stream(cfg, plan.final_url ? plan.final_url : url, dest,
+                                       on_progress, user, out,
+                                       plan.have_media ? &plan.media : NULL);
+        }
     } else if (plan.accept_ranges && plan.total_bytes > 0) {
         rc = download_ranged(cfg, plan.final_url ? plan.final_url : url,
                              plan.total_bytes, dest, on_progress, user, out,
