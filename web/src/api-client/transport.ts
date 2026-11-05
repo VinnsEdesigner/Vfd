@@ -152,7 +152,25 @@ export function createTransport(config: TransportConfig): Transport {
 
       const text = await res.text();
       if (!text) return undefined as T;
-      return JSON.parse(text) as T;
+      /*
+       * A 200 that is not JSON is not a valid answer, and saying so is worth
+       * more than the SyntaxError JSON.parse would throw.
+       *
+       * This happens for a real reason: a static host serves its own SPA for
+       * any unknown path, so pointing the console at its own origin returns
+       * `200 text/html` for `/api/v1/...`. The request looks successful and
+       * then dies in the parser, which reads as "the console is broken" when
+       * the truth is "that address is not Vyzor".
+       */
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        throw new ApiError(
+          'the response was not JSON',
+          0,
+          `${options.path} answered ${res.status} ${res.headers.get('content-type') ?? 'with no content type'} — this address is not Vyzor`,
+        );
+      }
     },
 
     async head(options: RequestOptions): Promise<ResponseHeaders> {

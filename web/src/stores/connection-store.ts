@@ -29,28 +29,56 @@ export const DEFAULT_CONNECTION: ConnectionSettings = {
   authToken: '',
 };
 
+/**
+ * A saved connection, and the build-time default that was in force when it was
+ * saved.
+ *
+ * The stamp is the whole point. A stored endpoint is only meaningful for the
+ * build that stored it: a new deployment bakes in a new Vyzor address, and the
+ * old one may point at a host that no longer exists. Without the stamp, the
+ * stale value silently wins — which is how a console ends up talking to
+ * nothing while insisting it is configured.
+ */
+interface StoredConnection extends ConnectionSettings {
+  bakedFor?: string;
+}
+
 function load(): ConnectionSettings {
-  if (typeof localStorage === 'undefined') return DEFAULT_CONNECTION;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_CONNECTION;
-    const parsed = JSON.parse(raw) as Partial<ConnectionSettings>;
-    return {
-      baseUrl: parsed.baseUrl ?? DEFAULT_CONNECTION.baseUrl,
-      authToken: parsed.authToken ?? DEFAULT_CONNECTION.authToken,
-    };
-  } catch {
-    return DEFAULT_CONNECTION;
-  }
+    if (typeof localStorage === 'undefined') return DEFAULT_CONNECTION;
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return DEFAULT_CONNECTION;
+        const parsed = JSON.parse(raw) as Partial<StoredConnection>;
+        /*
+         * Discard a saved endpoint that belongs to a different build.
+         *
+         * `bakedFor` is absent on anything saved before this field existed, and
+         * an absent stamp means the value's provenance is unknown — so it is
+         * treated as stale rather than trusted. That is the safe reading: the
+         * cost of discarding a good saved endpoint is retyping an address, and
+         * the cost of keeping a bad one is a console that cannot connect and
+         * cannot explain why.
+         */
+        if (parsed.bakedFor !== DEFAULT_CONNECTION.baseUrl) {
+            return DEFAULT_CONNECTION;
+        }
+        return {
+            baseUrl: parsed.baseUrl ?? DEFAULT_CONNECTION.baseUrl,
+            authToken: parsed.authToken ?? DEFAULT_CONNECTION.authToken,
+        };
+    } catch {
+        return DEFAULT_CONNECTION;
+    }
 }
 
 function persist(s: ConnectionSettings): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
-  } catch {
-    /* storage unavailable; settings stay in memory */
-  }
+    if (typeof localStorage === 'undefined') return;
+    try {
+        const stamped: StoredConnection = { ...s, bakedFor: DEFAULT_CONNECTION.baseUrl };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stamped));
+    } catch {
+        /* storage unavailable; settings stay in memory */
+    }
 }
 
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
