@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "mi_browse.h"
+#include "mi_crawl.h"
 #include "mi_detect.h"
 #include "mi_download.h"
 #include "mi_hls.h"
@@ -2963,6 +2964,106 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
         mi_download_plan_free(&plan);
+        mi_json_value_free(in);
+        return;
+    }
+
+    /* POST /api/v1/crawl  {url, term, ...} — walk a site for files matching a name.
+     *
+     * The console cannot do this itself: the browser enforces CORS, and a crawl
+     * needs to read many pages on another host. Vyzor has no such limit, so the
+     * walk happens here.
+     *
+     * This is a *blocking* call, unlike a download. A crawl is bounded by its own
+     * budget (a few tens of seconds) and the caller is waiting for the list, so
+     * a job-and-poll dance would add machinery for no gain. The budget is what
+     * keeps it from becoming an unbounded request. */
+    if (!strcmp(req->path, "/api/v1/crawl") && !strcmp(req->method, "POST")) {
+        mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+        const char *url = mi_json_get_string(in, "url", NULL);
+        if (!url || !*url) {
+            send_error(fd, 400, "Bad Request", "missing or empty 'url'", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        if (!mi_render_url_allowed(url)) {
+            send_error(fd, 400, "Bad Request", "that address cannot be crawled", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        const char *term = mi_json_get_string(in, "term", NULL);
+
+        mi_crawl_config ccfg;
+        mi_crawl_config_init(&ccfg);
+        ccfg.user_agent = srv->cfg.user_agent;
+        ccfg.render_pool = srv->renderer;
+        int depth = (int)mi_json_get_number(in, "depth", 0);
+        int pages = (int)mi_json_get_number(in, "max_pages", 0);
+        int budget = (int)mi_json_get_number(in, "budget_seconds", 0);
+        if (depth > 0) ccfg.max_depth = depth;
+        if (pages > 0) ccfg.max_pages = pages;
+        if (budget > 0) ccfg.budget_seconds = budget;
+        ccfg.same_host_only = mi_json_get_bool(in, "same_host_only", 0);
+        ccfg.use_browser_fallback = mi_json_get_bool(in, "use_browser", 1);
+
+        mi_crawl_result cr;
+        int rc = mi_crawl(&ccfg, url, term, &cr);
+
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{");
+        mi_json_key(&b, "ok");
+        mi_json_bool(&b, rc == MI_OK);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "url");
+        mi_json_string(&b, url);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "term");
+        mi_json_string(&b, term);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "found");
+        mi_json_int(&b, (int64_t)cr.hit_count);
+        mi_json_raw(&b, ",");
+        /* What the walk did, so an empty result can be explained rather than
+         * just reported: "40 pages read, 12 needed the browser, none matched"
+         * is a different answer from "the host refused us". */
+        mi_json_key(&b, "pages_read");
+        mi_json_int(&b, (int64_t)cr.page_count);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "pages_failed");
+        mi_json_int(&b, (int64_t)cr.failed);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "pages_rendered");
+        mi_json_int(&b, (int64_t)cr.rendered);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "skipped_offsite");
+        mi_json_int(&b, (int64_t)cr.skipped_offsite);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "items");
+        mi_json_raw(&b, "[");
+        for (size_t i = 0; i < cr.hit_count; i++) {
+            const mi_crawl_hit *h = &cr.hits[i];
+            if (i) mi_json_raw(&b, ",");
+            mi_json_raw(&b, "{\"url\":");
+            mi_json_string(&b, h->url);
+            mi_json_raw(&b, ",\"filename\":");
+            mi_json_string(&b, h->filename);
+            mi_json_raw(&b, ",\"title\":");
+            mi_json_string(&b, h->title);
+            mi_json_raw(&b, ",\"mime\":");
+            mi_json_string(&b, h->mime);
+            mi_json_raw(&b, ",\"score\":");
+            mi_json_int(&b, h->score);
+            mi_json_raw(&b, ",\"found_on\":");
+            mi_json_string(&b, h->found_on);
+            mi_json_raw(&b, ",\"via_browser\":");
+            mi_json_bool(&b, h->via_browser);
+            mi_json_raw(&b, "}");
+        }
+        mi_json_raw(&b, "]}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        mi_crawl_result_free(&cr);
         mi_json_value_free(in);
         return;
     }
