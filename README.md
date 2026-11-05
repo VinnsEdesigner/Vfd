@@ -97,7 +97,6 @@ retries, then falls back to installing one package at a time. Useful flags:
 | Script | Purpose |
 |---|---|
 | `scripts/install-toolchain.sh` | install everything the repository needs, in one command |
-| `scripts/rename-to-vyzor.py` | the engine → Vyzor rename (keeps the stored `source` enum) |
 
 ## Testing
 
