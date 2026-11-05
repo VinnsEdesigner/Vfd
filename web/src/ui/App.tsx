@@ -207,6 +207,19 @@ export interface AppProps {
 /** Turns a thrown transport/API error into something a user can act on. */
 function describeError(e: unknown): string {
   if (isApiError(e)) {
+    /*
+     * Status 0 is not from a server: it is a response that arrived and was not
+     * an answer. The commonest cause by far is pointing the console at a static
+     * host (its own Pages URL, say), which serves its SPA for every path — so
+     * every request returns 200 HTML and nothing works, with no obvious reason
+     * why. Naming that is more useful than the status code.
+     */
+    if (e.status === 0) {
+      return (
+        'That address answered, but not as Vyzor — it looks like a static site ' +
+        'serving its own pages. Check the API endpoint in Settings.'
+      );
+    }
     if (e.status === 401) return 'Vyzor rejected the request — check the bearer token in Settings.';
     if (e.status === 404) return 'Vyzor does not know that record.';
     if (e.status >= 500) return `Vyzor failed the request (HTTP ${e.status}).`;
