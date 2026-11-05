@@ -1,4 +1,4 @@
-/* Vyzorix File Downloader — service worker.
+/* Vfd — service worker.
  *
  * Two jobs, and deliberately no more:
  *   1. keep the app shell so the installed app opens without a network;
@@ -15,8 +15,8 @@
  */
 
 const VERSION = 'v1';
-const SHELL_CACHE = `vyzorix-shell-${VERSION}`;
-const MEDIA_CACHE = `vyzorix-media-${VERSION}`;
+const SHELL_CACHE = `vfd-shell-${VERSION}`;
+const MEDIA_CACHE = `vfd-media-${VERSION}`;
 
 /* Filled in at install time from whatever the page actually requested, so this
    cannot drift from the build's hashed asset names. */

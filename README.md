@@ -75,6 +75,30 @@ scripts/          maintenance scripts
 GStreamer is only needed for live video. Without it Vyzor still builds and
 reports the capability as unavailable, and the console hides the control.
 
+On Debian or Ubuntu, one command installs all of it:
+
+```bash
+./scripts/install-toolchain.sh
+```
+
+That is safe to re-run — it checks each package first and reports what it
+skipped. A mirror hiccup on one archive no longer loses the whole install: it
+retries, then falls back to installing one package at a time. Useful flags:
+
+```bash
+./scripts/install-toolchain.sh --dry-run        # say what it would do
+./scripts/install-toolchain.sh --runtime-only   # skip the compiler and -dev headers
+./scripts/install-toolchain.sh --no-media       # skip Chromium, Xvfb, GStreamer, FFmpeg
+./scripts/install-toolchain.sh --no-npm         # skip npm ci in web/
+```
+
+## Scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/install-toolchain.sh` | install everything the repository needs, in one command |
+| `scripts/rename-to-vyzor.py` | the engine → Vyzor rename (keeps the stored `source` enum) |
+
 ## Testing
 
 Both halves have their own suite, and the console's integration suite drives the
