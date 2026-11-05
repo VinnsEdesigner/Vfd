@@ -206,8 +206,21 @@ void mi_interactive_config_init(mi_interactive_config *cfg) {
     /* A ping every 20 s, and a client silent for 45 s is gone. Both well above
      * any plausible round trip, and both short enough that a leaked session does
      * not hold the gate for long. */
-    cfg->keepalive_ping_seconds = 20;
-    cfg->keepalive_timeout_seconds = 45;
+    /*
+     * The keepalive window.
+     *
+     * A ping every 25 seconds, and a client is only given up on after 120
+     * seconds of silence. The margin matters more than the interval: a browser
+     * answers a ping promptly, but a backgrounded tab throttles its timers, a
+     * phone suspends the socket when it sleeps, and a proxy can hold a reply for
+     * a moment. With a 25-second window any of those killed the session, which is
+     * what made a live page feel like it kept dropping.
+     *
+     * Two minutes is still quick enough that a vanished tab does not hold the
+     * engine's only slot for long.
+     */
+    cfg->keepalive_ping_seconds = 25;
+    cfg->keepalive_timeout_seconds = 120;
 }
 
 int mi_interactive_url_allowed(const char *url) {
@@ -261,8 +274,8 @@ mi_interactive_pool *mi_interactive_pool_new(const mi_interactive_config *cfg) {
     if (pool->cfg.viewport_height <= 0) pool->cfg.viewport_height = 800;
     if (pool->cfg.v8_heap_mb <= 0) pool->cfg.v8_heap_mb = 256;
     if (pool->cfg.startup_timeout_seconds <= 0) pool->cfg.startup_timeout_seconds = 15;
-    if (pool->cfg.keepalive_ping_seconds <= 0) pool->cfg.keepalive_ping_seconds = 20;
-    if (pool->cfg.keepalive_timeout_seconds <= 0) pool->cfg.keepalive_timeout_seconds = 45;
+    if (pool->cfg.keepalive_ping_seconds <= 0) pool->cfg.keepalive_ping_seconds = 25;
+    if (pool->cfg.keepalive_timeout_seconds <= 0) pool->cfg.keepalive_timeout_seconds = 120;
     pool->browser = find_browser(cfg->chromium_path);
     if (!pool->browser) {
         mi_logf(MI_LOG_INFO, "interactive: no browser found; live sessions are unavailable");
@@ -1672,7 +1685,7 @@ double mi_interactive_silence(mi_interactive *it) {
 }
 
 int mi_interactive_silence_limit(const mi_interactive *it) {
-    return it ? it->pool->cfg.keepalive_timeout_seconds : 45;
+    return it ? it->pool->cfg.keepalive_timeout_seconds : 120;
 }
 
 const unsigned char *mi_interactive_frame(mi_interactive *it, size_t *len) {
