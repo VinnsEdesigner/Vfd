@@ -37,6 +37,22 @@ export type LiveStatus = 'idle' | 'connecting' | 'open' | 'closed';
 const REPLACE_FALLBACK_MS = 1200;
 
 /**
+ * How a dropped session is retried.
+ *
+ * A live session can end for reasons that are nothing to do with the viewer: the
+ * engine restarted, a proxy in front of it recycled the connection, the machine
+ * went to sleep. None of those should leave someone staring at a dead page with
+ * no way back, so the session is re-opened by itself.
+ *
+ * The wait grows because a failure that repeats immediately is usually the
+ * engine being down, and hammering it helps nobody. It is capped so a viewer who
+ * waits is never more than a few seconds from the next attempt.
+ */
+const RECONNECT_STEPS_MS = [800, 1600, 3200, 5000, 8000, 12000];
+/** How many times to try before giving up and saying so. */
+const RECONNECT_LIMIT = 6;
+
+/**
  * Whether this device is driven by touch.
  *
  * Used to tell the engine to emulate a touch device, so the page lays itself out
@@ -136,6 +152,14 @@ export function useLiveSession(): UseLiveSession {
    * straight back.
    */
   const forgottenRef = useRef<Set<string>>(new Set());
+  /** The last page asked for, so a drop can be recovered without the caller. */
+  const lastOpenRef = useRef<{ url: string; width: number; height: number } | null>(null);
+  /** How many attempts have been made for the current page. */
+  const attemptsRef = useRef(0);
+  /** The pending retry, so a deliberate close can cancel it. */
+  const retryRef = useRef<number | null>(null);
+  /** Whether the viewer asked to close, which must not be undone by a retry. */
+  const deliberateRef = useRef(false);
 
   const sessionRef = useRef<LiveSession | null>(null);
   /** The previous frame's blob URL, so it can be revoked when replaced. */
@@ -182,8 +206,14 @@ export function useLiveSession(): UseLiveSession {
       const vp = touch ? mobileViewport() : { width, height };
       setViewport(vp);
 
+      lastOpenRef.current = { url, width: vp.width, height: vp.height };
+      deliberateRef.current = false;
       const session = api.live.open(url, vp.width, vp.height, {
-        onOpen: () => setStatus('open'),
+        onOpen: () => {
+          setStatus('open');
+          // Connected: the next drop starts its backoff from the beginning.
+          attemptsRef.current = 0;
+        },
         onFrame: (f) => {
           acceptFrame(f);
           /*
@@ -210,15 +240,38 @@ export function useLiveSession(): UseLiveSession {
         },
         onClose: (f: LiveFailure, r: string) => {
           sessionRef.current = null;
-          setStatus('closed');
-          setFailure(f);
-          setReason(r);
           // A replacement that was waiting for this socket to go can start now.
           const pending = pendingRef.current;
           if (pending) {
             pendingRef.current = null;
             startRef.current?.(pending.url, pending.width, pending.height);
+            return;
           }
+          /*
+           * An unexpected end is retried, rather than leaving the viewer with a
+           * dead page. A *deliberate* close is not: pressing Close must not be
+           * undone a second later.
+           */
+          const target = lastOpenRef.current;
+          if (!deliberateRef.current && target && attemptsRef.current < RECONNECT_LIMIT) {
+            const wait =
+              RECONNECT_STEPS_MS[Math.min(attemptsRef.current, RECONNECT_STEPS_MS.length - 1)]!;
+            attemptsRef.current++;
+            setStatus('connecting');
+            setReason(`reconnecting (attempt ${attemptsRef.current})…`);
+            retryRef.current = window.setTimeout(() => {
+              retryRef.current = null;
+              startRef.current?.(target.url, target.width, target.height);
+            }, wait);
+            return;
+          }
+          setStatus('closed');
+          setFailure(f);
+          setReason(
+            attemptsRef.current >= RECONNECT_LIMIT && !deliberateRef.current
+              ? 'the engine could not be reached — press Open to try again'
+              : r,
+          );
         },
       }, isTouchDevice());
       sessionRef.current = session;
@@ -262,6 +315,12 @@ export function useLiveSession(): UseLiveSession {
 
   const close = useCallback(() => {
     pendingRef.current = null;
+    deliberateRef.current = true;
+    attemptsRef.current = 0;
+    if (retryRef.current !== null) {
+      window.clearTimeout(retryRef.current);
+      retryRef.current = null;
+    }
     sessionRef.current?.close();
     sessionRef.current = null;
     revokeFrame();
@@ -296,6 +355,8 @@ export function useLiveSession(): UseLiveSession {
   useEffect(
     () => () => {
       pendingRef.current = null;
+      deliberateRef.current = true;
+      if (retryRef.current !== null) window.clearTimeout(retryRef.current);
       sessionRef.current?.close();
       sessionRef.current = null;
       if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);

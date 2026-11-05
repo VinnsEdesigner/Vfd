@@ -1434,9 +1434,24 @@ void mi_interactive_note_ping(mi_interactive *it) {
     if (it) it->last_ping = mono_seconds();
 }
 
-/* Anything at all from the client, including a pong, means it is still there. */
+/*
+ * Anything at all from the client, including a pong, means it is still there.
+ *
+ * This counts as *activity*, not just as liveness. A viewer reading a page is
+ * connected, present, and doing nothing — and the idle rule used to judge only
+ * frames and input, so such a session was closed after the idle timeout even
+ * though its client was right there. That is what made a live page feel like it
+ * kept dropping: it did, every time the reader paused for a few minutes.
+ *
+ * A client that has genuinely gone is a different question, and the silence
+ * check answers it: it is measured against `last_heard`, which a departed peer
+ * stops moving.
+ */
 void mi_interactive_note_heard(mi_interactive *it) {
-    if (it) it->last_heard = mono_seconds();
+    if (!it) return;
+    double now = mono_seconds();
+    it->last_heard = now;
+    it->last_activity = now;
 }
 
 /* How long since the client was last heard from, in seconds. */
