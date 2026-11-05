@@ -339,6 +339,114 @@ static void test_crawl_hit_cap_stops_early(void) {
     stop_site(pid);
 }
 
+/*
+ * An extension-less file must be a *result*, not skipped as a page.
+ *
+ * Makefile, Dockerfile, LICENSE and README have no extension, and they are
+ * exactly what someone searches a repository for. The first version treated "no
+ * extension" as "a page to follow", so a crawl of GitHub reported zero hits for
+ * "Makefile" while the link sat in the HTML — found by testing against GitHub.
+ */
+static void test_crawl_finds_extensionless_files(void) {
+    static const route routes[] = {
+        {"/", "<a href='/repo/blob/master/Makefile'>Makefile</a>"
+              "<a href='/repo/blob/master/Dockerfile'>Dockerfile</a>"
+              "<a href='/repo/blob/master/LICENSE'>LICENSE</a>"
+              "<a href='/repo/blob/master/README'>README</a>"
+              "<a href='/repo/blob/master/main.c'>main.c</a>"
+              "<a href='/assets/app.js'>app</a>"
+              "<a href='/assets/site.css'>site</a>"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 1, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 0;
+    cfg.use_browser_fallback = 0;
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "Makefile", &res);
+    CHECK(res.hit_count == 1, "an extension-less Makefile is found");
+    if (res.hit_count > 0) {
+        CHECK(strcmp(res.hits[0].filename, "Makefile") == 0, "and named correctly");
+        CHECK(res.hits[0].score >= 90, "an exact name scores highest");
+    }
+    mi_crawl_result_free(&res);
+
+    /* Each of the other extension-less names is findable too. */
+    const char *names[] = {"Dockerfile", "LICENSE", "README", "main.c"};
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        mi_crawl_result r2;
+        mi_crawl(&cfg, url, names[i], &r2);
+        CHECK(r2.hit_count >= 1, names[i]);
+        mi_crawl_result_free(&r2);
+    }
+
+    /* A page's own plumbing must not fill the results. */
+    mi_crawl_result r3;
+    mi_crawl(&cfg, url, "", &r3); /* no term: everything */
+    int assets = 0;
+    for (size_t i = 0; i < r3.hit_count; i++) {
+        if (strstr(r3.hits[i].filename, ".js") || strstr(r3.hits[i].filename, ".css")) assets++;
+    }
+    CHECK(assets == 0, "scripts and styles are not reported as files");
+    mi_crawl_result_free(&r3);
+    stop_site(pid);
+}
+
+/*
+ * A page whose content links come after a large asset header must still be read.
+ *
+ * A GitHub repository carries several hundred script and style references before
+ * the first file link — measured at character 218,964 of a 292,910-byte page. A
+ * 200-entry extraction cap stopped before the content, so the crawl saw only
+ * JavaScript. This pins that the content is reached.
+ */
+static void test_crawl_sees_content_after_many_assets(void) {
+    /* Build a page with 400 asset links, then the file. */
+    static char big[64 * 1024];
+    size_t o = 0;
+    o += (size_t)snprintf(big + o, sizeof big - o, "<html><head>");
+    for (int i = 0; i < 400 && o < sizeof big - 128; i++) {
+        o += (size_t)snprintf(big + o, sizeof big - o,
+                              "<script src='/assets/bundle-%d.js'></script>"
+                              "<link rel='stylesheet' href='/assets/style-%d.css'>", i, i);
+    }
+    o += (size_t)snprintf(big + o, sizeof big - o,
+                          "</head><body>"
+                          "<a href='/repo/blob/master/target-stm32.pdf'>the datasheet</a>"
+                          "</body></html>");
+
+    static const route routes[] = {
+        {"/", big},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 1, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 0;
+    cfg.use_browser_fallback = 0;
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "stm32", &res);
+    CHECK(res.hit_count == 1, "the file after 400 assets is found");
+    if (res.hit_count > 0) {
+        CHECK(strstr(res.hits[0].filename, "target-stm32") != NULL, "and it is the right file");
+    }
+    mi_crawl_result_free(&res);
+    stop_site(pid);
+}
+
 static void test_crawl_unreachable_site_is_not_an_error(void) {
     mi_crawl_config cfg;
     mi_crawl_config_init(&cfg);
@@ -371,6 +479,8 @@ int main(void) {
     test_crawl_multi_page_no_double_free();
     test_crawl_respects_page_cap();
     test_crawl_hit_cap_stops_early();
+    test_crawl_finds_extensionless_files();
+    test_crawl_sees_content_after_many_assets();
     test_crawl_unreachable_site_is_not_an_error();
     test_crawl_rejects_a_bad_url();
 
