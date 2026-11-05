@@ -3021,12 +3021,19 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
     if (!strcmp(req->path, "/api/v1/extract") && !strcmp(req->method, "POST")) {
         mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
         const char *url = mi_json_get_string(in, "url", NULL);
-        if (!url || !*url) {
-            send_error(fd, 400, "Bad Request", "missing or empty 'url'", cors);
+        const char *term = mi_json_get_string(in, "search", NULL);
+        /*
+         * Either a URL or a search. They are different questions — "resolve this
+         * address" and "find something matching this" — and a caller supplies
+         * one or the other, never both.
+         */
+        int searching = term && *term;
+        if ((!url || !*url) && !searching) {
+            send_error(fd, 400, "Bad Request", "give either 'url' or 'search'", cors);
             mi_json_value_free(in);
             return;
         }
-        if (!mi_render_url_allowed(url)) {
+        if (url && *url && !mi_render_url_allowed(url)) {
             send_error(fd, 400, "Bad Request", "that address cannot be read", cors);
             mi_json_value_free(in);
             return;
@@ -3037,6 +3044,12 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ecfg.binary = srv->cfg.extractor_path;
         double timeout = mi_json_get_number(in, "timeout_seconds", 0);
         if (timeout > 0) ecfg.timeout_seconds = timeout;
+        if (searching) {
+            ecfg.search_term = term;
+            int limit = (int)mi_json_get_number(in, "limit", 0);
+            if (limit > 0) ecfg.search_limit = limit;
+        }
+        ecfg.enumerate = mi_json_get_bool(in, "enumerate", 0);
 
         mi_extract_result er;
         int rc = mi_extract(&ecfg, url, &er);
@@ -3067,6 +3080,32 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, ",");
         mi_json_key(&b, "format_count");
         mi_json_int(&b, (int64_t)er.format_count);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "entry_count");
+        mi_json_int(&b, (int64_t)er.entry_count);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "entries");
+        mi_json_raw(&b, "[");
+        for (size_t i = 0; i < er.entry_count; i++) {
+            const mi_extract_entry *e = &er.entries[i];
+            if (i) mi_json_raw(&b, ",");
+            mi_json_raw(&b, "{\"id\":");
+            mi_json_string(&b, e->id);
+            mi_json_raw(&b, ",\"title\":");
+            mi_json_string(&b, e->title);
+            mi_json_raw(&b, ",\"url\":");
+            mi_json_string(&b, e->url);
+            mi_json_raw(&b, ",\"uploader\":");
+            mi_json_string(&b, e->uploader);
+            mi_json_raw(&b, ",\"thumbnail\":");
+            mi_json_string(&b, e->thumbnail);
+            mi_json_raw(&b, ",\"duration_seconds\":");
+            mi_json_double(&b, e->duration_seconds);
+            mi_json_raw(&b, ",\"is_playlist\":");
+            mi_json_bool(&b, e->is_playlist);
+            mi_json_raw(&b, "}");
+        }
+        mi_json_raw(&b, "]");
         mi_json_raw(&b, ",");
         mi_json_key(&b, "formats");
         mi_json_raw(&b, "[");

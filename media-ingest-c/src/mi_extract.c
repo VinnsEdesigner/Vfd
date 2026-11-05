@@ -40,7 +40,9 @@ void mi_extract_config_init(mi_extract_config *cfg) {
     cfg->binary = NULL;
     cfg->timeout_seconds = 60.0;
     cfg->cookies_file = NULL;
-    cfg->first_only = 1;
+    cfg->enumerate = 0;
+    cfg->search_term = NULL;
+    cfg->search_limit = 0;
 }
 
 void mi_extract_result_free(mi_extract_result *res) {
@@ -58,6 +60,14 @@ void mi_extract_result_free(mi_extract_result *res) {
         free(res->formats[i].mime);
     }
     free(res->formats);
+    for (size_t i = 0; i < res->entry_count; i++) {
+        free(res->entries[i].id);
+        free(res->entries[i].title);
+        free(res->entries[i].url);
+        free(res->entries[i].uploader);
+        free(res->entries[i].thumbnail);
+    }
+    free(res->entries);
     memset(res, 0, sizeof *res);
 }
 
@@ -69,6 +79,51 @@ static double now_seconds(void) {
 
 static const char *binary_for(const mi_extract_config *cfg) {
     return (cfg && cfg->binary && *cfg->binary) ? cfg->binary : "yt-dlp";
+}
+
+/*
+ * The URL or query to hand the extractor.
+ *
+ * A search is expressed as a pseudo-URL: `ytsearch5:term`. Building it here
+ * keeps the rest of the argv the same for both cases — the difference between
+ * "resolve this address" and "find something matching this" is the argument,
+ * not the invocation.
+ *
+ * Returns an owned string, or NULL on a bad argument.
+ */
+static char *query_for(const mi_extract_config *cfg, const char *url) {
+    if (cfg && cfg->search_term && *cfg->search_term) {
+        int limit = cfg->search_limit > 0 ? cfg->search_limit : 10;
+        return mi_asprintf("ytsearch%d:%s", limit, cfg->search_term);
+    }
+    return url ? mi_strdup(url) : NULL;
+}
+
+/*
+ * A JavaScript runtime to hand yt-dlp, or NULL.
+ *
+ * Probed with `which` rather than assumed, because naming a runtime the host
+ * does not have makes yt-dlp fail where naming none would have worked. The
+ * order is preference: deno is yt-dlp's own default and the best supported,
+ * node is the one a host is most likely to already have (this one does), and
+ * bun and quickjs are the remaining supported options.
+ *
+ * The answer is cached: which runtimes exist does not change while Vyzor runs,
+ * and this is called for every resolve.
+ */
+static const char *find_js_runtime(void) {
+    static const char *cached = NULL;
+    static int probed = 0;
+    if (probed) return cached;
+    probed = 1;
+    static const char *CANDIDATES[] = {"deno", "node", "bun", "quickjs", NULL};
+    for (size_t i = 0; CANDIDATES[i]; i++) {
+        if (mi_which(CANDIDATES[i])) {
+            cached = CANDIDATES[i];
+            break;
+        }
+    }
+    return cached;
 }
 
 /*
@@ -93,8 +148,40 @@ static char *run_extractor(const mi_extract_config *cfg, const char *url, int pr
          * download path, so the extractor has no business downloading. */
         argv[a++] = "-J"; /* dump the info as JSON */
         argv[a++] = "--no-warnings";
-        argv[a++] = "--no-playlist"; /* one item, unless a caller says otherwise */
         argv[a++] = "--skip-download";
+        /*
+         * A JS runtime, when there is one.
+         *
+         * yt-dlp 2026 moved the signature and challenge solving into a separate
+         * JavaScript runtime and warns, without one, that "YouTube extraction
+         * has been deprecated and some formats may be missing" — which is
+         * literally formats the caller never sees. Only deno is enabled by
+         * default, so a host with node but no deno runs with *no* runtime at all
+         * unless it is named here. Measured: the debug line reads
+         * "JS Challenge Providers: bun (unavailable), deno (unavailable),
+         * node (unavailable), quickjs (unavailable)" on a host that has node.
+         *
+         * The runtime is passed when one exists rather than assumed: naming a
+         * runtime the host does not have is worse than naming none.
+         */
+        const char *runtime = find_js_runtime();
+        if (runtime) {
+            argv[a++] = "--js-runtimes";
+            argv[a++] = runtime;
+        }
+        /*
+         * One item, unless the caller wants a list.
+         *
+         * A channel or a playlist URL describes many items; `--flat-playlist`
+         * enumerates them without resolving each one, which is what a discovery
+         * pass needs and is far cheaper. Without it, a playlist URL resolves to
+         * its *first* item only, which is not what "list this channel" means.
+         */
+        /* A search or a list URL is always enumerated: there is no single item
+         * to resolve, and the caller picks from what comes back. */
+        int list = (cfg && (cfg->enumerate || (cfg->search_term && *cfg->search_term)));
+        if (list) argv[a++] = "--flat-playlist";
+        else argv[a++] = "--no-playlist";
         if (cfg && cfg->cookies_file && *cfg->cookies_file) {
             argv[a++] = "--cookies";
             argv[a++] = cfg->cookies_file;
@@ -210,12 +297,24 @@ static char *dup_string(const mi_json *o, const char *key) {
 }
 
 int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result *out) {
-    if (!cfg || !url || !out) return MI_ERR_ARG;
+    if (!cfg || !out) return MI_ERR_ARG;
     memset(out, 0, sizeof *out);
     out->duration_seconds = -1;
 
+    /*
+     * The argument is a URL or a search query.
+     *
+     * The two are different questions — "resolve this address" and "find
+     * something matching this" — and yt-dlp expresses both as one argument
+     * (`ytsearch5:term` for the second), so the choice is made here and the rest
+     * of the invocation is identical.
+     */
+    char *query = query_for(cfg, url);
+    if (!query) return MI_ERR_ARG;
+
     int code = -1;
-    char *json = run_extractor(cfg, url, 0, &code);
+    char *json = run_extractor(cfg, query, 0, &code);
+    free(query);
     if (!json) {
         mi_logf(MI_LOG_ERROR, "extract: the extractor produced no output (exit %d)", code);
         return MI_ERR_NET;
@@ -301,6 +400,45 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
                                          : (mi_json_get_number(f, "abr", -1) > 0 ||
                                             (aext && *aext && strcmp(aext, "none") != 0));
                 out->format_count++;
+            }
+        }
+    }
+
+    /*
+     * The entries of a playlist, channel or search.
+     *
+     * `--flat-playlist` returns these instead of formats, and they are what a
+     * discovery pass wants: a title, an id and a page URL per item, with no
+     * stream resolution done. A chosen one is resolved in a second call.
+     */
+    const mi_json *entries = mi_json_get(doc, "entries");
+    if (entries && entries->type == MI_JSON_ARRAY && entries->count > 0) {
+        out->entries = mi_calloc(entries->count, sizeof *out->entries);
+        if (out->entries) {
+            for (size_t i = 0; i < entries->count; i++) {
+                const mi_json *e = entries->items[i];
+                if (!e || e->type != MI_JSON_OBJECT) continue;
+                mi_extract_entry *dst = &out->entries[out->entry_count];
+                memset(dst, 0, sizeof *dst);
+                dst->duration_seconds = -1;
+                dst->id = dup_string(e, "id");
+                dst->title = dup_string(e, "title");
+                dst->uploader = dup_string(e, "uploader");
+                dst->thumbnail = dup_string(e, "thumbnail");
+                dst->duration_seconds = mi_json_get_number(e, "duration", -1);
+                const char *eu = mi_json_get_string(e, "url", NULL);
+                if (eu && *eu) dst->url = mi_strdup(eu);
+                const char *etype = mi_json_get_string(e, "_type", NULL);
+                dst->is_playlist = etype && strcmp(etype, "url") != 0;
+                /* An entry with no title and no id is not something to offer. */
+                if (!dst->title && !dst->id) {
+                    free(dst->id);
+                    free(dst->url);
+                    free(dst->uploader);
+                    free(dst->thumbnail);
+                    continue;
+                }
+                out->entry_count++;
             }
         }
     }

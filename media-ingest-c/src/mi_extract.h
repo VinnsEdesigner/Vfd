@@ -52,6 +52,19 @@ typedef struct {
     int has_audio;
 } mi_extract_format;
 
+/* One item in a playlist, channel or search result. */
+typedef struct {
+    char *id;
+    char *title;
+    /* The page URL a second call would resolve. */
+    char *url;
+    char *uploader;
+    double duration_seconds; /* -1 when unknown */
+    char *thumbnail;
+    /* 1 when this entry is itself a playlist rather than a video. */
+    int is_playlist;
+} mi_extract_entry;
+
 typedef struct {
     /* The page's own title, when the extractor reported one. */
     char *title;
@@ -62,6 +75,16 @@ typedef struct {
     char *thumbnail;
     mi_extract_format *formats;
     size_t format_count;
+    /*
+     * The entries of a playlist, channel or search.
+     *
+     * A list URL describes many items and `--flat-playlist` returns them without
+     * resolving each one, so these carry a title, an id and a page URL but no
+     * stream URLs — a chosen one is resolved in a second call. Empty for a
+     * single item, which is the common case.
+     */
+    mi_extract_entry *entries;
+    size_t entry_count;
 } mi_extract_result;
 
 void mi_extract_result_free(mi_extract_result *res);
@@ -77,17 +100,32 @@ typedef struct {
     /* Seconds allowed for the resolve. It is a network operation against a
      * site that may be slow to answer, so this is generous. */
     double timeout_seconds;
+    /*
+     * Whether to enumerate a playlist or channel rather than resolve one item.
+     *
+     * `--flat-playlist` lists the entries without resolving each one, which is
+     * far cheaper and is what a discovery pass needs. Off by default: a caller
+     * usually has one video in mind.
+     */
+    int enumerate;
     /* Cookies, in Netscape format, for media that is not public — a private or
      * unlisted video the caller has rights to. NULL sends none. */
     const char *cookies_file;
     /*
-     * Whether to resolve a page's *playlist* rather than one item.
+     * A search to run instead of resolving a URL.
      *
-     * A channel or a playlist URL describes many items; with this set, the
-     * result is the first item's formats and the count is reported so a caller
-     * can say so. Off by default: the caller usually has one video in mind.
+     * yt-dlp answers `ytsearch<N>:term` with a list of matching videos, so a
+     * caller who knows *what* they want but not *where* it is can find it. When
+     * this is set, `url` is ignored and the query is run instead — the two are
+     * different questions and one call does one of them.
+     *
+     * A search is always enumerated (there is no single result to resolve) and
+     * the entries carry titles and ids but no stream URLs, so a chosen entry is
+     * resolved in a second call.
      */
-    int first_only;
+    const char *search_term;
+    /* The most search results to return. 0 uses a small default. */
+    int search_limit;
 } mi_extract_config;
 
 void mi_extract_config_init(mi_extract_config *cfg);
