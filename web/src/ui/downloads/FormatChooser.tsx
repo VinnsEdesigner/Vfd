@@ -20,7 +20,7 @@ import type { QualityOption } from '../../hooks/view-models';
 
 /** One selectable format. A single file yields exactly one of these. */
 export interface FormatChoice {
-  /** Stable id; also what is sent to the engine as `quality`. */
+  /** Stable id; also what is sent to Vyzor as `quality`. */
   id: string;
   label: string;
   /** e.g. "1920×1080", or a container name for a single file. */

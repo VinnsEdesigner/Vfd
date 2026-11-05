@@ -56,14 +56,14 @@ static const char *const BROWSERS[] = {
 };
 
 /* The label of the data channel that carries input. One name, agreed by both
- * ends, so the engine can find the right channel whichever end opened it. */
+ * ends, so Vyzor can find the right channel whichever end opened it. */
 static const char *const INPUT_LABEL = "input";
 
 /* The CDP pipe: chromium reads fd 3 and writes fd 4. */
 #define CDP_READ_FD 3
 #define CDP_WRITE_FD 4
 /* A cap on queued CDP bytes, so a console that floods input cannot grow the
- * engine's memory without bound. */
+ * Vyzor's memory without bound. */
 #define CDP_WRITE_MAX (1024u * 1024u)
 
 struct mi_rtc_pool {
@@ -115,7 +115,7 @@ struct mi_rtc {
     int answer_set;
     int connected;
     int failed;
-    /* The input data channel. The engine owns the mapping from the console's
+    /* The input data channel. Vyzor owns the mapping from the console's
      * vocabulary to CDP, so there is nothing for a caller to hook. */
     GstWebRTCDataChannel *channel;
     int channel_ready;
@@ -1170,7 +1170,7 @@ mi_rtc_status mi_rtc_open(mi_rtc_pool *pool, const char *url, mi_rtc **out,
         if (err) snprintf(err, errcap, "could not start the browser");
         goto fail;
     }
-    /* Non-blocking both ways: a stalled browser must not block the engine. */
+    /* Non-blocking both ways: a stalled browser must not block Vyzor. */
     int fl = fcntl(rtc->wfd, F_GETFL, 0);
     fcntl(rtc->wfd, F_SETFL, fl | O_NONBLOCK);
     fl = fcntl(rtc->rfd, F_GETFL, 0);

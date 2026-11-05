@@ -15,9 +15,9 @@ export interface SystemResource {
   health(signal?: AbortSignal): Promise<boolean>;
   capabilities(signal?: AbortSignal): Promise<Capabilities>;
   storageConfig(signal?: AbortSignal): Promise<StorageConfig>;
-  /** Real disk + library figures measured by the engine. */
+  /** Real disk + library figures measured by Vyzor. */
   systemStorage(signal?: AbortSignal): Promise<SystemStorage>;
-  /** Ask the engine to write downloads to `dir`. Rejects if it cannot. */
+  /** Ask Vyzor to write downloads to `dir`. Rejects if it cannot. */
   setLocation(dir: string, signal?: AbortSignal): Promise<void>;
 }
 

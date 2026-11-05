@@ -1,7 +1,7 @@
 /**
  * FileGrid — thumbnail grid, the way a file manager shows media.
  *
- * Images render the real file (the engine serves the bytes, so a thumbnail is
+ * Images render the real file (Vyzor serves the bytes, so a thumbnail is
  * just a scaled-down <img> — no separate thumbnail pipeline needed yet). Video
  * shows a <video preload="metadata"> frame, which browsers render as a poster
  * without downloading the whole file. Audio and anything undecodable fall back

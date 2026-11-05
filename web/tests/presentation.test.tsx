@@ -281,7 +281,7 @@ describe('useHealth', () => {
 });
 
 describe('useCapabilities', () => {
-  it('reads the engine’s capabilities, including live sessions', async () => {
+  it('reads Vyzor’s capabilities, including live sessions', async () => {
     const { fetchImpl } = makeFetch({
       'GET /api/v1/capabilities': () => ({
         json: {
@@ -305,7 +305,7 @@ describe('useCapabilities', () => {
     expect(result.current.data?.interactive?.available).toBe(true);
   });
 
-  it('treats an engine that reports no live sessions as unable to drive', async () => {
+  it('treats a Vyzor that reports no live sessions as unable to drive', async () => {
     const { fetchImpl } = makeFetch({
       'GET /api/v1/capabilities': () => ({
         json: { version: '1', detectors: [], hls: false, upload: false, purge: false },
@@ -314,7 +314,7 @@ describe('useCapabilities', () => {
     const { result } = renderHook(() => useCapabilities(), { wrapper: wrapper(fetchImpl) });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     // Null, not "available": the console then offers the image view instead of a
-    // live control the engine would refuse.
+    // live control Vyzor would refuse.
     expect(result.current.data?.interactive).toBeNull();
   });
 });
@@ -356,10 +356,10 @@ describe('connection store', () => {
   it('drives the API client, so a change redirects every request', () => {
     // The provider reads these two values; changing them must produce a client
     // pointed elsewhere. Asserted at the store boundary the provider consumes.
-    act(() => useConnectionStore.getState().setBaseUrl('http://engine.example:9000'));
+    act(() => useConnectionStore.getState().setBaseUrl('http://Vyzor.example:9000'));
     act(() => useConnectionStore.getState().setAuthToken('secret'));
     const settings = connectionSettings(useConnectionStore.getState());
-    expect(settings.baseUrl).toBe('http://engine.example:9000');
+    expect(settings.baseUrl).toBe('http://Vyzor.example:9000');
     expect(settings.authToken).toBe('secret');
   });
 });
@@ -427,7 +427,7 @@ describe('system storage hooks', () => {
     },
   };
 
-  it('reports the engine\u2019s directory and that it is writable', async () => {
+  it('reports Vyzor\u2019s directory and that it is writable', async () => {
     const { fetchImpl } = makeFetch({ 'GET /api/v1/system/storage': () => storageBody });
     const { result } = renderHook(() => useSystemStorage(), { wrapper: wrapper(fetchImpl) });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -435,7 +435,7 @@ describe('system storage hooks', () => {
     expect(result.current.data?.writable).toBe(true);
   });
 
-  it('sends the chosen directory to the engine and refreshes the storage view', async () => {
+  it('sends the chosen directory to Vyzor and refreshes the storage view', async () => {
     const { fetchImpl, calls } = makeFetch({
       'GET /api/v1/system/storage': () => storageBody,
       'PUT /api/v1/storage/location': (init) => {
@@ -465,7 +465,7 @@ describe('system storage hooks', () => {
 });
 
 describe('useConvertDownload', () => {
-  /** A record with a conversion state, as the engine reports it. */
+  /** A record with a conversion state, as Vyzor reports it. */
   const record = (conversion: { state: string; error: string | null }) => ({
     json: {
       id: 'j1',
@@ -484,7 +484,7 @@ describe('useConvertDownload', () => {
     },
   });
 
-  it('asks the engine to convert with the convert action', async () => {
+  it('asks Vyzor to convert with the convert action', async () => {
     const { fetchImpl, calls } = makeFetch({
       'PATCH /api/v1/downloads/j1': () => ({
         status: 202,
@@ -553,15 +553,15 @@ describe('useBrowseUrl', () => {
     },
   };
 
-  it('asks the engine to read the URL, and maps the listing', async () => {
+  it('asks Vyzor to read the URL, and maps the listing', async () => {
     const { fetchImpl, calls } = makeFetch({ 'POST /api/v1/browse': () => listing });
     const { result } = renderHook(() => useBrowseUrl('https://host.example/media/'), {
       wrapper: wrapper(fetchImpl),
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    // It goes to the engine, not the third-party host: CORS would block the
-    // browser fetching an arbitrary site, and the engine is allowed to.
+    // It goes to Vyzor, not the third-party host: CORS would block the
+    // browser fetching an arbitrary site, and Vyzor is allowed to.
     const post = calls.find((c) => c.method === 'POST');
     expect(post?.url).toContain('/api/v1/browse');
     expect(post?.body).toMatchObject({ url: 'https://host.example/media/' });
@@ -672,7 +672,7 @@ describe('useRenderPage', () => {
       // fetched with auth and handed to the browser, not pointed at.
       expect(out.objectUrl).toMatch(/^blob:/);
     }
-    // It asks the engine, and asks for the image mode by default.
+    // It asks Vyzor, and asks for the image mode by default.
     const req = calls.find((c) => c.url.includes('/api/v1/render'));
     expect(req?.url).toContain('mode=image');
     expect(req?.url).toContain(encodeURIComponent('https://example.com/'));
@@ -699,8 +699,8 @@ describe('useRenderPage', () => {
 
   it('separates "turned off" from "no browser", which are both 503', async () => {
     for (const [detail, expected] of [
-      ['rendering is not enabled on this engine', 'disabled'],
-      ['no browser is installed on the engine host', 'unavailable'],
+      ['rendering is not enabled on this Vyzor', 'disabled'],
+      ['no browser is installed on Vyzor host', 'unavailable'],
     ] as const) {
       const { fetchImpl } = makeFetch({
         'GET /api/v1/render': () => ({ status: 503, json: { error: detail, status: 503 } }),

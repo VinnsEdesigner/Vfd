@@ -1,7 +1,7 @@
 /**
  * Integration test: the real data layer against the real C server.
  *
- * A helper (`tests/server-harness.ts`) starts the compiled `media-ingest`
+ * A helper (`tests/server-harness.ts`) starts the compiled `vyzor`
  * binary on an ephemeral port, then these tests exercise api-client -> rest ->
  * domain end to end. No mocks: this is the actual HTTP API.
  */
@@ -36,24 +36,24 @@ describe('system resource', () => {
     expect(caps.upload).toBe(true);
   });
 
-  it('reports the engine\u2019s own build and host facts', async () => {
+  it('reports Vyzor\u2019s own build and host facts', async () => {
     const caps = await api.system.capabilities();
-    expect(caps.engineVersion).toBe('0.1.0');
+    expect(caps.vyzorVersion).toBe('0.1.0');
     expect(caps.maxBodyBytes).toBe(64 * 1024 * 1024);
     expect(caps.workers).toBe(16);
     // ffmpeg presence is a property of the host, so the contract is that the
-    // engine *reports* what it probed — not that this machine happens to have it.
+    // Vyzor *reports* what it probed — not that this machine happens to have it.
     expect(typeof caps.ffmpeg).toBe('boolean');
   });
 
-  it('names the directory the engine actually writes to', async () => {
+  it('names the directory Vyzor actually writes to', async () => {
     const store = await api.system.systemStorage();
     expect(store.workDir).toBe(server.workDir);
     expect(store.writable).toBe(true);
     expect(store.writeError).toBeNull();
   });
 
-  it('moves the engine\u2019s directory when asked, and reports the new one', async () => {
+  it('moves Vyzor\u2019s directory when asked, and reports the new one', async () => {
     const target = `${server.workDir}-relocated`;
     await api.system.setLocation(target);
     const after = await api.system.systemStorage();
@@ -82,7 +82,7 @@ describe('browse resource', () => {
   });
 
   it('reports a page it could not read, rather than an empty listing', async () => {
-    // A port nothing is listening on: the engine cannot reach it, and must say so
+    // A port nothing is listening on: Vyzor cannot reach it, and must say so
     // instead of reporting "no media here".
     await expect(api.browse.listFromUrl('http://127.0.0.1:1/nothing')).rejects.toMatchObject({
       status: 502,
@@ -325,7 +325,7 @@ describe('jobs resource', () => {
       purge: false,
       connections: 1,
     });
-    // A record that has not completed has no bytes to convert, so the engine
+    // A record that has not completed has no bytes to convert, so Vyzor
     // answers with a conflict rather than starting a doomed ffmpeg.
     await expect(api.downloads.convert(created.id)).rejects.toMatchObject({
       status: 409,

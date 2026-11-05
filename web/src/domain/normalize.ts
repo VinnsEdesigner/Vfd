@@ -158,9 +158,9 @@ export function normalizeDownloadList(w: WireDownloadList): Download[] {
 }
 
 /**
- * A page listing from the engine, as candidates.
+ * A page listing from Vyzor, as candidates.
  *
- * The engine has already resolved each reference against the page and kept only
+ * Vyzor has already resolved each reference against the page and kept only
  * media, so this maps names and kinds rather than re-deriving them. The page URL
  * becomes each item's `pageUrl`: that is where a person would go to learn about
  * the file, and it is what the card links to.
@@ -210,7 +210,7 @@ export function normalizeCapabilities(w: WireCapabilities): Capabilities {
   const r = w.render;
   return {
     version: w.version ?? '1',
-    engineVersion: w.engine_version ?? null,
+    vyzorVersion: w.vyzor_version ?? null,
     detectors: Array.isArray(w.detectors) ? w.detectors.map(toMediaKind) : [],
     hls: Boolean(w.hls),
     upload: Boolean(w.upload),
@@ -218,7 +218,7 @@ export function normalizeCapabilities(w: WireCapabilities): Capabilities {
     maxBodyBytes: typeof w.max_body_bytes === 'number' ? w.max_body_bytes : null,
     workers: typeof w.workers === 'number' ? w.workers : null,
     ffmpeg: typeof w.ffmpeg === 'boolean' ? w.ffmpeg : null,
-    // An engine that did not report rendering is treated as unable to, which is
+    // A Vyzor that did not report rendering is treated as unable to, which is
     // the safe reading: the console then never offers a control it cannot honour.
     render: r
       ? {
@@ -260,7 +260,7 @@ export function normalizeCapabilities(w: WireCapabilities): Capabilities {
 /**
  * A live-session text message, decoded into the domain.
  *
- * Returns null for a message the console does not understand, so a newer engine
+ * Returns null for a message the console does not understand, so a newer Vyzor
  * can add message kinds without breaking an older console — the parser skips
  * what it cannot place rather than throwing.
  */

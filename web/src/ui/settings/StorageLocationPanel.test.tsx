@@ -3,8 +3,8 @@
  *
  * The panel used to offer a "download folder" the browser could not honour, a
  * parts folder nothing read, and an "open folder on finish" switch that did
- * nothing. It now reads the directory from the engine and saving is a real
- * request. These tests pin both halves: the engine's path is what is shown, and
+ * nothing. It now reads the directory from Vyzor and saving is a real
+ * request. These tests pin both halves: Vyzor's path is what is shown, and
  * the controls that never did anything are gone.
  */
 
@@ -18,7 +18,7 @@ const base: StorageLocationValue = {
   keyPrefix: 'downloads/',
 };
 
-const engine = {
+const vyzor = {
   workDir: '/srv/media',
   writable: true,
   writeError: null,
@@ -33,7 +33,7 @@ function setup(patch: Partial<Parameters<typeof StorageLocationPanel>[0]> = {}) 
     <StorageLocationPanel
       value={base}
       onChange={onChange}
-      engineLocation={engine}
+      vyzorLocation={vyzor}
       onSave={onSave}
       {...patch}
     />,
@@ -42,17 +42,17 @@ function setup(patch: Partial<Parameters<typeof StorageLocationPanel>[0]> = {}) 
 }
 
 describe('StorageLocationPanel', () => {
-  it('shows the directory the engine actually reports', () => {
+  it('shows the directory Vyzor actually reports', () => {
     setup();
     expect(screen.getByDisplayValue('/srv/media')).toBeTruthy();
   });
 
-  it('names the volume the engine resolved', () => {
+  it('names the volume Vyzor resolved', () => {
     setup();
     expect(screen.getByText(/\/srv \(ext4\)/)).toBeTruthy();
   });
 
-  it('saves the edited directory to the engine', () => {
+  it('saves the edited directory to Vyzor', () => {
     const { onSave } = setup();
     fireEvent.change(screen.getByDisplayValue('/srv/media'), {
       target: { value: '/mnt/media' },
@@ -67,10 +67,10 @@ describe('StorageLocationPanel', () => {
     expect(save.disabled).toBe(true);
   });
 
-  it('surfaces a directory the engine refused', () => {
+  it('surfaces a directory Vyzor refused', () => {
     setup({
-      engineLocation: {
-        ...engine,
+      vyzorLocation: {
+        ...vyzor,
         writable: false,
         writeError: 'directory is not writable',
       },

@@ -145,7 +145,7 @@ export function IconList(props: IconProps) {
   );
 }
 
-/** A device: the copy saved on this phone/computer, not on the engine. */
+/** A device: the copy saved on this phone/computer, not on Vyzor. */
 export function IconDevice(props: IconProps) {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true" {...props}>

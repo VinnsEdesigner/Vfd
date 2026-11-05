@@ -7,7 +7,7 @@ import { useMediaApi } from './provider';
 
 export interface ProbeVariables {
   url: string;
-  /** Lets the engine turn manifest BANDWIDTH into real quality sizes. */
+  /** Lets Vyzor turn manifest BANDWIDTH into real quality sizes. */
   durationSeconds?: number;
 }
 

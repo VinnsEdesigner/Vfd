@@ -1,6 +1,6 @@
 # media-ingest-c
 
-A fast, resumable download engine with **content-based video detection** and an
+A fast, resumable media downloader with **content-based video detection** and an
 **FFmpeg → HLS** transcoding pipeline. Written in C11.
 
 Built for ingesting media you own or are licensed to distribute.
@@ -30,7 +30,7 @@ Requires a C11 compiler, libcurl development headers, and pthreads.
 # Debian/Ubuntu
 sudo apt-get install -y build-essential libcurl4-openssl-dev ffmpeg
 
-make            # builds build/media-ingest
+make            # builds build/vyzor
 make test       # builds + runs the test suite
 ```
 
@@ -38,28 +38,28 @@ make test       # builds + runs the test suite
 
 ```bash
 # Identify a URL without downloading it
-media-ingest detect https://cdn.example.com/clip.mp4
+vyzor detect https://cdn.example.com/clip.mp4
 
 # Sniff a local file
-media-ingest detect-file ./mystery.bin
+vyzor detect-file ./mystery.bin
 
 # Download (8 connections, resumable)
-media-ingest fetch https://cdn.example.com/clip.mp4 -o downloads
+vyzor fetch https://cdn.example.com/clip.mp4 -o downloads
 
 # Transcode to an HLS ladder
-media-ingest hls ./clip.mp4 -o ./hls --renditions 1080,720,480 --segment-seconds 6
+vyzor hls ./clip.mp4 -o ./hls --renditions 1080,720,480 --segment-seconds 6
 
 # End to end: download -> detect -> HLS
-media-ingest ingest https://cdn.example.com/clip.mp4 -o ./out --hls ./out/hls
+vyzor ingest https://cdn.example.com/clip.mp4 -o ./out --hls ./out/hls
 
 # Upload a file or a whole directory tree to S3-compatible storage
-media-ingest upload ./out/hls --bucket my-media --prefix hls/clip-42/ \
+vyzor upload ./out/hls --bucket my-media --prefix hls/clip-42/ \
   --endpoint https://<account>.r2.cloudflarestorage.com --region auto \
   --access-key "$S3_KEY" --secret-key "$S3_SECRET" \
   --cdn-base https://cdn.example.com
 
 # Ingest + HLS + upload + CDN purge in one shot
-media-ingest ingest https://cdn.example.com/clip.mp4 -o ./out --hls ./out/hls --upload \
+vyzor ingest https://cdn.example.com/clip.mp4 -o ./out --hls ./out/hls --upload \
   --bucket my-media --prefix hls/clip-42/ --cdn-base https://cdn.example.com \
   --purge --cf-token "$CF_TOKEN" --cf-zone "$CF_ZONE"
 ```
@@ -107,7 +107,7 @@ MPEG-PS, plus HLS (`.m3u8`) and DASH (`.mpd`) manifests — from which the
 referenced segment URLs are extracted. Non-video payloads are refused by
 default, *before* the download starts.
 
-## Download engine
+## Downloader
 
 - **Ranged parallelism** — `Accept-Ranges: bytes` → N ranges on threads, then stitched.
 - **Resumable** — each range lands in `<dest>.parts/` with a `state.txt` sidecar;
@@ -142,7 +142,7 @@ and Wasabi. Highlights:
 
 A page is not its bytes. A site that builds itself with JavaScript arrives as a
 document whose script must run before there is anything to show, and a site that
-forbids being framed cannot be embedded at all. So the engine runs headless
+forbids being framed cannot be embedded at all. So Vyzor runs headless
 Chromium and returns either a PNG of the page or its rendered DOM:
 
 ```
@@ -181,7 +181,7 @@ unprivileged container cannot use Chromium's namespace sandbox, so it runs with
 `--no-sandbox`. What is enforced:
 
 - a hard wall-clock kill. Chromium's own `--virtual-time-budget` bounds *page*
-  time and does nothing about a page that never settles, so the engine kills the
+  time and does nothing about a page that never settles, so Vyzor kills the
   child's whole process group at its own deadline;
 - a per-render V8 heap cap (`ulimit -v` cannot be used — Chromium reserves a huge
   virtual address space and dies at once under it);
@@ -191,9 +191,9 @@ unprivileged container cannot use Chromium's namespace sandbox, so it runs with
   being a child subreaper so orphaned helpers are reaped rather than accumulating;
 - only public `http(s)` pages are rendered: `file://` would read this host's disk,
   and loopback and link-local addresses are refused so a render cannot reach the
-  engine's own port or a cloud metadata endpoint.
+  Vyzor's own port or a cloud metadata endpoint.
 
-Run the engine where nothing sensitive lives.
+Run Vyzor where nothing sensitive lives.
 
 ### The cache
 
@@ -215,7 +215,7 @@ driven:
 GET /api/v1/interactive?url=https://example.com/&w=1024&h=768   (WebSocket upgrade)
 ```
 
-The engine streams screencast frames down and takes input events up over one
+Vyzor streams screencast frames down and takes input events up over one
 socket. A text message introduces each image, then the image arrives as a binary
 frame:
 
@@ -228,15 +228,15 @@ frame:
 ```
 
 The console sends JSON commands the other way — `navigate`, `reload`, `resize`,
-`screenshot`, and `mouse`/`wheel`/`key`/`text`/`touch` for input. The engine
+`screenshot`, and `mouse`/`wheel`/`key`/`text`/`touch` for input. Vyzor
 acknowledges each screencast frame itself, so the console does not have to.
 
 ### How it talks to the browser, and why
 
 Over Chromium's `--remote-debugging-pipe`, **not** a debugging TCP port. A
 debugging port is an unauthenticated control socket that any process on the host
-could drive; a pipe is private to the engine by construction. There is no
-WebSocket *client* in the engine either — the CDP transport is two file
+could drive; a pipe is private to Vyzor by construction. There is no
+WebSocket *client* in Vyzor either — the CDP transport is two file
 descriptors, each message a NUL-terminated JSON object.
 
 ### Bounds
@@ -250,11 +250,11 @@ gate, separate from rendering:
   abandoned browser is a leak the size of a browser;
 - only public `http(s)` pages are driven — the same URL rules as rendering;
 - the close path kills the browser's whole process group and reaps it, and the
-  engine is a child subreaper so helpers do not accumulate as zombies.
+  Vyzor is a child subreaper so helpers do not accumulate as zombies.
 
 Like a render, a live page runs with `--no-sandbox`: an unprivileged container
 cannot use Chromium's namespace sandbox. **A page driven here runs unsandboxed.**
-That is why the console says so plainly and why the engine only opens pages the
+That is why the console says so plainly and why Vyzor only opens pages the
 operator would be willing to visit.
 
 ## Live video over WebRTC
@@ -293,7 +293,7 @@ DELETE /api/v1/rtc/{token}                  -> {ok}
 ```
 
 Input does not need a socket either: it rides a **WebRTC data channel**, inside
-the peer connection the video already uses. The engine creates (or accepts) a
+the peer connection the video already uses. Vyzor creates (or accepts) a
 channel labelled `input`, and maps the console's own vocabulary — `navigate`,
 `reload`, `resize`, `mouse`, `wheel`, `key`, `text`, `touch` — onto CDP over the
 pipe it already held. So the whole session, media and control, is one WebRTC
@@ -303,7 +303,7 @@ connection.
 
 Trickle ICE exists to avoid waiting for gathering: candidates are sent as they are
 found, over the signalling channel. With no signalling socket there is nowhere to
-send them, so the engine waits instead. `mi_rtc_open` returns immediately and
+send them, so Vyzor waits instead. `mi_rtc_open` returns immediately and
 `mi_rtc_wait_offer` blocks until gathering has finished, then re-reads the local
 description so the candidates are *in* the SDP. The cost is a second or so at
 startup; the gain is a handshake with no mid-flight messages.
@@ -322,7 +322,7 @@ This path needs three things the JPEG path does not:
 - **GStreamer** with `ximagesrc`, `vp8enc`, `rtpvp8pay` and `webrtcbin`.
 - **`libnice`** (the `gstreamer1.0-nice` package) — what gives `webrtcbin` ICE.
   Without it `webrtcbin` exists but cannot connect, and the failure appears as a
-  null pad at runtime rather than a missing package, which is why the engine
+  null pad at runtime rather than a missing package, which is why Vyzor
   probes for the *elements* rather than the libraries.
 
 When any is absent the capability reports unavailable and the console hides the
@@ -344,23 +344,23 @@ control, rather than accepting a session it cannot serve.
 
 ### The Origin check
 
-A WebSocket handshake is **not** subject to CORS, so the engine checks the
+A WebSocket handshake is **not** subject to CORS, so Vyzor checks the
 `Origin` header itself against `MI_ALLOW_ORIGINS` and refuses a handshake from an
 origin that is not listed. (The live-video routes above use plain HTTP, so they
 *are* subject to CORS and get the usual treatment — plus the session token,
 which is what stops one session steering another.) Without that, any page a user visits could open a
-session to their engine. The bearer token cannot travel as a header on a
+session to their Vyzor. The bearer token cannot travel as a header on a
 WebSocket, so it is accepted as a `token` query parameter — the Origin check is
 what makes that safe.
 
 ### Input, and the two things that are easy to get wrong
 
-The console sends `mouse`, `wheel`, `key`, `text` and `touch` commands; the engine
+The console sends `mouse`, `wheel`, `key`, `text` and `touch` commands; Vyzor
 forwards each to the matching CDP input method. Two details matter more than they
 look:
 
 - **Touch is not mouse.** A phone sends a finger, so the console forwards
-  `touch` events, and `?touch=1` tells the engine to emulate a touch device (the
+  `touch` events, and `?touch=1` tells Vyzor to emulate a touch device (the
   page then lays itself out the way it would in any other browser on that
   device). The console also sends the click a tap implies, because a field takes
   focus from that click and the on-screen keyboard follows the focus. Without
@@ -374,7 +374,7 @@ look:
 
 A tab closed behind a proxy can leave a connection that never reports EOF, and
 the page may keep painting, so the idle timeout would never fire and the session
-would hold its concurrency slot forever. The engine therefore pings an idle
+would hold its concurrency slot forever. Vyzor therefore pings an idle
 socket and drops a client that has been silent too long
 (`keepalive_ping_seconds` / `keepalive_timeout_seconds`), which is what keeps the
 gate from filling with sessions nobody can use.
@@ -398,14 +398,14 @@ Configuration comes from the environment, which is how a container is configured
 | `MI_WORK_DIR` | downloads and the render cache |
 | `MI_ALLOW_ORIGINS` | comma-separated origins the console may call from |
 | `MI_AUTH_TOKEN` | bearer token required on every route but `/healthz` |
-| `MI_USER_AGENT` | what the engine calls itself when fetching |
+| `MI_USER_AGENT` | what Vyzor calls itself when fetching |
 | `MI_RENDER` | set to anything to turn rendering on |
 | `MI_INTERACTIVE` | set to anything to turn live pages on |
 | `MI_S3_*`, `MI_CF_*` | storage and CDN credentials |
 
 `MI_ALLOW_ORIGINS` matters more than it looks: without the console's origin on it
 the browser blocks every request and the console reports "Disconnected", which
-reads like the engine is down when it is not.
+reads like Vyzor is down when it is not.
 
 ## Tests
 

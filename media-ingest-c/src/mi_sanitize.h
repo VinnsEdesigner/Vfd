@@ -4,7 +4,7 @@
  *
  * This is *hygiene*, not a security boundary. The boundary is the frame the
  * console puts this in: `sandbox=""` gives the document an opaque origin with
- * no scripts, no forms and no way to reach the console or the engine, and that
+ * no scripts, no forms and no way to reach the console or Vyzor, and that
  * is enforced by the browser. A hand-written HTML parser is not a thing to trust
  * with a security property, so the guarantee is not placed here.
  *

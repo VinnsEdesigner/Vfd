@@ -1,23 +1,26 @@
 /**
- * StoragePage — tabbed: downloaded Files, Object storage, CDN & delivery.
+ * StoragePage — the downloaded files.
  *
  * The Files tab is the download library: in-progress cards on top (each with a
  * bar carrying % and transfer rate), then the file browser (grid or rows, with
  * its own filter/sort controls and multi-select).
+ *
+ * Object storage and CDN credentials used to live here as sibling tabs. They are
+ * configuration rather than content — you set them once, where the connection
+ * settings are, not every time you look at your files — so they moved to
+ * Settings. The credentials type stays here because the fields are still defined
+ * alongside the storage this page owns.
  */
 
 import { useState } from 'react';
 import { Card } from '../primitives/Card';
-import { Tabs } from '../primitives/Tabs';
 import { Button } from '../primitives/Button';
-import { Field, SecretField } from '../primitives/Field';
-import { Note } from '../primitives/Note';
 import { DownloadCardList } from '../downloads/DownloadCardList';
 import { FileLibrary, type StorageTarget } from '../files';
 import { IconShare } from '../primitives/Icons';
 import type { DownloadView } from '../../hooks/view-models';
 
-export type StorageTab = 'files' | 'object' | 'cdn';
+export type StorageTab = 'files';
 
 export interface StorageCredentialsValue {
   endpoint: string;
@@ -38,12 +41,9 @@ export interface StoragePageProps {
   target: StorageTarget;
   localPath: string;
   cloudPath: string;
-  credentials: StorageCredentialsValue;
-  onCredentialsChange: (next: StorageCredentialsValue) => void;
   onSelect: (id: string) => void;
   onOpenFile: (id: string) => void;
   onGoToSettings: () => void;
-  onTestStorage: () => void;
   onCancelDownload?: (id: string) => void;
   cancellingId?: string | null;
   /** Destructive; the parent confirms before calling. */
@@ -56,7 +56,7 @@ export interface StoragePageProps {
   onMoveFiles?: (ids: readonly string[], folder: string) => void;
   /** Rename an item in place. */
   onRenameFile?: (id: string, name: string) => void;
-  /** Save an engine item onto this device. */
+  /** Save a Vyzor item onto this device. */
   onSaveLocally?: (id: string) => void;
   /** Ids already stored on this device. */
   storedIds?: ReadonlySet<string>;
@@ -69,19 +69,14 @@ export interface StoragePageProps {
 
 export function StoragePage(props: StoragePageProps) {
   const {
-    tab,
-    onTabChange,
     downloads,
     ongoing,
     target,
     localPath,
     cloudPath,
-    credentials,
-    onCredentialsChange,
     onSelect,
     onOpenFile,
     onGoToSettings,
-    onTestStorage,
     onCancelDownload,
     cancellingId = null,
     onDeleteFile,
@@ -97,8 +92,6 @@ export function StoragePage(props: StoragePageProps) {
   } = props;
 
   const doneCount = downloads.filter((d) => d.state === 'done').length;
-  const set = (patch: Partial<StorageCredentialsValue>) =>
-    onCredentialsChange({ ...credentials, ...patch });
 
   const deleteSelected = (ids: readonly string[]) => {
     if (onDeleteFiles) onDeleteFiles(ids);
@@ -106,129 +99,58 @@ export function StoragePage(props: StoragePageProps) {
   };
 
   return (
-    <>
-      <Tabs
-        label="Storage sections"
-        active={tab}
-        onChange={onTabChange}
-        items={[
-          { id: 'files', label: 'Files', count: doneCount },
-          { id: 'object', label: 'Object storage' },
-          { id: 'cdn', label: 'CDN & delivery' },
-        ]}
-      />
-
-      {tab === 'files' && (
-        <Card
-          title="Downloaded files"
-          subtitle={`${doneCount} finished · saving to ${
-            target === 'local' ? 'this device' : 'object storage'
-          }`}
-          actions={
-            <>
-              <Button size="sm" variant="ghost" onClick={onGoToSettings}>
-                Change location
-              </Button>
-              {onShareFiles && downloads.length > 0 && (
-                <Button
-                  size="sm"
-                  onClick={() => onShareFiles(downloads.filter((d) => d.state === 'done'))}
-                >
-                  <IconShare /> Share
-                </Button>
-              )}
-            </>
-          }
-          flush
-        >
-          <div style={{ padding: '20px 20px 0' }}>
-            <div className="files__label">
-              In progress{ongoing.length > 0 ? ` · ${ongoing.length}` : ''}
-            </div>
-            <DownloadCardList
-              downloads={ongoing}
-              onSelect={onSelect}
-              {...(onCancelDownload ? { onCancel: onCancelDownload } : {})}
-              cancellingId={cancellingId}
-            />
-          </div>
-          <div className="files__library">
-            <FileLibrary
-              files={downloads}
-              target={target}
-              localPath={localPath}
-              cloudPath={cloudPath}
-              contentUrl={contentUrl}
-              onOpen={onOpenFile}
-              onShare={(list) => onShareFiles?.(list)}
-              onDelete={deleteSelected}
-              onMove={(ids, folder) => onMoveFiles?.(ids, folder)}
-              {...(onRenameFile ? { onRename: onRenameFile } : {})}
-              {...(onSaveLocally ? { onSaveLocally } : {})}
-              {...(storedIds ? { storedIds } : {})}
-              {...(savingIds ? { savingIds } : {})}
-              busy={busy === 'file-action'}
-            />
-          </div>
-        </Card>
-      )}
-
-      {tab === 'object' && (
-        <Card title="S3-compatible credentials">
-          <div className="form">
-            <Field
-              label="Endpoint"
-              value={credentials.endpoint}
-              onChange={(endpoint) => set({ endpoint })}
-            />
-            <Field label="Region" value={credentials.region} onChange={(region) => set({ region })} />
-            <Field label="Bucket" value={credentials.bucket} onChange={(bucket) => set({ bucket })} />
-            <SecretField
-              label="Access key ID"
-              value={credentials.accessKey}
-              onChange={(accessKey) => set({ accessKey })}
-            />
-            <SecretField
-              label="Secret access key"
-              value={credentials.secretKey}
-              onChange={(secretKey) => set({ secretKey })}
-            />
-          </div>
-          <div className="form-actions">
+    <Card
+      title="Downloaded files"
+      subtitle={`${doneCount} finished · saving to ${
+        target === 'local' ? 'this device' : 'object storage'
+      }`}
+      actions={
+        <>
+          <Button size="sm" variant="ghost" onClick={onGoToSettings}>
+            Change location
+          </Button>
+          {onShareFiles && downloads.length > 0 && (
             <Button
-              variant="primary"
-              loading={busy === 'test-storage'}
-              onClick={onTestStorage}
+              size="sm"
+              onClick={() => onShareFiles(downloads.filter((d) => d.state === 'done'))}
             >
-              Test connection
+              <IconShare /> Share
             </Button>
-          </div>
-        </Card>
-      )}
-
-      {tab === 'cdn' && (
-        <Card title="CDN & delivery">
-          <div className="form">
-            <Field
-              label="CDN base URL"
-              value={credentials.cdnBase}
-              onChange={(cdnBase) => set({ cdnBase })}
-              hint="Used to build public artifact URLs."
-            />
-            <Field label="Cloudflare zone ID" value={credentials.cfZone} onChange={(cfZone) => set({ cfZone })} />
-            <SecretField
-              label="Cloudflare API token"
-              value={credentials.cfToken}
-              onChange={(cfToken) => set({ cfToken })}
-            />
-          </div>
-          <Note className="note">
-            Credentials are held in memory for this session only. They are never written to
-            browser storage and never persisted on the server.
-          </Note>
-        </Card>
-      )}
-    </>
+          )}
+        </>
+      }
+      flush
+    >
+      <div style={{ padding: '20px 20px 0' }}>
+        <div className="files__label">
+          In progress{ongoing.length > 0 ? ` · ${ongoing.length}` : ''}
+        </div>
+        <DownloadCardList
+          downloads={ongoing}
+          onSelect={onSelect}
+          {...(onCancelDownload ? { onCancel: onCancelDownload } : {})}
+          cancellingId={cancellingId}
+        />
+      </div>
+      <div className="files__library">
+        <FileLibrary
+          files={downloads}
+          target={target}
+          localPath={localPath}
+          cloudPath={cloudPath}
+          contentUrl={contentUrl}
+          onOpen={onOpenFile}
+          onShare={(list) => onShareFiles?.(list)}
+          onDelete={deleteSelected}
+          onMove={(ids, folder) => onMoveFiles?.(ids, folder)}
+          {...(onRenameFile ? { onRename: onRenameFile } : {})}
+          {...(onSaveLocally ? { onSaveLocally } : {})}
+          {...(storedIds ? { storedIds } : {})}
+          {...(savingIds ? { savingIds } : {})}
+          busy={busy === 'file-action'}
+        />
+      </div>
+    </Card>
   );
 }
 

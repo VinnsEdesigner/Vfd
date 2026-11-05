@@ -39,7 +39,7 @@ const STATE_OPTIONS: ReadonlyArray<{ id: StateFilter; label: string }> = [
 const LOCATION_OPTIONS: ReadonlyArray<{ id: LocationFilter; label: string }> = [
   { id: 'all', label: 'Anywhere' },
   { id: 'device', label: 'On this device' },
-  { id: 'engine', label: 'On the engine' },
+  { id: 'vyzor', label: 'On Vyzor' },
 ];
 
 const SORT_OPTIONS: ReadonlyArray<{ id: SortKey; label: string }> = [

@@ -1,7 +1,7 @@
 /**
  * What a live page has loaded, as the console sees it.
  *
- * The engine watches the browser's own network activity, so an entry here is
+ * Vyzor watches the browser's own network activity, so an entry here is
  * something the page really fetched — a real URL, a real size, a real content
  * type — rather than a reference found in the markup. That distinction matters
  * for a stream: the manifest and its variants are not in the HTML at all.

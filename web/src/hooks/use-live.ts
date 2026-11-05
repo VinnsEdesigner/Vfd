@@ -14,7 +14,7 @@
  *
  * Opening a second page while one is live closes the first and waits for its
  * socket to actually close before asking for the next. Connecting immediately
- * races the engine: it releases the browser on its own thread, so a new request
+ * races Vyzor: it releases the browser on its own thread, so a new request
  * that arrives first is refused as busy even though the old session is gone. A
  * fallback timer covers a socket whose close event never arrives.
  */
@@ -37,15 +37,59 @@ export type LiveStatus = 'idle' | 'connecting' | 'open' | 'closed';
 const REPLACE_FALLBACK_MS = 1200;
 
 /**
+ * Where the live session's last page is remembered.
+ *
+ * A live session is a browser Vyzor holds, and Vyzor releases it the
+ * moment the socket ends — so a drop, a restart or a reload starts a *new*
+ * browser at the address the console asks for. Without this the console would
+ * ask for the address the user first typed, throwing away everywhere they had
+ * navigated to since. Remembering the page Vyzor last reported means a
+ * reconnect lands back where the viewer actually was.
+ *
+ * Stored rather than kept in a ref alone so it survives a reload or a closed
+ * tab, which is the case the viewer notices most: "reopen and it is still
+ * there". The URL is the user's own address, not a credential.
+ */
+const LIVE_URL_KEY = 'ingest.live-url';
+
+function loadLiveUrl(): string {
+  if (typeof localStorage === 'undefined') return '';
+  try {
+    return localStorage.getItem(LIVE_URL_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function persistLiveUrl(url: string): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    if (url) localStorage.setItem(LIVE_URL_KEY, url);
+  } catch {
+    /* storage unavailable; the ref still carries it for this session */
+  }
+}
+
+/**
+ * The last page the live session was on, for a caller that wants to offer it.
+ *
+ * Read without opening a session, so a freshly loaded console can put the
+ * address back in the field rather than making the viewer find it again.
+ */
+export function lastLiveUrl(): string {
+  return loadLiveUrl();
+}
+
+/**
  * How a dropped session is retried.
  *
  * A live session can end for reasons that are nothing to do with the viewer: the
- * engine restarted, a proxy in front of it recycled the connection, the machine
+ * Vyzor restarted, a proxy in front of it recycled the connection, the machine
  * went to sleep. None of those should leave someone staring at a dead page with
  * no way back, so the session is re-opened by itself.
  *
  * The wait grows because a failure that repeats immediately is usually the
- * engine being down, and hammering it helps nobody. It is capped so a viewer who
+ * Vyzor being down, and hammering it helps nobody. It is capped so a viewer who
  * waits is never more than a few seconds from the next attempt.
  */
 const RECONNECT_STEPS_MS = [800, 1600, 3200, 5000, 8000, 12000];
@@ -55,7 +99,7 @@ const RECONNECT_LIMIT = 6;
 /**
  * Whether this device is driven by touch.
  *
- * Used to tell the engine to emulate a touch device, so the page lays itself out
+ * Used to tell Vyzor to emulate a touch device, so the page lays itself out
  * the way it would in any other browser on this device and a forwarded finger
  * behaves as one. A coarse pointer is the reliable signal: a phone and a tablet
  * report it, a desktop with a mouse does not.
@@ -66,7 +110,7 @@ export function isTouchDevice(): boolean {
 }
 
 /**
- * The viewport to give the engine on a touch device.
+ * The viewport to give Vyzor on a touch device.
  *
  * Deliberately *fixed*, not the stage's size. On a phone the stage's height
  * changes constantly — the URL bar hides as you scroll, the on-screen keyboard
@@ -95,7 +139,7 @@ export interface UseLiveSession {
   /** The page's own state, as the browser reports it. */
   page: LivePageState | null;
   /**
-   * The size the engine is drawing at, once a session is open.
+   * The size Vyzor is drawing at, once a session is open.
    *
    * The view locks its stage to this so the frame is shown at its natural shape
    * rather than being stretched or letterboxed into whatever space is available —
@@ -107,28 +151,35 @@ export interface UseLiveSession {
   /**
    * The media the page has loaded, newest first.
    *
-   * Empty until the HUD asks the engine to start collecting: the collection is
-   * per-request bookkeeping on the engine, and a viewer who never opens the list
+   * Empty until the HUD asks Vyzor to start collecting: the collection is
+   * per-request bookkeeping on Vyzor, and a viewer who never opens the list
    * should not pay for it.
    */
   media: LiveMediaItem[];
-  /** Whether the engine is collecting. */
+  /** Whether Vyzor is collecting. */
   watchingMedia: boolean;
   /** Turn collection on or off. */
   watchMedia: (on: boolean) => void;
   /** Forget one entry, for this viewing. */
   forgetMedia: (url: string) => void;
-  /** Ask the engine to re-read the page for media. */
+  /** Ask Vyzor to re-read the page for media. */
   rescanMedia: () => void;
   /** Why the session ended, when it did. Null while it is alive or idle. */
   failure: LiveFailure | null;
   /** A sentence describing the failure or close. */
   reason: string | null;
+  /**
+   * The address of the last page Vyzor reported, restored from storage.
+   *
+   * Exposed so a caller can offer to reopen where the viewer left off after the
+   * tab was closed, rather than starting from a blank address.
+   */
+  lastUrl: string;
   /** Open a session on a URL. Replaces any session already open. */
   open: (url: string, width: number, height: number) => void;
   /** Close the session deliberately. */
   close: () => void;
-  /** Send a command to the engine. */
+  /** Send a command to Vyzor. */
   send: (message: unknown) => void;
 }
 
@@ -147,13 +198,23 @@ export function useLiveSession(): UseLiveSession {
   /**
    * Entries the viewer has removed.
    *
-   * Held here rather than on the engine, because "not interested in this one" is
+   * Held here rather than on Vyzor, because "not interested in this one" is
    * about this viewing, not about the page: a rescan would otherwise bring it
    * straight back.
    */
   const forgottenRef = useRef<Set<string>>(new Set());
   /** The last page asked for, so a drop can be recovered without the caller. */
   const lastOpenRef = useRef<{ url: string; width: number; height: number } | null>(null);
+  /**
+   * The address Vyzor last reported for the live page.
+   *
+   * Distinct from `lastOpenRef`, which is what was *asked for*: this follows the
+   * page as the viewer navigates inside it. A reconnect should resume here, not
+   * at the original address, or following a link would be undone by any blip.
+   */
+  const liveUrlRef = useRef<string>(loadLiveUrl());
+  /** The same value as state, so a caller can render it. */
+  const [lastUrl, setLastUrl] = useState<string>(liveUrlRef.current);
   /** How many attempts have been made for the current page. */
   const attemptsRef = useRef(0);
   /** The pending retry, so a deliberate close can cancel it. */
@@ -207,6 +268,16 @@ export function useLiveSession(): UseLiveSession {
       setViewport(vp);
 
       lastOpenRef.current = { url, width: vp.width, height: vp.height };
+      /*
+       * An explicit open makes this the current page. A reconnect also comes
+       * through here, but with the address already in `liveUrlRef`, so this is
+       * a no-op in that case and a genuine move when the viewer typed a new one.
+       */
+      if (/^https?:/i.test(url)) {
+        liveUrlRef.current = url;
+        persistLiveUrl(url);
+        setLastUrl(url);
+      }
       deliberateRef.current = false;
       const session = api.live.open(url, vp.width, vp.height, {
         onOpen: () => {
@@ -224,8 +295,21 @@ export function useLiveSession(): UseLiveSession {
           setStats(session.streamStats());
         },
         onMessage: (m: LiveMessage) => {
-          if (m.kind === 'state') setPage(m.page);
-          else if (m.kind === 'media') {
+          if (m.kind === 'state') {
+            setPage(m.page);
+            /*
+             * Follow the page as it navigates, so a reconnect resumes where the
+             * viewer got to rather than where they started. Only an http(s)
+             * address is kept: Vyzor refuses anything else, and a `data:`
+             * or `about:` document is not somewhere a new browser could return.
+             */
+            const u = m.page?.url;
+            if (u && /^https?:/i.test(u) && u !== liveUrlRef.current) {
+              liveUrlRef.current = u;
+              persistLiveUrl(u);
+              setLastUrl(u);
+            }
+          } else if (m.kind === 'media') {
             // Filter out what the viewer removed, so a rescan does not undo it.
             const keep = m.items.filter((i) => !forgottenRef.current.has(i.url));
             setMedia(keep);
@@ -259,9 +343,16 @@ export function useLiveSession(): UseLiveSession {
             attemptsRef.current++;
             setStatus('connecting');
             setReason(`reconnecting (attempt ${attemptsRef.current})…`);
+            /*
+             * Resume at the page Vyzor last reported, not the one that was
+             * first asked for. Vyzor releases the browser when the socket
+             * ends, so a reconnect is a fresh browser — and starting it at the
+             * original address would undo every link the viewer had followed.
+             */
+            const resume = liveUrlRef.current || target.url;
             retryRef.current = window.setTimeout(() => {
               retryRef.current = null;
-              startRef.current?.(target.url, target.width, target.height);
+              startRef.current?.(resume, target.width, target.height);
             }, wait);
             return;
           }
@@ -269,7 +360,7 @@ export function useLiveSession(): UseLiveSession {
           setFailure(f);
           setReason(
             attemptsRef.current >= RECONNECT_LIMIT && !deliberateRef.current
-              ? 'the engine could not be reached — press Open to try again'
+              ? 'Vyzor could not be reached — press Open to try again'
               : r,
           );
         },
@@ -293,7 +384,7 @@ export function useLiveSession(): UseLiveSession {
         return;
       }
       // Replace: remember what to open, drop the old frame, and close. The next
-      // session starts when this socket's close arrives, so the engine has
+      // session starts when this socket's close arrives, so Vyzor has
       // released its slot by then.
       pendingRef.current = { url, width, height };
       revokeFrame();
@@ -377,6 +468,7 @@ export function useLiveSession(): UseLiveSession {
     rescanMedia,
     failure,
     reason,
+    lastUrl,
     open,
     close,
     send,

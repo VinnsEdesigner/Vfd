@@ -1,28 +1,28 @@
-# Run the engine locally, with a browser it can render with.
+# Run vyzor locally, with a browser it can render with.
 #
 #   docker compose up --build
 #
 # The console is a static build and is not served here — it deploys to
 # Cloudflare Pages (see .github/workflows/deploy-pages.yml). Point it at this
-# engine through Settings, or by baking VITE_API_BASE_URL into the build.
+# vyzor through Settings, or by baking VITE_API_BASE_URL into the build.
 #
 # WHY THE LIMITS ARE SET EXPLICITLY
 #
 # A render runs a real browser and peaks around 500 MB of proportional set size
 # (measured). The memory limit below is the smallest that comfortably holds one
-# render plus the engine; the render concurrency is one for the same reason. A
+# render plus vyzor; the render concurrency is one for the same reason. A
 # 512 MB instance cannot run this — it will be killed mid-render.
 services:
-  engine:
+  vyzor:
     build: ./media-ingest-c
-    image: media-ingest:local
+    image: vyzor:local
     # The port the console should be pointed at.
     ports:
       - "8787:8787"
     volumes:
       # Downloads, rendered-page cache and browser profiles. Named, so they
       # survive `docker compose down`; the operator chooses the real size.
-      - engine-data:/data
+      - vyzor-data:/data
     environment:
       # Comma-separated origins the console may call from. Set this to wherever
       # the console is served — without it the browser blocks every request and
@@ -42,29 +42,29 @@ services:
       MI_RTC: "1"
     # The image's CMD already supplies serve, the host, the port, --render and
     # --interactive; these only add what cannot be a compiled-in default. The
-    # engine reads them from the environment, which is how a container is
+    # vyzor reads them from the environment, which is how a container is
     # configured.
     command:
       - serve
       - --render-concurrent=1
       - --interactive-concurrent=1
       - --rtc-concurrent=1
-      # STUN so a viewer on another network can connect; the engine's host
+      # STUN so a viewer on another network can connect; vyzor's host
       # candidates alone only work on the same LAN.
       - --rtc-stun=stun://stun.l.google.com:19302
     deploy:
       resources:
         limits:
-          # The floor for one render plus the engine. Raise it only alongside
+          # The floor for one render plus vyzor. Raise it only alongside
           # --render-concurrent: two renders need roughly twice this.
-          # A render plus the engine, with headroom for one live-video session
+          # A render plus vyzor, with headroom for one live-video session
           # (an Xvfb, a Chromium and the encoder).
           memory: 3g
     # A browser needs more than the 64 MB a container gets by default for
-    # /dev/shm. The engine passes --disable-dev-shm-usage as well, so this is a
+    # /dev/shm. vyzor passes --disable-dev-shm-usage as well, so this is a
     # second allowance rather than the only one.
     shm_size: "512m"
     restart: unless-stopped
 
 volumes:
-  engine-data:
+  vyzor-data:

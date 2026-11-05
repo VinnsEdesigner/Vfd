@@ -69,7 +69,7 @@ export interface WireDownload {
   conversion?: WireConversion;
   artifacts: string[];
   error: string | null;
-  /** The format the user chose, echoed back by the engine. */
+  /** The format the user chose, echoed back by Vyzor. */
   requested_quality?: string | null;
   connections?: number;
   hls?: boolean;
@@ -89,7 +89,7 @@ export interface WireProbeRequest {
   duration_seconds?: number;
 }
 
-/** One reference the engine found on a page. */
+/** One reference Vyzor found on a page. */
 export interface WireBrowseItem {
   url: string;
   filename: string;
@@ -125,7 +125,7 @@ export interface WireProbeResult {
   media: WireMedia | null;
 }
 
-/** Whether the engine can render pages, and within what bounds. */
+/** Whether Vyzor can render pages, and within what bounds. */
 export interface WireRenderCapability {
   enabled: boolean;
   /** Enabled *and* a browser was found on the host. */
@@ -144,13 +144,13 @@ export interface WireCapabilities {
   purge: boolean;
   max_body_bytes?: number;
   workers?: number;
-  engine_version?: string;
+  vyzor_version?: string;
   ffmpeg?: boolean;
-  /** Absent on engines that predate rendering. */
+  /** Absent on Vyzors that predate rendering. */
   render?: WireRenderCapability;
-  /** Absent on engines that predate live sessions. */
+  /** Absent on Vyzors that predate live sessions. */
   interactive?: WireInteractiveCapability;
-  /** Absent on engines that predate live video. */
+  /** Absent on Vyzors that predate live video. */
   rtc?: WireRtcCapability;
 }
 
@@ -161,14 +161,14 @@ export interface WireInteractiveCapability {
   available: boolean;
   max_concurrent: number;
   active: number;
-  /** Absent on an engine that predates the field; 0 means "no idle timeout". */
+  /** Absent on a Vyzor that predates the field; 0 means "no idle timeout". */
   idle_timeout_seconds?: number;
 }
 
 /*
  * Live-session WebSocket messages.
  *
- * The engine speaks two kinds: a JSON text message, and a binary image frame
+ * Vyzor speaks two kinds: a JSON text message, and a binary image frame
  * introduced by a JSON header. Both are described here so the console's parser
  * has one place to look.
  */
@@ -190,15 +190,15 @@ export interface WireLivePage {
   /**
    * Whether the page has an editable element focused.
    *
-   * The engine reports this because the console cannot see the page's DOM. It is
+   * Vyzor reports this because the console cannot see the page's DOM. It is
    * what decides whether a tap should raise the on-screen keyboard — a tap on a
    * link must not.
    */
   editing?: boolean;
 }
 
-/** A live-session text message from the engine. */
-/** One quality behind a manifest, as the engine reports it. */
+/** A live-session text message from Vyzor. */
+/** One quality behind a manifest, as Vyzor reports it. */
 export interface WireLiveMediaVariant {
   label?: string;
   width?: number;
@@ -245,7 +245,7 @@ export interface WireLiveMessage {
 }
 
 /**
- * The engine's answer to `POST /api/v1/rtc`: the session token and the offer.
+ * Vyzor's answer to `POST /api/v1/rtc`: the session token and the offer.
  *
  * There is no media here — this is the signalling, and the media arrives on the
  * RTCPeerConnection the console builds from `sdp`.
@@ -255,18 +255,18 @@ export interface WireRtcOffer {
   sdp?: string;
   width?: number;
   height?: number;
-  /** Whether the engine finished gathering, so the offer is final. */
+  /** Whether Vyzor finished gathering, so the offer is final. */
   gathered?: boolean;
 }
 
-/** The engine's answer to `GET /api/v1/rtc/{token}`. */
+/** Vyzor's answer to `GET /api/v1/rtc/{token}`. */
 export interface WireRtcStatus {
   state?: string;
   connected?: boolean;
   reason?: string;
 }
 
-/** The engine's live-video capability block. */
+/** Vyzor's live-video capability block. */
 export interface WireRtcCapability {
   enabled?: boolean;
   available?: boolean;

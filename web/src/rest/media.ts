@@ -8,7 +8,7 @@ import type { Media, ProbeResult } from '../domain/media';
 import type { WireMedia, WireProbeResult } from '../domain/wire';
 
 export interface MediaResource {
-  /** `durationSeconds` lets the engine turn manifest BANDWIDTH into real sizes;
+  /** `durationSeconds` lets Vyzor turn manifest BANDWIDTH into real sizes;
    *  without it quality sizes come back unknown rather than guessed. */
   probe(url: string, durationSeconds?: number, signal?: AbortSignal): Promise<ProbeResult>;
   /** Sniff raw bytes (the server accepts an octet-stream body). */

@@ -1,4 +1,4 @@
-/* mi_download.h - fast, resumable, concurrent download engine (libcurl). */
+/* mi_download.h - fast, resumable, concurrent download Vyzor (libcurl). */
 #ifndef MI_DOWNLOAD_H
 #define MI_DOWNLOAD_H
 

@@ -82,11 +82,11 @@ static void args_free(arg_list *a) {
 /* ------------------------------------------------------------------ */
 
 /*
- * Whether the engine will render this URL.
+ * Whether Vyzor will render this URL.
  *
  * Only http(s): a file:// URL would read this host's disk, and anything else is
  * not a page. Loopback and link-local addresses are refused as well, so a
- * render cannot reach the engine's own port (a render of ourselves would be a
+ * render cannot reach Vyzor's own port (a render of ourselves would be a
  * loop) or an internal service that happens to be listening. That is a real
  * restriction on a self-hosted setup, so it is stated here rather than
  * discovered later.

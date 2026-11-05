@@ -3,7 +3,7 @@
  * This exists because a page is not its bytes. A site that builds itself with
  * JavaScript — a search box, an app shell — arrives as a document whose script
  * must run before there is anything to show, and a site that forbids framing
- * still has to be *rendered*, not embedded. So the engine runs a real browser
+ * still has to be *rendered*, not embedded. So Vyzor runs a real browser
  * and returns either a picture of the page or its rendered DOM.
  *
  * WHAT THIS IS NOT
@@ -13,7 +13,7 @@
  * with --no-sandbox: a page that escapes the renderer escapes onto this host.
  * The bounds that are real are resource bounds — a hard wall-clock kill, a V8
  * heap cap, a concurrency gate, an output size cap, and a throwaway profile per
- * render. Run the engine where nothing sensitive lives.
+ * render. Run Vyzor where nothing sensitive lives.
  */
 #ifndef MI_RENDER_H
 #define MI_RENDER_H
@@ -58,7 +58,7 @@ typedef struct {
      * of proportional set size, so this is the knob that decides the host's
      * memory requirement, and the default is deliberately 1. */
     int max_concurrent;
-    /* Sent to the site. NULL uses the engine's default. */
+    /* Sent to the site. NULL uses Vyzor's default. */
     const char *user_agent;
     /* Where throwaway browser profiles are made. NULL uses the system temp dir. */
     const char *profile_root;

@@ -149,7 +149,7 @@ describe('keyMessage', () => {
 });
 
 describe('message builders', () => {
-  it('build a mouse message in the engine’s shape', () => {
+  it('build a mouse message in Vyzor’s shape', () => {
     expect(mouseMessage('mousePressed', 10, 20, 'left', 1, 1, 0)).toEqual({
       type: 'mouse',
       event: 'mousePressed',
@@ -184,7 +184,7 @@ describe('message builders', () => {
 });
 
 describe('touchMessage', () => {
-  it('flattens points into the engine’s x,y list', () => {
+  it('flattens points into Vyzor’s x,y list', () => {
     expect(touchMessage('touchStart', [{ x: 10, y: 20 }], 0)).toEqual({
       type: 'touch',
       event: 'touchStart',
@@ -194,12 +194,12 @@ describe('touchMessage', () => {
   });
 
   it('carries two fingers as four numbers', () => {
-    // A pinch needs both points in one message; the engine reads them pairwise.
+    // A pinch needs both points in one message; Vyzor reads them pairwise.
     const m = touchMessage('touchMove', [{ x: 1, y: 2 }, { x: 3, y: 4 }], 0);
     expect(m.points).toEqual([1, 2, 3, 4]);
   });
 
-  it('names the event the engine expects', () => {
+  it('names the event Vyzor expects', () => {
     for (const e of ['touchStart', 'touchMove', 'touchEnd', 'touchCancel'] as const) {
       expect(touchMessage(e, [{ x: 0, y: 0 }], 0).event).toBe(e);
     }

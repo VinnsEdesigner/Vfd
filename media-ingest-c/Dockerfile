@@ -1,4 +1,4 @@
-# media-ingest — the engine, with the browser it renders with and streams.
+# vyzor — Vyzor, with the browser it renders with and streams.
 #
 # WHY THIS IS NOT A SCRATCH IMAGE
 #
@@ -12,7 +12,7 @@
 # SIZE AND MEMORY
 #
 # Chromium makes this image large (roughly 600 MB) and a render costs about
-# 500 MB of proportional set size at its peak. The engine therefore needs a plan
+# 500 MB of proportional set size at its peak. Vyzor therefore needs a plan
 # with at least 2 GB and a render concurrency of one or two — see README. This
 # is not a container to run on a 512 MB instance.
 #
@@ -29,7 +29,7 @@
 #                   webrtcbin exists but cannot connect, and the failure is a
 #                   null pad at runtime rather than a missing package.
 #
-# Both are optional at runtime: if they are absent the engine reports the
+# Both are optional at runtime: if they are absent Vyzor reports the
 # capability unavailable and the console hides the control, rather than
 # accepting a session it cannot serve.
 
@@ -85,7 +85,7 @@ RUN apt-get update \
       gstreamer1.0-nice \
  && rm -rf /var/lib/apt/lists/*
 
-# A non-root user, because the engine runs a browser on pages it does not
+# A non-root user, because Vyzor runs a browser on pages it does not
 # control and nothing here needs root. Note that Chromium still runs with
 # --no-sandbox: an unprivileged container cannot use its namespace sandbox, so
 # the isolation is the container and the resource limits, not Chromium's own.
@@ -93,9 +93,9 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin vyzorix \
  && mkdir -p /data/downloads \
  && chown -R vyzorix:vyzorix /data
 
-COPY --from=build /src/build/media-ingest /usr/local/bin/media-ingest
+COPY --from=build /src/build/vyzor /usr/local/bin/vyzor
 
-# The engine writes downloads, rendered-page caches and browser profiles here.
+# Vyzor writes downloads, rendered-page caches and browser profiles here.
 # Mount a volume at /data so they survive a restart and so the size is the
 # operator's to choose.
 VOLUME ["/data"]
@@ -110,10 +110,10 @@ ENV MI_WORK_DIR=/data/downloads \
 USER vyzorix
 WORKDIR /home/vyzorix
 
-# tini reaps orphans. It matters more than usual here: the engine starts a
+# tini reaps orphans. It matters more than usual here: Vyzor starts a
 # browser that forks its own tree, and a container's PID 1 should be something
-# that actually reaps rather than the engine itself.
-ENTRYPOINT ["/usr/bin/tini", "--", "media-ingest"]
+# that actually reaps rather than Vyzor itself.
+ENTRYPOINT ["/usr/bin/tini", "--", "vyzor"]
 
 # The defaults are the useful ones for a container: listen on every interface,
 # render, and keep the cache beside the downloads. Everything can be overridden

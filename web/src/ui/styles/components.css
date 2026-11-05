@@ -4265,7 +4265,7 @@ input[type='range']:focus-visible {
   border: 1px solid var(--border);
 }
 
-/* Where the engine writes — stated plainly, because the browser cannot see or
+/* Where Vyzor writes — stated plainly, because the browser cannot see or
    choose that path and implying otherwise would mislead. */
 .engstore {
   padding: 4px 0 2px;
@@ -4518,7 +4518,7 @@ input[type='range']:focus-visible {
   color: var(--text-3);
 }
 
-/* A live page: the engine's browser, streamed as frames into an <img> the user
+/* A live page: Vyzor's browser, streamed as frames into an <img> the user
    can click and type into. The stage is the input surface, so it takes focus and
    says so. */
 .live {
@@ -4590,7 +4590,7 @@ input[type='range']:focus-visible {
   margin: 0 auto;
 }
 /* The frame fills the stage. It is the whole point of the view, so it is not
-   letterboxed: the engine is told the stage size and draws to it. */
+   letterboxed: Vyzor is told the stage size and draws to it. */
 .live__frame {
   display: block;
   width: 100%;
@@ -4706,6 +4706,15 @@ input[type='range']:focus-visible {
   /* Thumbnails vary wildly in shape; cover keeps the grid even. */
   object-fit: cover;
   display: block;
+}
+/* A video's first frame, used as the poster when the listing had no thumbnail.
+   Same box as an image tile so the grid stays even. */
+.bcard__poster {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #000;
 }
 .bcard__glyph {
   color: var(--text-3);

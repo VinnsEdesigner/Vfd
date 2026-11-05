@@ -10,7 +10,7 @@
 #include "mi_json.h"
 #include "mi_util.h"
 
-/* A cap on entries, so a page that streams for an hour cannot grow the engine's
+/* A cap on entries, so a page that streams for an hour cannot grow Vyzor's
  * memory without bound. Segments of a live stream are the case this guards: a
  * long-lived playlist can fetch thousands, and only the manifest is useful. */
 #define MW_MAX_ENTRIES 256

@@ -22,7 +22,7 @@ export {
 export { useProbe, useDetectBytes } from './use-media';
 export { useBrowse, useBrowseUrl, usePageFrame, useRenderPage } from './use-browse';
 export type { UseBrowseArgs } from './use-browse';
-export { useLiveSession } from './use-live';
+export { useLiveSession, lastLiveUrl } from './use-live';
 export type { UseLiveSession } from './use-live';
 export { useLiveVideo } from './use-live-video';
 export type { UseLiveVideo, LiveVideoStatus } from './use-live-video';

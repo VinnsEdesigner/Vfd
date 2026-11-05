@@ -18,12 +18,12 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
-const serverBin = join(repoRoot, 'media-ingest-c', 'build', 'media-ingest');
+const serverBin = join(repoRoot, 'media-ingest-c', 'build', 'vyzor');
 
 export interface ServerHandle {
   baseUrl: string;
   port: number;
-  /** The directory the engine was told to write downloads into. */
+  /** The directory Vyzor was told to write downloads into. */
   workDir: string;
   stop: () => Promise<void>;
 }

@@ -61,7 +61,7 @@ static void test_url_rules(void) {
     CHECK(!mi_render_url_allowed(""), "an empty url is refused");
     CHECK(!mi_render_url_allowed(NULL), "a null url is refused");
 
-    /* The engine's own host must not be reachable: a render of ourselves would
+    /* Vyzor's own host must not be reachable: a render of ourselves would
      * be a loop, and an internal service is not a page to show. */
     CHECK(!mi_render_url_allowed("http://127.0.0.1:12001/healthz"), "loopback is refused");
     CHECK(!mi_render_url_allowed("http://127.1.2.3/"), "the whole 127/8 is refused");

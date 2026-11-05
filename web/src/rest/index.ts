@@ -23,13 +23,13 @@ export interface RestApi {
   downloads: DownloadsResource;
   media: MediaResource;
   system: SystemResource;
-  /** List the media a page or directory offers, via the engine. */
+  /** List the media a page or directory offers, via Vyzor. */
   browse: BrowseResource;
-  /** Show a page itself, via the engine, when the site allows framing. */
+  /** Show a page itself, via Vyzor, when the site allows framing. */
   page: PageResource;
-  /** Render a page with the engine's browser, when the host can. */
+  /** Render a page with Vyzor's browser, when the host can. */
   render: RenderResource;
-  /** Drive a page live with the engine's browser, over a WebSocket. */
+  /** Drive a page live with Vyzor's browser, over a WebSocket. */
   live: LiveResource;
   /** Stream a page as live video over WebRTC, signalled over HTTP. */
   rtc: RtcResource;

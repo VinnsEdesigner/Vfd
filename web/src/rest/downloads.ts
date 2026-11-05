@@ -41,7 +41,7 @@ export interface DownloadsResource {
   resume(id: string, signal?: AbortSignal): Promise<Download>;
   /**
    * Convert a container the browser cannot play (MKV, AVI) into MP4. Runs in
-   * the engine's background; the returned record reports `conversion.state`,
+   * Vyzor's background; the returned record reports `conversion.state`,
    * which the caller polls until it settles.
    */
   convert(id: string, signal?: AbortSignal): Promise<Download>;

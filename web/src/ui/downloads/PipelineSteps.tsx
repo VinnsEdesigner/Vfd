@@ -16,7 +16,7 @@ export interface PipelineStageMeta {
   meta: string;
 }
 
-/** Display copy for the stages, in engine order. */
+/** Display copy for the stages, in Vyzor order. */
 export const PIPELINE_STAGES: ReadonlyArray<PipelineStageMeta> = [
   { key: 'probe', name: 'Probe', meta: 'HEAD + byte sniff' },
   { key: 'fetch', name: 'Fetch', meta: 'Ranged, multi-connection' },

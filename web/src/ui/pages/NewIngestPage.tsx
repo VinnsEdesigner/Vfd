@@ -71,7 +71,7 @@ export function NewIngestPage({
               label="Source URL"
               value={value.url}
               onChange={(url) => set({ url })}
-              hint="Direct file or manifest. The engine verifies the bytes before downloading."
+              hint="Direct file or manifest. Vyzor verifies the bytes before downloading."
             />
           </div>
           <Field

@@ -1,10 +1,10 @@
 /**
  * Live-video signalling tests.
  *
- * The engine's offer arrives over HTTP, the console answers over HTTP, and input
+ * Vyzor's offer arrives over HTTP, the console answers over HTTP, and input
  * rides a data channel inside the peer connection. What is worth pinning is the
  * part a regression would break quietly: that the offer is answered, that the
- * input channel is created with the label the engine expects, and that a message
+ * input channel is created with the label Vyzor expects, and that a message
  * sent before the channel opens is held rather than dropped.
  *
  * Fake RTCPeerConnection and RTCDataChannel are used because jsdom has neither.
@@ -147,7 +147,7 @@ describe('LiveVideoSession', () => {
     expect(pc.transceivers).toEqual([{ kind: 'video', init: { direction: 'recvonly' } }]);
   });
 
-  it('creates the input channel with the label the engine looks for', async () => {
+  it('creates the input channel with the label Vyzor looks for', async () => {
     const s = new LiveVideoSession(fakeVideo(), fakeSignalling());
     await s.connect('https://x/');
     expect(FakeChannel.instances).toHaveLength(1);
@@ -225,16 +225,16 @@ describe('LiveVideoSession', () => {
     const onEnded = vi.fn();
     const signalling = fakeSignalling({
       open: async () => {
-        throw new Error('the engine is busy');
+        throw new Error('Vyzor is busy');
       },
     });
     const s = new LiveVideoSession(fakeVideo(), signalling, { onError, onEnded });
     await s.connect('https://x/');
-    expect(onError).toHaveBeenCalledWith('the engine is busy');
-    expect(onEnded).toHaveBeenCalledWith('the engine is busy');
+    expect(onError).toHaveBeenCalledWith('Vyzor is busy');
+    expect(onEnded).toHaveBeenCalledWith('Vyzor is busy');
   });
 
-  it('tells the engine to close, and detaches the video', async () => {
+  it('tells Vyzor to close, and detaches the video', async () => {
     const signalling = fakeSignalling();
     const video = fakeVideo();
     const s = new LiveVideoSession(video, signalling);

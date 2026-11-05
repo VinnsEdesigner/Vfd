@@ -14,7 +14,7 @@ LDLIBS  := -lcurl -lpthread $(GST_LIBS)
 
 SRC_DIR := src
 BUILD   := build
-BIN     := $(BUILD)/media-ingest
+BIN     := $(BUILD)/vyzor
 LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_download.c $(SRC_DIR)/mi_hls.c \
            $(SRC_DIR)/mi_storage.c $(SRC_DIR)/mi_json.c \

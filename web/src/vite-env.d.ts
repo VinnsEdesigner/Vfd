@@ -11,7 +11,7 @@
  */
 
 interface FileSystemHandle {
-  /** Present on every modern engine; the spec makes this a plain method. */
+  /** Present on every modern Vyzor; the spec makes this a plain method. */
   queryPermission?(descriptor?: { mode?: 'read' | 'readwrite' }): Promise<PermissionState>;
   requestPermission?(descriptor?: { mode?: 'read' | 'readwrite' }): Promise<PermissionState>;
 }

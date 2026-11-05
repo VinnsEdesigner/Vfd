@@ -51,6 +51,7 @@ import {
   useBrowseUrl,
   useRenderPage,
   useLiveSession,
+  lastLiveUrl,
   useLiveVideo,
   useSetStorageLocation,
   useCreateDownload,
@@ -84,7 +85,7 @@ import type { FormatChoice } from './downloads/FormatChooser';
 import { DownloadInfo } from './downloads/DownloadInfo';
 import { StorageChooser } from './storage/StorageChooser';
 import { StoragePanel } from './storage/StoragePanel';
-import type { EngineStorageFacts } from './storage/EngineStorageNotice';
+import type { VyzorStorageFacts } from './storage/VyzorStorageNotice';
 import { shareItems, openWithItem, mimeForName } from './files';
 import {
   formatBytes,
@@ -104,7 +105,7 @@ const VIEW_TITLES: Record<ViewId, [string, string]> = {
   browse: ['Browse', 'Find open media, then preview or keep it'],
   ingest: ['New download', 'Queue a source to fetch, transcode and deliver'],
   storage: ['Storage', 'Downloaded files, object storage and delivery'],
-  settings: ['Settings', 'Connection, storage location and engine capabilities'],
+  settings: ['Settings', 'Connection, storage location and Vyzor capabilities'],
 };
 
 const DEFAULT_CLOUD_PATH = 's3://vyzorix-media/downloads';
@@ -206,12 +207,12 @@ export interface AppProps {
 /** Turns a thrown transport/API error into something a user can act on. */
 function describeError(e: unknown): string {
   if (isApiError(e)) {
-    if (e.status === 401) return 'The engine rejected the request — check the bearer token in Settings.';
-    if (e.status === 404) return 'The engine does not know that record.';
-    if (e.status >= 500) return `The engine failed the request (HTTP ${e.status}).`;
+    if (e.status === 401) return 'Vyzor rejected the request — check the bearer token in Settings.';
+    if (e.status === 404) return 'Vyzor does not know that record.';
+    if (e.status >= 500) return `Vyzor failed the request (HTTP ${e.status}).`;
     return e.detail ?? `Request failed (HTTP ${e.status}).`;
   }
-  if (isNetworkError(e)) return 'Could not reach the engine — is it running, and is the API URL correct?';
+  if (isNetworkError(e)) return 'Could not reach Vyzor — is it running, and is the API URL correct?';
   if (e instanceof Error) return e.message;
   return 'Something went wrong.';
 }
@@ -229,8 +230,10 @@ export function App({ initialView = 'overview' }: AppProps) {
   const [browsePage, setBrowsePage] = useState(1);
   /** Which source Browse is reading: the built-in search, or a URL the user typed. */
   const [browseMode, setBrowseMode] = useState<BrowseMode>(() => loadBrowse().mode);
-  /** The address, remembered so switching tabs does not cost a retype. */
-  const [browseUrl, setBrowseUrl] = useState(() => loadBrowse().url);
+  /** The address, remembered so switching tabs does not cost a retype. Falls
+   *  back to the last page a live session was on, so reopening the console
+   *  returns to where the viewer left off rather than to a blank field. */
+  const [browseUrl, setBrowseUrl] = useState(() => loadBrowse().url || lastLiveUrl());
   /** The URL actually submitted, so typing does not fire a request per keystroke. */
   const [browseUrlSubmitted, setBrowseUrlSubmitted] = useState<string | null>(null);
   /** How much of a URL's page to list: only media, or everything on it. */
@@ -241,15 +244,15 @@ export function App({ initialView = 'overview' }: AppProps) {
    * Held here rather than in a query because a render is an action: it costs
    * about half a gigabyte and a second or two, so it happens when asked and not
    * again on a remount. `rendered` is the URL to show; `renderMs` and the title
-   * come from the engine's headers.
+   * come from Vyzor's headers.
    */
   const [rendered, setRendered] = useState<{ url: string; mode: RenderMode } | null>(null);
   const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
   const [renderMs, setRenderMs] = useState<number | null>(null);
   const [renderFailure, setRenderFailure] = useState<RenderFailure | null>(null);
-  /** True when the last render came from the engine's cache, not a fresh draw. */
+  /** True when the last render came from Vyzor's cache, not a fresh draw. */
   const [renderedFromCache, setRenderedFromCache] = useState(false);
-  /** True when the engine cleaned the page's markup before serving it. */
+  /** True when Vyzor cleaned the page's markup before serving it. */
   const [renderedSanitized, setRenderedSanitized] = useState(false);
   const renderPage = useRenderPage();
   /** The live page session. Its state is owned here so switching views does not
@@ -259,7 +262,7 @@ export function App({ initialView = 'overview' }: AppProps) {
    * The raw-video session, when the viewer chooses it.
    *
    * Owned here rather than in the view so switching between the picture and
-   * the video does not tear a session down and open another — the engine's
+   * the video does not tear a session down and open another — Vyzor's
    * gate admits one at a time, so a needless churn is a needless refusal.
    */
   const video = useLiveVideo();
@@ -325,7 +328,7 @@ export function App({ initialView = 'overview' }: AppProps) {
   });
 
   /**
-   * The library the file manager shows: engine records plus the files saved on
+   * The library the file manager shows: Vyzor records plus the files saved on
    * this device. A device copy is a first-class entry, so it can be played,
    * shared and opened like any other file rather than only played by handing a
    * URL to a new tab.
@@ -403,7 +406,7 @@ export function App({ initialView = 'overview' }: AppProps) {
     [browsePreview],
   );
 
-  /** The bytes to play: the device copy when there is one, else the engine. */
+  /** The bytes to play: the device copy when there is one, else Vyzor. */
   const contentUrlFor = useCallback(
     (view: DownloadView) =>
       view.localUrl && view.localUrl !== ''
@@ -466,7 +469,7 @@ export function App({ initialView = 'overview' }: AppProps) {
   /**
    * Render the page at the address, in the given mode.
    *
-   * The engine's answer decides what is shown: a success gives the URL to point
+   * Vyzor's answer decides what is shown: a success gives the URL to point
    * at (the image is streamed by the browser, not fetched into JS), and a
    * failure gives the reason. Nothing is guessed from a missing image, because
    * an image that never loads cannot say why.
@@ -516,7 +519,7 @@ export function App({ initialView = 'overview' }: AppProps) {
     return () => URL.revokeObjectURL(url);
   }, [rendered?.url]);
 
-  /** The MP4 the engine produced, or null for anything it does not hold. */
+  /** The MP4 Vyzor produced, or null for anything it does not hold. */
   const convertedUrlFor = useCallback(
     (view: DownloadView) =>
       view.source === 'engine'
@@ -533,22 +536,22 @@ export function App({ initialView = 'overview' }: AppProps) {
    * go, and it cannot be styled or trusted to appear on every platform.
    */
   /**
-   * Which of these ids live on the engine, on this device, or both.
+   * Which of these ids live on Vyzor, on this device, or both.
    *
    * The file manager shows one entry per item, but the two stores are separate:
-   * deleting a device copy must not delete the engine's record, and deleting an
-   * engine record must not silently leave an orphaned local copy.
+   * deleting a device copy must not delete Vyzor's record, and deleting an
+   * Vyzor record must not silently leave an orphaned local copy.
    */
   const partitionIds = useCallback(
     (ids: readonly string[]) => {
-      const engine = new Set(allViews.map((v) => v.id));
+      const Vyzor = new Set(allViews.map((v) => v.id));
       const device = new Set(localMedia.items.map((i) => i.id));
       return {
-        engineIds: ids.filter((id) => engine.has(id)),
+        vyzorIds: ids.filter((id) => Vyzor.has(id)),
         deviceIds: ids.filter((id) => device.has(id)),
-        // Engine-only: nothing local to remove.
-        engineOnly: ids.filter((id) => engine.has(id) && !device.has(id)),
-        deviceOnly: ids.filter((id) => device.has(id) && !engine.has(id)),
+        // Vyzor-only: nothing local to remove.
+        vyzorOnly: ids.filter((id) => Vyzor.has(id) && !device.has(id)),
+        deviceOnly: ids.filter((id) => device.has(id) && !Vyzor.has(id)),
       };
     },
     [allViews, localMedia.items],
@@ -557,15 +560,15 @@ export function App({ initialView = 'overview' }: AppProps) {
   const deleteFile = useCallback(
     (id: string) => {
       const file = libraryViews.find((d) => d.id === id);
-      const { engineIds, deviceIds } = partitionIds([id]);
+      const { vyzorIds, deviceIds } = partitionIds([id]);
       const onDevice = deviceIds.length > 0;
       setPendingDelete({
         ids: [id],
         title: 'Delete this item?',
         message:
-          engineIds.length > 0 && onDevice
-            ? 'The engine record and this device’s copy will both be removed. This cannot be undone.'
-            : engineIds.length > 0
+          vyzorIds.length > 0 && onDevice
+            ? 'Vyzor record and this device’s copy will both be removed. This cannot be undone.'
+            : vyzorIds.length > 0
               ? 'The record and its downloaded files will be removed from disk. This cannot be undone.'
               : 'This copy will be removed from this device. This cannot be undone.',
         details: [file?.name ?? id],
@@ -598,16 +601,16 @@ export function App({ initialView = 'overview' }: AppProps) {
     if (!pendingDelete) return;
     const { ids } = pendingDelete;
     setPendingDelete(null);
-    const { engineIds, deviceIds } = partitionIds(ids);
+    const { vyzorIds, deviceIds } = partitionIds(ids);
     const nameOf = (id: string) => libraryViews.find((d) => d.id === id)?.name ?? id;
 
-    // Remove the device copies first: a failed engine delete must not leave the
+    // Remove the device copies first: a failed Vyzor delete must not leave the
     // user believing a local file went with it.
     void (async () => {
       for (const id of deviceIds) {
         await localMedia.remove(id).catch(() => undefined);
       }
-      if (engineIds.length === 0) {
+      if (vyzorIds.length === 0) {
         toast.success(
           'Deleted',
           ids.length === 1
@@ -616,8 +619,8 @@ export function App({ initialView = 'overview' }: AppProps) {
         );
         return;
       }
-      if (engineIds.length === 1) {
-        const id = engineIds[0]!;
+      if (vyzorIds.length === 1) {
+        const id = vyzorIds[0]!;
         await removeDownload
           .mutateAsync({ id, removeFiles: true })
           .then(() => toast.success('Deleted', `${nameOf(id)} and its files were removed.`))
@@ -627,12 +630,12 @@ export function App({ initialView = 'overview' }: AppProps) {
       await runAction(
         'file-action',
         async () => {
-          for (const id of engineIds) {
+          for (const id of vyzorIds) {
             await removeDownload.mutateAsync({ id, removeFiles: true });
           }
         },
         {
-          success: `Deleted ${engineIds.length} items`,
+          success: `Deleted ${vyzorIds.length} items`,
           failure: 'Could not delete everything',
         },
       );
@@ -650,7 +653,7 @@ export function App({ initialView = 'overview' }: AppProps) {
       const targets = files.map((f) => ({
         id: f.id,
         name: f.name,
-        // A device file is shared from its own bytes; an engine item from the
+        // A device file is shared from its own bytes; a Vyzor item from the
         // endpoint that serves them.
         url: contentUrlFor(f),
         mime: mimeForName(f.name),
@@ -683,7 +686,7 @@ export function App({ initialView = 'overview' }: AppProps) {
       const target = {
         id: file.id,
         name: file.name,
-        // The bytes themselves: a device copy is already here, an engine item is
+        // The bytes themselves: a device copy is already here, a Vyzor item is
         // fetched from the endpoint that serves it.
         url: contentUrlFor(file),
         mime: mimeForName(file.name),
@@ -738,13 +741,13 @@ export function App({ initialView = 'overview' }: AppProps) {
    * Rename an item in whichever store holds it.
    *
    * A device copy is renamed through the device store, which for the folder tier
-   * renames the real file on disk. An engine item goes to the engine. When both
+   * renames the real file on disk. A Vyzor item goes to Vyzor. When both
    * exist we do both, so the two do not drift apart and leave the library
    * disagreeing with itself.
    */
   const renameFile = useCallback(
     (id: string, name: string) => {
-      const { engineIds, deviceIds } = partitionIds([id]);
+      const { vyzorIds, deviceIds } = partitionIds([id]);
       void runAction(
         'file-action',
         async () => {
@@ -753,7 +756,7 @@ export function App({ initialView = 'overview' }: AppProps) {
             // picks the new one up, which is why nothing here holds the old id.
             await localMedia.rename(id, name);
           }
-          if (engineIds.length > 0) {
+          if (vyzorIds.length > 0) {
             await renameDownload.mutateAsync({ id, name });
           }
         },
@@ -765,9 +768,9 @@ export function App({ initialView = 'overview' }: AppProps) {
 
 
   /**
-   * Queue a browse result with the engine.
+   * Queue a browse result with Vyzor.
    *
-   * A document or a text file is not media, and the engine refuses an
+   * A document or a text file is not media, and Vyzor refuses an
    * unrecognised payload unless it is told to accept one — so the flag is set
    * from the item's kind rather than blanket-applied.
    */
@@ -797,9 +800,9 @@ export function App({ initialView = 'overview' }: AppProps) {
   /**
    * Download something the live page loaded.
    *
-   * A manifest is a *set* of qualities, so the engine transcodes it rather than
+   * A manifest is a *set* of qualities, so Vyzor transcodes it rather than
    * fetching one file — that is what `hls: true` asks for, and the chosen
-   * quality is passed along so the engine can prefer it.
+   * quality is passed along so Vyzor can prefer it.
    */
   const downloadFromLivePage = useCallback(
     (url: string, quality?: string) => {
@@ -823,7 +826,7 @@ export function App({ initialView = 'overview' }: AppProps) {
     [createDownload, runAction],
   );
 
-  /** Save a browse result straight onto this device, without the engine. */
+  /** Save a browse result straight onto this device, without Vyzor. */
   const saveBrowsedToDevice = useCallback(
     (item: BrowseItem) => {
       void runAction(
@@ -900,7 +903,7 @@ export function App({ initialView = 'overview' }: AppProps) {
     cfToken: credentials.cfToken ?? '',
   };
 
-  // The engine owns the download directory; the row label shows its real path.
+  // Vyzor owns the download directory; the row label shows its real path.
   const localPath = systemStorage?.workDir ?? '';
   const cloudPath =
     location.target === 'cloud' ? `s3://${location.bucket}/${location.keyPrefix}` : DEFAULT_CLOUD_PATH;
@@ -1131,20 +1134,20 @@ export function App({ initialView = 'overview' }: AppProps) {
   );
 
   /**
-   * Where the engine writes, and whether that is this same machine. The browser
-   * cannot see or choose this path — the engine owns it — so the honest thing is
+   * Where Vyzor writes, and whether that is this same machine. The browser
+   * cannot see or choose this path — Vyzor owns it — so the honest thing is
    * to report it rather than let the browser storage options imply they are the
    * whole story.
    */
-  const engineStorage = useMemo<EngineStorageFacts | null>(() => {
+  const vyzorStorage = useMemo<VyzorStorageFacts | null>(() => {
     const store = systemStorage;
     if (!store) return null;
     let sameDevice = false;
     try {
-      const engineHost = new URL(endpoint).hostname;
+      const vyzorHost = new URL(endpoint).hostname;
       const pageHost = typeof window === 'undefined' ? '' : window.location.hostname;
       const loopback = (h: string) => h === 'localhost' || h === '127.0.0.1' || h === '::1';
-      sameDevice = engineHost === pageHost || (loopback(engineHost) && loopback(pageHost));
+      sameDevice = vyzorHost === pageHost || (loopback(vyzorHost) && loopback(pageHost));
     } catch {
       sameDevice = false;
     }
@@ -1484,17 +1487,6 @@ export function App({ initialView = 'overview' }: AppProps) {
             target={location.target}
             localPath={localPath}
             cloudPath={cloudPath}
-            credentials={credentialsValue}
-            onCredentialsChange={(next) => {
-              setCredential('endpoint', next.endpoint);
-              setCredential('region', next.region);
-              setCredential('bucket', next.bucket);
-              setCredential('accessKey', next.accessKey);
-              setCredential('secretKey', next.secretKey);
-              setCredential('cdnBase', next.cdnBase);
-              setCredential('cfZone', next.cfZone);
-              setCredential('cfToken', next.cfToken);
-            }}
             onSelect={setOpenFileId}
             onOpenFile={setOpenFileId}
             onGoToSettings={() => {
@@ -1515,21 +1507,6 @@ export function App({ initialView = 'overview' }: AppProps) {
               const view = libraryViews.find((v) => v.id === id);
               return view ? contentUrlFor(view) : '';
             }}
-            onTestStorage={() =>
-              void runAction(
-                'test-storage',
-                async () => {
-                  await api.client.transport.request({
-                    method: 'GET',
-                    path: '/api/v1/storage/config',
-                  });
-                },
-                {
-                  success: 'Connection successful',
-                  failure: 'Storage is not reachable',
-                },
-              )
-            }
             busy={busy}
           />
           ))}
@@ -1549,6 +1526,42 @@ export function App({ initialView = 'overview' }: AppProps) {
             onDarkThemeChange={() => toggleTheme()}
             location={location}
             onLocationChange={setLocation}
+            credentials={credentialsValue}
+            onCredentialsChange={(next) => {
+              setCredential('endpoint', next.endpoint);
+              setCredential('region', next.region);
+              setCredential('bucket', next.bucket);
+              setCredential('accessKey', next.accessKey);
+              setCredential('secretKey', next.secretKey);
+              setCredential('cdnBase', next.cdnBase);
+              setCredential('cfZone', next.cfZone);
+              setCredential('cfToken', next.cfToken);
+            }}
+            onTestStorage={() =>
+              void runAction(
+                'test-storage',
+                async () => {
+                  await api.client.transport.request({
+                    method: 'GET',
+                    path: '/api/v1/storage/config',
+                  });
+                },
+                {
+                  success: 'Connection successful',
+                  failure: 'Storage is not reachable',
+                },
+              )
+            }
+            delivery={{
+              cdnBase: credentialsValue.cdnBase,
+              cfZone: credentialsValue.cfZone,
+              cfToken: credentialsValue.cfToken,
+            }}
+            onDeliveryChange={(next) => {
+              setCredential('cdnBase', next.cdnBase);
+              setCredential('cfZone', next.cfZone);
+              setCredential('cfToken', next.cfToken);
+            }}
             downloads={allViews}
             inspectedId={inspectedId}
             onInspectChange={setInspectedId}
@@ -1563,7 +1576,7 @@ export function App({ initialView = 'overview' }: AppProps) {
                 items={localMedia.items}
                 usage={localMedia.usage}
                 offlineStatus={offlineStatus}
-                engineStorage={engineStorage}
+                vyzorStorage={vyzorStorage}
                 busy={busy === 'storage'}
                 onChoose={chooseStorage}
                 onRegrant={() =>
@@ -1602,7 +1615,7 @@ export function App({ initialView = 'overview' }: AppProps) {
                 { success: 'Storage location saved', failure: 'Could not save the location' },
               )
             }
-            engineLocation={
+            vyzorLocation={
               systemStorage
                 ? {
                     workDir: systemStorage.workDir,
@@ -1625,9 +1638,9 @@ export function App({ initialView = 'overview' }: AppProps) {
                   }
                 : undefined
             }
-            engine={{
-              engineVersion: capabilities?.engineVersion
-                ? `media-ingest ${capabilities.engineVersion}`
+            vyzor={{
+              vyzorVersion: capabilities?.vyzorVersion
+                ? `vyzor ${capabilities.vyzorVersion}`
                 : 'unknown',
               ffmpeg: capabilities
                 ? capabilities.ffmpeg

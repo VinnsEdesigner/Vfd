@@ -18,10 +18,10 @@ export interface OverviewPageProps {
   completedCount: number;
   failedCount: number;
   processedLabel: string;
-  /** Real library size measured by the engine. */
+  /** Real library size measured by Vyzor. */
   libraryLabel: string;
   libraryFiles: number;
-  /** Real volume figures; null when the engine could not read them. */
+  /** Real volume figures; null when Vyzor could not read them. */
   disk: { freeLabel: string; usedPercent: number; summary: string } | null;
   onViewAll: () => void;
   onSelect: (id: string) => void;

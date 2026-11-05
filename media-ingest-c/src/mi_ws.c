@@ -75,7 +75,7 @@ size_t mi_ws_build_header(unsigned char out[10], int opcode, size_t payload_len)
  *
  * The distinction matters and was got wrong: a non-blocking `send` reports a
  * full buffer as `EAGAIN`, which is backpressure rather than failure. Treating
- * it as failure means the engine can only ever deliver a whole frame or drop the
+ * it as failure means Vyzor can only ever deliver a whole frame or drop the
  * connection, with nothing in between — so one slow moment on a mobile link ends
  * the session instead of costing a frame.
  */

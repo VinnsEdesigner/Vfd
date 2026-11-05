@@ -189,7 +189,7 @@ static char *basename_of(const char *url) {
 /* Content types                                                       */
 /* ------------------------------------------------------------------ */
 
-/* A content type guessed from the extension. Empty when unknown: the engine
+/* A content type guessed from the extension. Empty when unknown: Vyzor
  * sniffs the real bytes at download time, so this is only a hint for the card. */
 static const char *mime_for_name(const char *name) {
     const char *dot = strrchr(name, '.');
@@ -652,7 +652,7 @@ int mi_browse_url(const char *url, const char *user_agent, mi_browse_filter filt
     /* A listing page is not itself media, so the media check must not apply. */
     cfg.require_media = 0;
     /* Some hosts refuse a request that does not look like a browser, so the
-     * operator can say what the engine should call itself. */
+     * operator can say what Vyzor should call itself. */
     cfg.user_agent = user_agent;
 
     char *body = mi_download_fetch_text(&cfg, url, MAX_BODY);

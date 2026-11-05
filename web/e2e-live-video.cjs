@@ -3,8 +3,8 @@
  *
  * What it proves, and why each step is here:
  *
- *   1. the console loads and reports the engine's rtc capability  — the UI is
- *      reachable and the build carries the engine URL;
+ *   1. the console loads and reports the Vyzor's rtc capability  — the UI is
+ *      reachable and the build carries the Vyzor URL;
  *   2. a video session negotiates                            — HTTP signalling,
  *      the RTCPeerConnection, and ICE all work together;
  *   3. the video element actually receives frames            — media is flowing,
@@ -17,7 +17,7 @@
  * negotiated but never sent anything.
  *
  * A touch device is emulated for the touch checks, because that is the case the
- * engine has special handling for (touch events, a mobile viewport) and the one
+ * Vyzor has special handling for (touch events, a mobile viewport) and the one
  * most likely to regress.
  */
 const { chromium } = require('playwright-core');
@@ -39,7 +39,7 @@ function ok(name, cond, detail = '') {
            '--autoplay-policy=no-user-gesture-required'],
   });
 
-  // A touch device, so the engine emulates touch and the page lays itself out as
+  // A touch device, so the Vyzor emulates touch and the page lays itself out as
   // it would on a phone. This is the case with the most special handling.
   const ctx = await browser.newContext({
     viewport: { width: 412, height: 915 },
@@ -57,12 +57,12 @@ function ok(name, cond, detail = '') {
   await page.goto(SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
   ok('console loads', await page.title() !== '', await page.title());
 
-  // Point the console at the engine and dismiss the first-run storage prompt,
+  // Point the console at the Vyzor and dismiss the first-run storage prompt,
   // both of which a real user does once and which otherwise gate the UI.
-  await page.evaluate((engine) => {
+  await page.evaluate((Vyzor) => {
     window.localStorage.setItem(
       'vyzorix.media.connection',
-      JSON.stringify({ baseUrl: engine || 'http://127.0.0.1:12001', authToken: '' }),
+      JSON.stringify({ baseUrl: Vyzor || 'http://127.0.0.1:12001', authToken: '' }),
     );
     // The storage chooser is a first-run gate; picking a tier dismisses it.
     window.localStorage.setItem('vyzorix.local-storage', JSON.stringify({ tier: 'opfs' }));
@@ -91,11 +91,11 @@ function ok(name, cond, detail = '') {
   await page.waitForTimeout(2000);
 
   // The capability must be visible as a Video mode, which only appears when the
-  // engine reported `rtc.available`.
+  // Vyzor reported `rtc.available`.
   const bodyText = await page.locator('body').innerText().catch(() => '');
   log('--- page text sample ---');
   log(bodyText.slice(0, 400).replace(/\n{2,}/g, '\n'));
-  ok('engine reports it can stream video', /video/i.test(bodyText));
+  ok('Vyzor reports it can stream video', /video/i.test(bodyText));
 
   // --- 2. open a page -------------------------------------------------------
   // "View a page" is the tab that shows a page. Exact match: "Read a URL" also
@@ -222,7 +222,7 @@ function ok(name, cond, detail = '') {
     log('sent a swipe');
     await page.waitForTimeout(1200);
 
-    // A wheel, which the engine forwards as a scroll.
+    // A wheel, which the Vyzor forwards as a scroll.
     await page.mouse.move(cx, cy);
     await page.mouse.wheel(0, 300);
     log('sent a wheel');
@@ -237,7 +237,7 @@ function ok(name, cond, detail = '') {
     log('WARN  no video box; skipping input');
   }
 
-  // The engine must still be alive after all that input.
+  // The Vyzor must still be alive after all that input.
   const after = await page.evaluate(async () => {
     const v = document.querySelector('video');
     if (!v) return null;

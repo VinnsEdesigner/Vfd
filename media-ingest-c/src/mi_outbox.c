@@ -129,7 +129,7 @@ int mi_outbox_push(mi_outbox *o, const void *data, size_t len, int droppable) {
     /*
      * If the budget is still exceeded and nothing may be evicted, the message is
      * refused. That keeps the bound real: without it, a client that stopped
-     * reading while the engine kept reporting state would grow the engine's
+     * reading while Vyzor kept reporting state would grow Vyzor's
      * memory without limit. The caller sees the refusal and can drop the session,
      * which is the honest response to a peer that is not reading.
      */

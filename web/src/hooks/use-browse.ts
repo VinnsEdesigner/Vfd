@@ -42,15 +42,15 @@ export function useBrowse({ term, kind, page, perPage = 24 }: UseBrowseArgs) {
 /**
  * List the media at a URL the user typed.
  *
- * The request goes to the engine, not the browser: CORS stops the page fetching
- * an arbitrary host, while the engine can. Nothing is enabled until the URL
+ * The request goes to Vyzor, not the browser: CORS stops the page fetching
+ * an arbitrary host, while Vyzor can. Nothing is enabled until the URL
  * looks like an absolute one, so a half-typed address makes no request.
  */
 /**
  * Whether a page can be shown inside the console, and where to point the frame.
  *
- * The engine fetches the page and reports the site's framing policy, because
- * only the engine can fetch another origin. A site that forbids framing is
+ * Vyzor fetches the page and reports the site's framing policy, because
+ * only Vyzor can fetch another origin. A site that forbids framing is
  * reported as such rather than shown as an empty frame.
  */
 export function usePageFrame(url: string | null) {
@@ -67,12 +67,12 @@ export function usePageFrame(url: string | null) {
 }
 
 /**
- * Render a page with the engine's browser.
+ * Render a page with Vyzor's browser.
  *
  * A mutation rather than a query, because a render is an *action*: it costs
  * about half a gigabyte and a second or two, and it should happen when the user
  * asks rather than whenever a component mounts. Caching it as a query would
- * re-render on every remount, which is exactly what the engine's narrow gate
+ * re-render on every remount, which is exactly what Vyzor's narrow gate
  * cannot afford.
  */
 export function useRenderPage() {

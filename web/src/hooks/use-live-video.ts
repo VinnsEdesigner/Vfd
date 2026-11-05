@@ -21,7 +21,7 @@ export interface UseLiveVideo {
   status: LiveVideoStatus;
   /** The connection's own state, for a detail line. */
   connection: LiveVideoState;
-  /** The viewport the engine is capturing, once known. */
+  /** The viewport Vyzor is capturing, once known. */
   viewport: LiveVideoViewport | null;
   /** Why the session ended, when it did. */
   reason: string | null;
@@ -48,7 +48,7 @@ export function useLiveVideo(): UseLiveVideo {
 
   const open = useCallback(
     (url: string, video: HTMLVideoElement) => {
-      // Replace: the engine's gate admits one session, so the old one has to go
+      // Replace: Vyzor's gate admits one session, so the old one has to go
       // before the new one is asked for.
       sessionRef.current?.close();
       sessionRef.current = null;

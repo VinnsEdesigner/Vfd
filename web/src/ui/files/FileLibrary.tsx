@@ -31,7 +31,7 @@ export interface FileLibraryProps {
   onDelete: (ids: readonly string[]) => void;
   onMove: (ids: readonly string[], folder: string) => void;
   onRename?: (id: string, name: string) => void;
-  /** Save an engine file onto this device. Absent when no tier can take it. */
+  /** Save a Vyzor file onto this device. Absent when no tier can take it. */
   onSaveLocally?: (id: string) => void;
   /** Ids already stored on this device. */
   storedIds?: ReadonlySet<string>;
@@ -87,7 +87,7 @@ export function FileLibrary({
     if (file.isOpenable) {
       actions.push({ id: 'open', label: verb, onSelect: () => onOpen(file.id) });
     }
-    // Saving is only meaningful for an engine file that is not here yet: a
+    // Saving is only meaningful for a Vyzor file that is not here yet: a
     // device copy already is the local copy.
     if (file.source === 'engine' && onSaveLocally && !storedIds?.has(file.id)) {
       actions.push({

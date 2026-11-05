@@ -22,8 +22,8 @@ interface ConnectionState extends ConnectionSettings {
 
 export const DEFAULT_CONNECTION: ConnectionSettings = {
   // An explicit build-time URL wins (a self-hosted or LAN deployment that knows
-  // its engine). Otherwise the same origin the page was served from, which is
-  // what a reverse proxy in front of both the console and the engine gives you —
+  // its Vyzor). Otherwise the same origin the page was served from, which is
+  // what a reverse proxy in front of both the console and Vyzor gives you —
   // and which avoids a hardcoded localhost in a deployed build.
   baseUrl: import.meta.env.VITE_API_BASE_URL ?? (typeof location !== 'undefined' ? location.origin : ''),
   authToken: '',

@@ -1,7 +1,7 @@
 /**
  * Live video over WebRTC, as the console sees it.
  *
- * The engine captures the page as raw video and sends it as SRTP; the console
+ * Vyzor captures the page as raw video and sends it as SRTP; the console
  * plays it in a <video>. The signalling is not WebRTC's own: WebRTC has none by
  * design, so it rides a few plain HTTP requests, and input rides a data channel
  * inside the same peer connection.
@@ -22,13 +22,13 @@ export type LiveVideoState =
   | 'failed'
   | 'closed';
 
-/** The viewport the engine is capturing, so the view can keep the page's shape. */
+/** The viewport Vyzor is capturing, so the view can keep the page's shape. */
 export interface LiveVideoViewport {
   width: number;
   height: number;
 }
 
-/** The engine's answer to `POST /api/v1/rtc`. */
+/** Vyzor's answer to `POST /api/v1/rtc`. */
 export interface LiveVideoOffer {
   token: string;
   sdp: string;
@@ -36,18 +36,18 @@ export interface LiveVideoOffer {
 }
 
 /**
- * Read the engine's offer.
+ * Read Vyzor's offer.
  *
  * Throws on anything unusable — no token, no SDP — because a session without
  * either cannot be established, and a caller that carries on would build a peer
  * connection nothing answers.
  */
 export function normalizeRtcOffer(w: WireRtcOffer): LiveVideoOffer {
-  if (!w || typeof w !== 'object') throw new Error('the engine sent no offer');
+  if (!w || typeof w !== 'object') throw new Error('Vyzor sent no offer');
   const token = typeof w.token === 'string' ? w.token : '';
   const sdp = typeof w.sdp === 'string' ? w.sdp : '';
-  if (!token) throw new Error('the engine sent no session token');
-  if (!sdp) throw new Error('the engine sent an empty offer');
+  if (!token) throw new Error('Vyzor sent no session token');
+  if (!sdp) throw new Error('Vyzor sent an empty offer');
   return {
     token,
     sdp,
@@ -55,7 +55,7 @@ export function normalizeRtcOffer(w: WireRtcOffer): LiveVideoOffer {
   };
 }
 
-/** The states the engine is allowed to name; anything else reads as new. */
+/** The states Vyzor is allowed to name; anything else reads as new. */
 const STATES: ReadonlyArray<LiveVideoState> = [
   'new',
   'connecting',

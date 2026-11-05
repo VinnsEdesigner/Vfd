@@ -28,7 +28,7 @@ export interface Transport {
    * Send a request and return only its headers.
    *
    * For the cases where the *response metadata* is the answer and the body is
-   * either huge or not JSON — asking the engine whether a page may be framed,
+   * either huge or not JSON — asking Vyzor whether a page may be framed,
    * for instance. The body is read and discarded so the connection is released.
    */
   head(options: RequestOptions): Promise<ResponseHeaders>;
@@ -38,7 +38,7 @@ export interface Transport {
    * Needed because an `<img>` or `<iframe>` sends no Authorization header, so a
    * protected resource cannot simply be pointed at — the console fetches it and
    * hands the browser a blob instead. Without this, a render would work on an
-   * open engine and 401 on a secured one, which is the worst kind of difference:
+   * open Vyzor and 401 on a secured one, which is the worst kind of difference:
    * it only shows up once someone turns auth on.
    *
    * The headers come back too, because for these endpoints the metadata *is* the
@@ -52,8 +52,8 @@ export interface Transport {
    * as a query parameter.
    *
    * A browser's WebSocket API cannot set an Authorization header, so the token
-   * has to travel in the URL. That is the engine's own design (it accepts a
-   * `token` query parameter for exactly this endpoint), and it is why the engine
+   * has to travel in the URL. That is Vyzor's own design (it accepts a
+   * `token` query parameter for exactly this endpoint), and it is why Vyzor
    * also checks the Origin: a WebSocket handshake is not subject to CORS.
    */
   socketUrl(path: string, query?: Record<string, string | number>): string;

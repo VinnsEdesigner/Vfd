@@ -1,7 +1,7 @@
 /* mi_browse.h - list the media a remote page or directory offers.
  *
  * The console cannot fetch an arbitrary URL itself: the browser enforces CORS,
- * and most media hosts send no CORS headers at all. The engine has no such
+ * and most media hosts send no CORS headers at all. Vyzor has no such
  * limit, so the listing happens here and the console asks for it.
  *
  * Two sources are understood:

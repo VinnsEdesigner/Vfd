@@ -49,7 +49,7 @@ static const char *const BROWSERS[] = {
 #define CDP_WRITE_FD 4
 
 /* The outgoing command queue is bounded, so a flooding console is disconnected
- * rather than allowed to grow the engine's memory without limit. */
+ * rather than allowed to grow Vyzor's memory without limit. */
 #define CDP_WRITE_MAX (1024u * 1024u)
 /* Incoming: a screenshot of a large page is the biggest expected message. */
 #define CDP_READ_MAX (32u * 1024u * 1024u)
@@ -201,26 +201,34 @@ void mi_interactive_config_init(mi_interactive_config *cfg) {
     cfg->viewport_height = 800;
     cfg->user_agent = NULL;
     cfg->profile_root = NULL;
-    cfg->idle_timeout_seconds = 180;
+    /*
+     * The idle window.
+     *
+     * This closes a session whose page is *both* untouched and still. It is
+     * generous on purpose: a reader who pauses on a page is the normal case, not
+     * an abandoned session, and the keepalive below is what actually finds a
+     * client that has gone. Five minutes is long enough that reading a long
+     * article does not end the session under the reader.
+     */
+    cfg->idle_timeout_seconds = 300;
     cfg->startup_timeout_seconds = 15;
-    /* A ping every 20 s, and a client silent for 45 s is gone. Both well above
-     * any plausible round trip, and both short enough that a leaked session does
-     * not hold the gate for long. */
     /*
      * The keepalive window.
      *
-     * A ping every 25 seconds, and a client is only given up on after 120
+     * A ping every 20 seconds, and a client is only given up on after 300
      * seconds of silence. The margin matters more than the interval: a browser
      * answers a ping promptly, but a backgrounded tab throttles its timers, a
      * phone suspends the socket when it sleeps, and a proxy can hold a reply for
      * a moment. With a 25-second window any of those killed the session, which is
      * what made a live page feel like it kept dropping.
      *
-     * Two minutes is still quick enough that a vanished tab does not hold the
-     * engine's only slot for long.
+     * The console also sends its own heartbeat, so a throttled tab still makes
+     * itself heard; this window is the backstop for a client that has genuinely
+     * gone. Five minutes keeps a leaked session from holding the gate for long
+     * without punishing a viewer who stepped away.
      */
-    cfg->keepalive_ping_seconds = 25;
-    cfg->keepalive_timeout_seconds = 120;
+    cfg->keepalive_ping_seconds = 20;
+    cfg->keepalive_timeout_seconds = 300;
 }
 
 int mi_interactive_url_allowed(const char *url) {
@@ -274,8 +282,8 @@ mi_interactive_pool *mi_interactive_pool_new(const mi_interactive_config *cfg) {
     if (pool->cfg.viewport_height <= 0) pool->cfg.viewport_height = 800;
     if (pool->cfg.v8_heap_mb <= 0) pool->cfg.v8_heap_mb = 256;
     if (pool->cfg.startup_timeout_seconds <= 0) pool->cfg.startup_timeout_seconds = 15;
-    if (pool->cfg.keepalive_ping_seconds <= 0) pool->cfg.keepalive_ping_seconds = 25;
-    if (pool->cfg.keepalive_timeout_seconds <= 0) pool->cfg.keepalive_timeout_seconds = 120;
+    if (pool->cfg.keepalive_ping_seconds <= 0) pool->cfg.keepalive_ping_seconds = 20;
+    if (pool->cfg.keepalive_timeout_seconds <= 0) pool->cfg.keepalive_timeout_seconds = 300;
     pool->browser = find_browser(cfg->chromium_path);
     if (!pool->browser) {
         mi_logf(MI_LOG_INFO, "interactive: no browser found; live sessions are unavailable");
@@ -365,7 +373,7 @@ static int wait_for_id(mi_interactive *it, int id, int ms);
  *
  * A page loads dozens of images nobody will ever want — icons, spacers, the same
  * thumbnail at six sizes. Listing all of them is not a list of anything, so the
- * engine listens for the one signal that is unambiguous instead: the viewer
+ * Vyzor listens for the one signal that is unambiguous instead: the viewer
  * clicking or long-pressing a piece of media. That is intent, and it is worth
  * far more than a heuristic about size.
  *
@@ -547,7 +555,7 @@ static int cdp_command(mi_interactive *it, const char *method, const char *param
  * Ask the page whether an editable element is focused.
  *
  * A browser raises the on-screen keyboard only for a focused text field, and the
- * console cannot see the page's DOM — so the engine asks on the page's behalf and
+ * console cannot see the page's DOM — so Vyzor asks on the page's behalf and
  * reports the answer in the state message. This is a tiny expression, evaluated
  * after each input rather than polled, so a tap that focuses a field reports it
  * at once and a tap on a link reports nothing.
@@ -598,7 +606,7 @@ static void set_state_changed(mi_interactive *it) {
  * `Page.addScriptToEvaluateOnNewDocument` runs it in every document before any
  * page script, which is what makes it survive navigation without the page's
  * cooperation. The binding it calls is added with `Runtime.addBinding`, which
- * arrives at the engine as a `Runtime.bindingCalled` event.
+ * arrives at Vyzor as a `Runtime.bindingCalled` event.
  */
 static void install_picker(mi_interactive *it) {
     if (!it || it->closed || it->picker_installed) return;
@@ -913,7 +921,7 @@ static char *hls_variants_json(const char *body, const char *base_url) {
 /*
  * Ask for a manifest's body, so its variants can be listed.
  *
- * Fetched over the browser's own network stack, not the engine's: the manifest
+ * Fetched over the browser's own network stack, not Vyzor's: the manifest
  * may need the page's cookies or referrer, and the browser already has them.
  * `Runtime.evaluate` with an await is the one way to read a body from here
  * without a second CDP domain.
@@ -1232,7 +1240,7 @@ static int wait_for_id(mi_interactive *it, int id, int ms) {
 /* ------------------------------------------------------------------ */
 
 /* Close every inherited descriptor except the three the browser is handed. A
- * container's engine holds a listen socket and more; none of it belongs in a
+ * container's Vyzor holds a listen socket and more; none of it belongs in a
  * browser, and leaking it keeps those objects alive for the session's life. */
 static void close_extra_fds(void) {
     struct rlimit rl;
@@ -1428,7 +1436,7 @@ mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
         if (err) snprintf(err, errcap, "could not start the browser");
         goto fail;
     }
-    /* Non-blocking both ways: a stalled browser must not block the engine, and
+    /* Non-blocking both ways: a stalled browser must not block Vyzor, and
      * the read loop drains until EAGAIN rather than blocking on the next byte. */
     int fl = fcntl(it->wfd, F_GETFL, 0);
     fcntl(it->wfd, F_SETFL, fl | O_NONBLOCK);

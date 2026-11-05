@@ -113,7 +113,7 @@ export function StorageChooser({
             Browsers only allow storage and offline support on HTTPS, or on{' '}
             <code>localhost</code> / <code>127.0.0.1</code>. A plain{' '}
             <code>http://&lt;ip-address&gt;</code> address — which is what you get
-            reaching a self-hosted engine from another device — is refused, so
+            reaching a self-hosted Vyzor from another device — is refused, so
             nothing can be saved on the device.
           </p>
           <p>

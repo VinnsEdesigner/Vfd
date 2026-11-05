@@ -1,6 +1,6 @@
-/* mi_ws.h - the small slice of WebSocket (RFC 6455) the engine needs.
+/* mi_ws.h - the small slice of WebSocket (RFC 6455) Vyzor needs.
  *
- * The engine's interactive session has to push a stream of screencast frames to
+ * Vyzor's interactive session has to push a stream of screencast frames to
  * the console and take a stream of input events back, so it needs a full-duplex
  * channel rather than a request/response one. That is what a WebSocket is, and
  * it is the only reason this file exists.
@@ -37,7 +37,7 @@ enum {
  * The largest payload this module will assemble into one frame.
  *
  * The protocol allows 2^63 bytes; a peer that claims that must not be believed,
- * because honouring it means allocating whatever it says. The engine's own
+ * because honouring it means allocating whatever it says. Vyzor's own
  * frames are capped well below this, and a control frame may not exceed 125.
  */
 #define MI_WS_MAX_PAYLOAD (16u * 1024u * 1024u)
