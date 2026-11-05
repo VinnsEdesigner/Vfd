@@ -35,9 +35,18 @@ static char *url_decode(const char *s) {
     return out;
 }
 
-/* A listing is capped: a page with a thousand links would otherwise turn into a
- * thousand cards nobody asked for, and each one is a URL the console renders. */
-#define MAX_ITEMS 200
+/*
+ * A listing is capped: a page with a thousand links would otherwise turn into a
+ * thousand cards nobody asked for, and each one is a URL the console renders.
+ *
+ * The cap has to be generous enough to survive a modern page, though. A page
+ * like a GitHub repository carries several hundred script and style references
+ * in its <head> *before* any content link appears — measured: the first file
+ * link on github.com/torvalds/linux is at character 218,964, past a 200-entry
+ * cap. A limit that stops before the content is not a limit, it is a blind
+ * spot, so the cap is set where it still bounds memory without hiding the page.
+ */
+#define MAX_ITEMS 2000
 /* Bodies are capped too; a huge page is not worth buffering to read a list. */
 #define MAX_BODY (2 * 1024 * 1024)
 /* A URL longer than this is not a media reference worth carrying. */

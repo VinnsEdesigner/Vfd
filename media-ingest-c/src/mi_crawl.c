@@ -287,23 +287,54 @@ static char *host_of(const char *url) {
     return out;
 }
 
-/** Is this URL a page to follow, rather than something to hand to the caller? */
-static int looks_like_page(const char *url) {
+/*
+ * Is this URL a page to follow, rather than a file to report?
+ *
+ * "No extension means a page" is the obvious rule and it is wrong: Makefile,
+ * Dockerfile, LICENSE and README have no extension, and they are exactly the
+ * files someone searches a repository for. That rule made a crawl of GitHub
+ * report zero hits for "Makefile" while the link sat in the HTML.
+ *
+ * So the two questions are kept separate:
+ *   - `is_page`  — could this be HTML to walk into? Extension-less counts,
+ *                  because /repo/blob/master/src is a page and costs only one
+ *                  fetch to find out.
+ *   - `is_asset` — is this certainly not content? Scripts, styles, fonts and
+ *                  icons are dropped from the results, which is what stops a
+ *                  page's own plumbing filling the list.
+ * A URL is a candidate hit unless it is an asset; it is followed if it is a page.
+ */
+static int is_page(const char *url) {
     const char *q = strchr(url, '?');
     size_t n = q ? (size_t)(q - url) : strlen(url);
-    /* A path with no extension is a page. So is one ending in a known page
-     * extension. Anything else is a file the caller may want. */
     const char *slash = NULL;
     for (size_t i = 0; i < n; i++) {
         if (url[i] == '/') slash = url + i;
     }
     const char *name = slash ? slash + 1 : url;
-    const char *dot = strrchr(name, '.');
-    if (!dot || dot >= url + n) return 1;
+    const char *dot = NULL;
+    for (const char *p = name; p < url + n; p++) {
+        if (*p == '.') dot = p;
+    }
+    if (!dot || dot >= url + n) return 1; /* no extension: could be either */
     static const char *PAGE_EXT[] = {".html", ".htm", ".php", ".asp", ".aspx", ".jsp",
                                      ".shtml", ".cgi", ".pl", NULL};
     for (size_t i = 0; PAGE_EXT[i]; i++) {
         if (!strncasecmp(dot, PAGE_EXT[i], strlen(PAGE_EXT[i]))) return 1;
+    }
+    return 0;
+}
+
+/** Certainly not content: a page's own scripts, styles, fonts and icons. */
+static int is_asset(const char *url) {
+    const char *q = strchr(url, '?');
+    size_t n = q ? (size_t)(q - url) : strlen(url);
+    static const char *ASSET_EXT[] = {".css",  ".js",   ".mjs",  ".map",  ".woff",
+                                      ".woff2", ".ttf", ".eot",  ".ico",  ".svg",
+                                      ".png",  ".webp", ".avif", NULL};
+    for (size_t i = 0; ASSET_EXT[i]; i++) {
+        size_t elen = strlen(ASSET_EXT[i]);
+        if (n >= elen && !strncasecmp(url + n - elen, ASSET_EXT[i], elen)) return 1;
     }
     return 0;
 }
@@ -351,7 +382,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
             for (size_t i = 0; i < br.count; i++) {
                 const mi_browse_item *item = &br.items[i];
                 if (!item->url) continue;
-                if (looks_like_page(item->url)) continue;
+                if (is_asset(item->url)) continue;
                 int score = mi_crawl_score(item->filename, item->title, term);
                 if (score > 0) {
                     if (hits >= room) break;
@@ -362,7 +393,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
             if (depth < cfg->max_depth) {
                 for (size_t i = 0; i < br.count; i++) {
                     const char *u = br.items[i].url;
-                    if (!u || !looks_like_page(u)) continue;
+                    if (!u || !is_page(u)) continue;
                     if (cfg->same_host_only) {
                         char *h1 = host_of(u), *h2 = host_of(url);
                         int same = h1 && h2 && !strcasecmp(h1, h2);
@@ -402,7 +433,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                 if ((int)br.count > links) links = (int)br.count;
                 for (size_t i = 0; i < br.count; i++) {
                     const mi_browse_item *item = &br.items[i];
-                    if (!item->url || looks_like_page(item->url)) continue;
+                    if (!item->url || is_asset(item->url)) continue;
                     int score = mi_crawl_score(item->filename, item->title, term);
                     if (score > 0) {
                         if (hits >= room) break;
@@ -412,7 +443,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                 if (depth < cfg->max_depth) {
                     for (size_t i = 0; i < br.count; i++) {
                         const char *u = br.items[i].url;
-                        if (!u || !looks_like_page(u)) continue;
+                        if (!u || !is_page(u)) continue;
                         if (strset_has(visited, u)) continue;
                         frontier_push(f, u, depth + 1);
                     }
