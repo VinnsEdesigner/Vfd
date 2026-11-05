@@ -268,6 +268,75 @@ static void test_detect_documents(void) {
 /* download tests                                                    */
 /* ---------------------------------------------------------------- */
 
+/*
+ * A probe must not claim range support it does not have.
+ *
+ * The old probe sent a HEAD and then a ranged GET, and set `accept_ranges = 1`
+ * whenever the GET returned any bytes — but a server that ignores `Range`
+ * answers 200 with the whole object, which also returns bytes. The result was a
+ * plan that promised parallel ranged downloading and then fell back, or worse,
+ * mis-sized the transfer. This pins the distinction, because it is exactly the
+ * kind of thing that only shows up against a real host.
+ */
+static void test_probe_range_support_is_measured(void) {
+    size_t len = 400000;
+    unsigned char *body = mi_malloc(len);
+    make_mp4(body, len - 128);
+
+    test_server srv = {0};
+    if (start_server((const char *)body, len, 0, &srv) != 0) {
+        CHECK(0, "server start (no ranges)");
+        free(body);
+        return;
+    }
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/norange.mp4", srv.port);
+
+    mi_download_config cfg;
+    mi_download_config_init(&cfg);
+    mi_download_plan plan;
+    CHECK(mi_probe(&cfg, url, &plan) == MI_OK, "probe ok (no ranges)");
+    CHECK(!plan.accept_ranges, "a host that ignores Range is not reported as ranged");
+    CHECK(plan.total_bytes == (int64_t)len, "size still known without ranges");
+    CHECK(plan.have_media && plan.media.kind == MI_KIND_MP4, "still detects mp4 without ranges");
+    mi_download_plan_free(&plan);
+    stop_server(&srv);
+    free(body);
+}
+
+/*
+ * A probe must still identify the media when the response is odd.
+ *
+ * A host that refuses HEAD (405) or serves 200 instead of 206 is common, and
+ * the bytes are what the detector reads — so media is detected from whatever
+ * arrived rather than only on a textbook 206.
+ */
+static void test_probe_detects_without_partial_content(void) {
+    size_t len = 250000;
+    unsigned char *body = mi_malloc(len);
+    make_mp4(body, len - 128);
+
+    test_server srv = {0};
+    if (start_server((const char *)body, len, 1, &srv) != 0) {
+        CHECK(0, "server start (ranges)");
+        free(body);
+        return;
+    }
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/plain.mp4", srv.port);
+
+    mi_download_config cfg;
+    mi_download_config_init(&cfg);
+    mi_download_plan plan;
+    CHECK(mi_probe(&cfg, url, &plan) == MI_OK, "probe ok (ranged host)");
+    CHECK(plan.accept_ranges, "a host that honours Range is reported as ranged");
+    CHECK(plan.total_bytes == (int64_t)len, "ranged host size from Content-Range");
+    CHECK(plan.have_media && plan.media.kind == MI_KIND_MP4, "detects mp4");
+    mi_download_plan_free(&plan);
+    stop_server(&srv);
+    free(body);
+}
+
 static void test_probe_and_download(void) {
     size_t len = 3000000;
     unsigned char *body = mi_malloc(len);
@@ -927,6 +996,8 @@ int main(void) {
     test_detect_empty();
     test_detect_documents();
     test_sha256();
+    test_probe_range_support_is_measured();
+    test_probe_detects_without_partial_content();
     test_probe_and_download();
     test_refuse_non_video();
     test_resume();
