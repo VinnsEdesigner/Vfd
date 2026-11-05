@@ -168,6 +168,19 @@ export interface Capabilities {
    * unavailable.
    */
   rtc: RtcCapability | null;
+  /**
+   * Whether the media extractor is installed here.
+   *
+   * Null when Vyzor predates it, treated the same as unavailable — a console
+   * talking to an older Vyzor must not offer a tab whose endpoint is not there.
+   */
+  extract: ExtractCapability | null;
+}
+
+/** Whether the media extractor is installed on that Vyzor. */
+export interface ExtractCapability {
+  enabled: boolean;
+  available: boolean;
 }
 
 /** How Vyzor can render a page. */

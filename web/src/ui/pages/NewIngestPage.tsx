@@ -1,12 +1,19 @@
 /**
- * NewIngestPage — two ways to start a download.
+ * NewIngestPage — three ways to start a download.
  *
- * "Source" takes a URL to a file and runs the pipeline on it.
+ * "I have a URL" takes an address to a file and runs the pipeline on it.
  *
- * "Find on a site" takes a site and a file name, walks the site, and fills the
- * source form from whichever file you pick. It is a separate mode rather than a
- * field on the form because the two ask different questions: one wants an
- * address you already know, the other finds one for you.
+ * "Find a file on a site" takes a site and a file name, walks the site's links,
+ * and lists what matches.
+ *
+ * "Find a video" takes a *name* or a *channel*, for the case where neither a URL
+ * nor a crawl helps: a video site computes its media URL in JavaScript at play
+ * time, so there is nothing for a walk to read.
+ *
+ * They are separate modes rather than fields on one form because each asks a
+ * different question — one wants an address you know, one wants a site and a
+ * filename, one wants a title — and a single form trying to be all three would
+ * be a form nobody could fill in.
  *
  * The page stays presentational: every request and every piece of state is
  * owned by the caller.
@@ -21,6 +28,8 @@ import { Note } from '../primitives/Note';
 import { QualityPicker } from '../downloads/QualityPicker';
 import { SiteSearch } from './SiteSearch';
 import type { SiteSearchProps } from './SiteSearch';
+import { VideoSites } from './VideoSites';
+import type { VideoSitesProps } from './VideoSites';
 import type { QualityOption } from '../../hooks/view-models';
 
 export interface IngestFormValue {
@@ -66,6 +75,8 @@ export interface NewIngestPageProps {
    * the call site.
    */
   siteSearch: SiteSearchProps;
+  /** The video-site feature, passed in whole for the same reason. */
+  videoSites: VideoSitesProps;
 }
 
 export function NewIngestPage(props: NewIngestPageProps) {
@@ -79,6 +90,7 @@ export function NewIngestPage(props: NewIngestPageProps) {
     selectedQuality,
     onSelectQuality,
     siteSearch,
+    videoSites,
   } = props;
   const set = (patch: Partial<IngestFormValue>) => onChange({ ...value, ...patch });
 
@@ -88,13 +100,22 @@ export function NewIngestPage(props: NewIngestPageProps) {
    * Local state, not lifted: it is a view choice with no meaning outside this
    * page, and nothing else needs to know which tab is showing.
    */
-  const [mode, setMode] = useState<'source' | 'site'>('source');
+  const [mode, setMode] = useState<'source' | 'site' | 'video'>('source');
 
   if (mode === 'site') {
     return (
       <>
         <ModeTabs mode={mode} onChange={setMode} />
         <SiteSearch {...siteSearch} />
+      </>
+    );
+  }
+
+  if (mode === 'video') {
+    return (
+      <>
+        <ModeTabs mode={mode} onChange={setMode} />
+        <VideoSites {...videoSites} />
       </>
     );
   }
@@ -230,8 +251,8 @@ function ModeTabs({
   mode,
   onChange,
 }: {
-  mode: 'source' | 'site';
-  onChange: (mode: 'source' | 'site') => void;
+  mode: 'source' | 'site' | 'video';
+  onChange: (mode: 'source' | 'site' | 'video') => void;
 }) {
   return (
     <div className="browse__modes" role="group" aria-label="How to start a download">
@@ -250,6 +271,14 @@ function ModeTabs({
         onClick={() => onChange('site')}
       >
         Find a file on a site
+      </button>
+      <button
+        type="button"
+        className={mode === 'video' ? 'browse__mode is-active' : 'browse__mode'}
+        aria-pressed={mode === 'video'}
+        onClick={() => onChange('video')}
+      >
+        Find a video
       </button>
     </div>
   );

@@ -323,6 +323,61 @@ export interface CrawlResult {
   url: string;
 }
 
+/**
+ * One item of a playlist, channel or search.
+ *
+ * A *list* — a channel, a playlist, a search — is returned without resolving
+ * each item, so an entry carries what the list knew: a title, an id, a page URL,
+ * a duration. Resolving it to streams is a second call, made when the viewer
+ * chooses one, because resolving a hundred items to show a hundred titles would
+ * cost a hundred times as much for nothing.
+ */
+export interface ExtractEntry {
+  id: string | null;
+  title: string;
+  /** The page URL a second call would resolve. */
+  url: string;
+  uploader: string | null;
+  thumbnail: string | null;
+  /** -1 when the list did not say. */
+  durationSeconds: number;
+  /** True when this entry is itself a playlist rather than a video. */
+  isPlaylist: boolean;
+}
+
+/** What the extractor found: a single item, or a list of them. */
+export interface ExtractResult {
+  /** The page resolved, when one was. */
+  url: string | null;
+  title: string | null;
+  /** The site it came from, e.g. "youtube". */
+  extractor: string | null;
+  durationSeconds: number;
+  thumbnail: string | null;
+  /** The renditions of a single resolved item, largest first. */
+  qualities: CrawlQuality[];
+  /** The items of a list. Empty for a single item. */
+  entries: ExtractEntry[];
+}
+
+/** What to ask the extractor. */
+export interface ExtractQuery {
+  /** A page to resolve, or a term to search for. One of the two. */
+  url?: string;
+  search?: string;
+  /** How many search results. */
+  limit?: number;
+  /** List a playlist or channel rather than resolve one item. */
+  enumerate?: boolean;
+  /** Only items from this date, as YYYYMMDD. */
+  dateAfter?: string;
+  dateBefore?: string;
+  /** Which entries to take, in the extractor's syntax: "1:5", "-20:". */
+  playlistItems?: string;
+  /** A filter the extractor applies while listing: `duration > 600`. */
+  matchFilter?: string;
+}
+
 export interface CrawlQuery {
   /** The site to walk. */
   url: string;

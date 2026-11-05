@@ -172,6 +172,80 @@ export interface WireCrawlRequest {
   settle_seconds?: number;
 }
 
+/** One rendition of a resolved stream. */
+export interface WireExtractFormat {
+  url: string;
+  format_id: string | null;
+  ext: string | null;
+  resolution: string | null;
+  vcodec: string | null;
+  acodec: string | null;
+  mime: string | null;
+  /** -1 when the extractor did not say. */
+  filesize: number;
+  bitrate: number;
+  height: number;
+  has_video: boolean;
+  has_audio: boolean;
+}
+
+/**
+ * One item of a playlist, channel or search.
+ *
+ * A list is returned without resolving each item, so these carry a title and a
+ * page URL but no stream URLs — a chosen one is resolved in a second call.
+ */
+export interface WireExtractEntry {
+  id: string | null;
+  title: string | null;
+  url: string | null;
+  uploader: string | null;
+  thumbnail: string | null;
+  /** -1 when unknown. */
+  duration_seconds: number;
+  /** True when this entry is itself a playlist rather than a video. */
+  is_playlist: boolean;
+}
+
+export interface WireExtractResult {
+  ok: boolean;
+  url: string | null;
+  /** Whether the extractor is installed at all. */
+  available: boolean;
+  title: string | null;
+  /** The site it came from, e.g. "youtube". */
+  extractor: string | null;
+  /** -1 when unknown. */
+  duration_seconds: number;
+  thumbnail: string | null;
+  format_count: number;
+  entry_count: number;
+  entries: WireExtractEntry[];
+  formats: WireExtractFormat[];
+}
+
+export interface WireExtractRequest {
+  /** A page to resolve. Omit when searching. */
+  url?: string;
+  /** A term to search for. Omit when resolving a URL. */
+  search?: string;
+  /** How many search results. */
+  limit?: number;
+  /** List a playlist or channel instead of resolving one item. */
+  enumerate?: boolean;
+  /** Only items from this date, as YYYYMMDD. */
+  date_after?: string;
+  /** Only items up to this date, as YYYYMMDD. */
+  date_before?: string;
+  /** Which entries to take, in the extractor's syntax: "1:5", "1,3,5", "-5:". */
+  playlist_items?: string;
+  /** A filter the extractor applies while listing: `duration > 600`. */
+  match_filter?: string;
+  /** Per-site arguments, `IE_KEY:ARGS`. */
+  extractor_args?: string[];
+  timeout_seconds?: number;
+}
+
 export interface WireDeleteResult {
   deleted?: boolean;
   cancelled?: boolean;
@@ -214,6 +288,14 @@ export interface WireCapabilities {
   interactive?: WireInteractiveCapability;
   /** Absent on Vyzors that predate live video. */
   rtc?: WireRtcCapability;
+  /** Absent on Vyzors that predate the media extractor. */
+  extract?: WireExtractCapability;
+}
+
+/** Whether the media extractor is installed on that Vyzor. */
+export interface WireExtractCapability {
+  enabled: boolean;
+  available: boolean;
 }
 
 /** Whether a page can be driven live, and within what bounds. */

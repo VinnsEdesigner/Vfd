@@ -19,12 +19,15 @@ import {
   browseKindFor,
   type BrowseItem,
   type BrowseResult,
+  type CrawlQuality,
   type CrawlResult,
+  type ExtractResult,
   type LiveMessage,
 } from './browse';
 import type {
   WireBrowseResult,
   WireCrawlResult,
+  WireExtractResult,
   WireSystemStorage,
   WireCapabilities,
   WireDownload,
@@ -242,6 +245,67 @@ export function normalizeCrawlResult(w: WireCrawlResult): CrawlResult {
   };
 }
 
+/**
+ * A resolve, as the console uses it.
+ *
+ * The same call answers a URL and a search, so this returns one shape for both:
+ * a single item carries `qualities`, a list carries `entries`. A list resolves no
+ * stream URLs, which is why the two are separate fields rather than one union —
+ * a caller asking for entries and getting qualities would be reading a list that
+ * cost a hundred times what it needed to.
+ */
+export function normalizeExtractResult(w: WireExtractResult): ExtractResult {
+  const formats = Array.isArray(w.formats) ? w.formats : [];
+  const entries = Array.isArray(w.entries) ? w.entries : [];
+
+  /*
+   * One entry per distinct height, the largest first — the same reduction the
+   * crawl does, because the picker is the same picker. A stream lists many
+   * variants of one size (a codec each) and showing them all is a wall of
+   * near-duplicates.
+   */
+  const byHeight = new Map<number, CrawlQuality>();
+  for (const f of formats) {
+    if (!f.has_video || f.height <= 0) continue;
+    const existing = byHeight.get(f.height);
+    if (existing) {
+      if (existing.bytes < 0 && f.filesize > 0) existing.bytes = f.filesize;
+      continue;
+    }
+    byHeight.set(f.height, {
+      height: f.height,
+      label: f.height >= 2160 ? '4K' : f.height >= 1440 ? '2K' : `${f.height}p`,
+      bytes: typeof f.filesize === 'number' ? f.filesize : -1,
+      best: false,
+    });
+  }
+  const qualities = [...byHeight.values()].sort((a, b) => b.height - a.height);
+  if (qualities.length > 0) qualities[0]!.best = true;
+
+  return {
+    url: w.url ?? null,
+    title: w.title && w.title.trim() ? w.title : null,
+    extractor: w.extractor ?? null,
+    durationSeconds: typeof w.duration_seconds === 'number' ? w.duration_seconds : -1,
+    thumbnail: w.thumbnail ?? null,
+    qualities,
+    entries: entries
+      .filter((e) => e && (e.title || e.id))
+      .map((e) => ({
+        id: e.id ?? null,
+        // A list entry with no title falls back to its id, so a row is never
+        // blank — an untitled video still has one.
+        title: e.title && e.title.trim() ? e.title : (e.id ?? 'Untitled'),
+        url: e.url ?? '',
+        uploader: e.uploader && e.uploader.trim() ? e.uploader : null,
+        thumbnail: e.thumbnail ?? null,
+        durationSeconds:
+          typeof e.duration_seconds === 'number' ? e.duration_seconds : -1,
+        isPlaylist: Boolean(e.is_playlist),
+      })),
+  };
+}
+
 export function normalizeProbe(w: WireProbeResult): ProbeResult {
   return {
     url: w.url,
@@ -287,6 +351,16 @@ export function normalizeCapabilities(w: WireCapabilities): Capabilities {
         maxConcurrent: typeof v.max_concurrent === 'number' ? v.max_concurrent : 1,
         active: typeof v.active === 'number' ? v.active : 0,
       };
+    })(),
+    /*
+     * And for the media extractor, with the same safe reading: an older Vyzor
+     * does not report it, and the console must not offer a tab whose endpoint is
+     * not there.
+     */
+    extract: (() => {
+      const x = w.extract;
+      if (!x) return null;
+      return { enabled: Boolean(x.enabled), available: Boolean(x.available) };
     })(),
     // The same safe reading for live sessions.
     interactive: (() => {

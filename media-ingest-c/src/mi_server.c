@@ -2937,6 +2937,25 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_key(&b, "active");
         mi_json_int(&b, srv->rtc ? mi_rtc_pool_active(srv->rtc) : 0);
         mi_json_raw(&b, "}");
+        /*
+         * The media extractor.
+         *
+         * Reported so the console never offers a control that cannot work: a
+         * host without yt-dlp installs no "find a video" tab, rather than showing
+         * one that fails. `available` is the answer that matters; `enabled` says
+         * whether it was asked for at all.
+         */
+        mi_extract_config ecfg;
+        mi_extract_config_init(&ecfg);
+        ecfg.binary = srv->cfg.extractor_path;
+        mi_json_raw(&b, ",\"extract\":");
+        mi_json_raw(&b, "{");
+        mi_json_key(&b, "enabled");
+        mi_json_bool(&b, 1);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "available");
+        mi_json_bool(&b, mi_extract_available(&ecfg));
+        mi_json_raw(&b, "}");
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
@@ -3050,6 +3069,33 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             if (limit > 0) ecfg.search_limit = limit;
         }
         ecfg.enumerate = mi_json_get_bool(in, "enumerate", 0);
+        /*
+         * The discovery filters, passed through in the extractor's own syntax.
+         *
+         * Vyzor does not parse them: `duration > 600` and `1:5` are the
+         * extractor's language, and re-spelling them here would mean tracking
+         * that language. The caller that knows what it wants says it, and the
+         * extractor applies it while listing.
+         */
+        ecfg.date_after = mi_json_get_string(in, "date_after", NULL);
+        ecfg.date_before = mi_json_get_string(in, "date_before", NULL);
+        ecfg.playlist_items = mi_json_get_string(in, "playlist_items", NULL);
+        ecfg.match_filter = mi_json_get_string(in, "match_filter", NULL);
+        const mi_json *xargs = mi_json_get(in, "extractor_args");
+        const char *xargv[8];
+        size_t xargc = 0;
+        if (xargs && xargs->type == MI_JSON_ARRAY) {
+            for (size_t i = 0; i < xargs->count && xargc < 8; i++) {
+                const mi_json *el = xargs->items[i];
+                if (el && el->type == MI_JSON_STRING && el->string && *el->string) {
+                    xargv[xargc++] = el->string;
+                }
+            }
+        }
+        if (xargc > 0) {
+            ecfg.extractor_args = xargv;
+            ecfg.extractor_arg_count = xargc;
+        }
 
         mi_extract_result er;
         int rc = mi_extract(&ecfg, url, &er);

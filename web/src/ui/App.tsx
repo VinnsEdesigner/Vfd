@@ -42,6 +42,7 @@ import {
   SettingsSkeleton,
   IngestSkeleton,
   type SiteSearchValue,
+  type VideoSitesValue,
 } from './pages';
 import {
   useDownloads,
@@ -56,6 +57,9 @@ import {
   useCrawl,
   type CrawlHit,
   type CrawlReport,
+  useExtract,
+  type ExtractEntry,
+  type ExtractResult,
   useLiveVideo,
   useSetStorageLocation,
   useCreateDownload,
@@ -954,6 +958,137 @@ export function App({ initialView = 'overview' }: AppProps) {
    * "New download" and coming back does not throw the results away.
    */
   const crawl = useCrawl();
+  /*
+   * Video sites: find a video by name, or list a channel.
+   *
+   * A different question from the crawl: a video site computes its media URL in
+   * JavaScript at play time, so there is nothing for a walk to read — the
+   * extractor is asked instead. The state lives here for the same reason the
+   * crawl's does: leaving the tab and coming back should not throw the results
+   * away.
+   */
+  const extract = useExtract();
+  const [videoSites, setVideoSites] = useState<VideoSitesValue>({
+    term: '',
+    channelUrl: '',
+    limit: 15,
+    playlistItems: '',
+    matchFilter: '',
+    dateAfter: '',
+  });
+  /** The last result: a list of entries, or one resolved item. */
+  const [videoResult, setVideoResult] = useState<ExtractResult | null>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  /** The entry being resolved to its renditions. */
+  const [videoResolving, setVideoResolving] = useState<string | null>(null);
+  /** The entry or item whose download is being queued. */
+  const [videoQueueing, setVideoQueueing] = useState<string | null>(null);
+  const videoAbortRef = useRef<AbortController | null>(null);
+
+  /**
+   * Ask the extractor: a search, or a channel listing.
+   *
+   * One call for both because the server takes either a `search` term or a URL
+   * with `enumerate` — the difference is which field is set, not which request is
+   * made.
+   */
+  const runVideo = useCallback(
+    async (mode: 'search' | 'channel') => {
+      setVideoError(null);
+      setVideoResult(null);
+      const controller = new AbortController();
+      videoAbortRef.current = controller;
+      try {
+        const result = await extract.mutateAsync({
+          ...(mode === 'search'
+            ? { search: videoSites.term.trim(), limit: videoSites.limit }
+            : { url: videoSites.channelUrl.trim(), enumerate: true }),
+          ...(videoSites.playlistItems ? { playlistItems: videoSites.playlistItems } : {}),
+          ...(videoSites.matchFilter ? { matchFilter: videoSites.matchFilter } : {}),
+          ...(videoSites.dateAfter ? { dateAfter: videoSites.dateAfter } : {}),
+          signal: controller.signal,
+        });
+        setVideoResult(result);
+      } catch (e) {
+        if (!controller.signal.aborted) {
+          setVideoError(describeError(e));
+          setVideoResult(null);
+        }
+      } finally {
+        videoAbortRef.current = null;
+      }
+    },
+    [extract, videoSites],
+  );
+
+  const stopVideo = useCallback(() => {
+    videoAbortRef.current?.abort();
+    videoAbortRef.current = null;
+  }, []);
+
+  /**
+   * Resolve one entry to its streams.
+   *
+   * A list carries no stream URLs — resolving every item to show a hundred
+   * titles would cost a hundred times as much — so this is the second call, made
+   * when the viewer chooses one. The result replaces the list, which is why the
+   * view switches to the picker.
+   */
+  const resolveVideoEntry = useCallback(
+    async (entry: ExtractEntry) => {
+      if (!entry.url) return;
+      setVideoResolving(entry.url);
+      setVideoError(null);
+      try {
+        const result = await extract.mutateAsync({ url: entry.url });
+        setVideoResult(result);
+      } catch (e) {
+        setVideoError(describeError(e));
+      } finally {
+        setVideoResolving(null);
+      }
+    },
+    [extract],
+  );
+
+  /** Queue a download for a resolved item, at a chosen height. */
+  const downloadVideo = useCallback(
+    async (url: string, title: string, height?: number) => {
+      setVideoQueueing(url);
+      try {
+        await createDownload.mutateAsync({
+          input: {
+            url,
+            connections: draft.connections,
+            hls: draft.hls,
+            upload: draft.upload,
+            purge: draft.purge,
+            durationSeconds: draft.durationSeconds,
+            /*
+             * A video site's media is not at the page URL, and the download path
+             * has to be told to resolve it — that is what `extract_pages` does on
+             * the server. `allowNonMedia` covers the page itself being HTML when
+             * the extractor is asked about it.
+             */
+            allowNonMedia: true,
+            ...(height && height > 0 ? { quality: `${height}p` } : {}),
+          },
+        });
+        toast.success('Download queued', height ? `${title} at ${height}p` : title);
+      } catch (e) {
+        toast.error('Could not queue that video', describeError(e));
+      } finally {
+        setVideoQueueing(null);
+      }
+    },
+    [createDownload, draft, toast],
+  );
+
+  /** Queue a list entry straight away, at the best quality. */
+  const downloadVideoEntry = useCallback(
+    (entry: ExtractEntry) => void downloadVideo(entry.url, entry.title),
+    [downloadVideo],
+  );
   const [siteSearch, setSiteSearch] = useState<SiteSearchValue>({
     url: '',
     term: '',
@@ -1646,6 +1781,21 @@ export function App({ initialView = 'overview' }: AppProps) {
               onDownload: (hit, height) => void downloadCrawlHit(hit, height),
               queueingUrl: crawlQueueing,
               canUseBrowser: Boolean(capabilities?.interactive?.available),
+            }}
+            videoSites={{
+              value: videoSites,
+              onChange: setVideoSites,
+              result: videoResult,
+              running: extract.isPending,
+              error: videoError,
+              available: Boolean(capabilities?.extract?.available),
+              resolvingUrl: videoResolving,
+              queueingUrl: videoQueueing,
+              onRun: (mode) => void runVideo(mode),
+              onStop: stopVideo,
+              onResolve: (entry) => void resolveVideoEntry(entry),
+              onDownload: (url, title, height) => void downloadVideo(url, title, height),
+              onDownloadEntry: downloadVideoEntry,
             }}
             onStart={() => void beginDownload()}
           />

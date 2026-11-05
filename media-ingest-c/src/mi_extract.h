@@ -126,6 +126,44 @@ typedef struct {
     const char *search_term;
     /* The most search results to return. 0 uses a small default. */
     int search_limit;
+    /*
+     * Only items from this date onward, as YYYYMMDD.
+     *
+     * A crawler's usual next question after a name: "what is new?" The
+     * extractor applies it while listing, so an old item is never resolved.
+     * NULL means no bound.
+     */
+    const char *date_after;
+    /* Only items up to this date, as YYYYMMDD. NULL means no bound. */
+    const char *date_before;
+    /*
+     * Which entries of a list to take, in the extractor's own syntax: "1:5" for
+     * a range, "1,3,5" for a set, "-5:" for the last five.
+     *
+     * This is how a channel crawl is bounded. Without it, listing a channel with
+     * thousands of videos returns thousands of entries — the caller usually
+     * wants the newest few, and saying so costs nothing where filtering
+     * afterwards would mean transferring them all.
+     */
+    const char *playlist_items;
+    /*
+     * A generic filter the extractor applies while listing, in its own syntax:
+     * `duration > 600`, `view_count > 1000`, `title ~= "tutorial"`.
+     *
+     * Applied by the extractor rather than by Vyzor because it can be evaluated
+     * from the list metadata, so a filtered-out item is never resolved.
+     */
+    const char *match_filter;
+    /*
+     * Per-site arguments, `IE_KEY:ARGS` — the escape hatch for a site that needs
+     * a nudge, e.g. `youtube:player_client=web`.
+     *
+     * Worth having because the alternative when a site changes is waiting for an
+     * extractor release. Passed through verbatim; it is the extractor's syntax,
+     * not ours, and inventing a wrapper would only get in the way.
+     */
+    const char *const *extractor_args;
+    size_t extractor_arg_count;
 } mi_extract_config;
 
 void mi_extract_config_init(mi_extract_config *cfg);

@@ -308,11 +308,74 @@ static void test_extract_parses_a_real_page(void) {
     mi_extract_result_free(&res);
 }
 
+/*
+ * Search by name, and the discovery filters.
+ *
+ * A search answers "find a video called X" without a URL, which is the question
+ * a crawler is often really being asked. `playlist_items` bounds how many are
+ * returned — the extractor applies it while listing, so a bounded search never
+ * resolves the items it discards, which is the whole point of doing it there
+ * rather than in Vyzor.
+ *
+ * Skipped when the extractor is absent or the site is unreachable, since this is
+ * a subprocess wrapper and its own logic is the argument building.
+ */
+static void test_extract_searches_by_name(void) {
+    mi_extract_config cfg;
+    mi_extract_config_init(&cfg);
+    if (!mi_extract_available(&cfg)) {
+        printf("skip: no yt-dlp, so search is not exercised\n");
+        return;
+    }
+
+    cfg.search_term = "big buck bunny";
+    cfg.search_limit = 8;
+    /* Bounded to three: the filter is applied by the extractor while listing. */
+    cfg.playlist_items = "1:3";
+
+    mi_extract_result res;
+    int rc = mi_extract(&cfg, NULL, &res);
+    if (rc != MI_OK) {
+        printf("skip: the extractor could not reach the site\n");
+        return;
+    }
+
+    CHECK(res.entry_count > 0, "a search returns entries");
+    /* The bound is the extractor's to honour; Vyzor only passes it. */
+    CHECK(res.entry_count <= 3, "playlist_items bounds the result");
+    /* A search resolves no stream URLs — that is a second call, for the item the
+     * caller chooses. A format here would mean the whole list was resolved. */
+    CHECK(res.format_count == 0, "a search does not resolve stream formats");
+
+    if (res.entry_count > 0) {
+        CHECK(res.entries[0].title != NULL, "an entry has a title");
+        CHECK(res.entries[0].id != NULL, "an entry has an id");
+        /* A search entry with no title and no id is dropped, so neither can be
+         * missing here. */
+    }
+    mi_extract_result_free(&res);
+    mi_extract_result_free(&res);
+}
+
+/*
+ * A search and a URL are different questions, and one call does one of them.
+ *
+ * Passing neither is a caller error rather than an empty result: it would
+ * otherwise run the extractor with a NULL argument and report whatever it said.
+ */
+static void test_extract_needs_a_url_or_a_search(void) {
+    mi_extract_config cfg;
+    mi_extract_config_init(&cfg);
+    mi_extract_result res;
+    CHECK(mi_extract(&cfg, NULL, &res) == MI_ERR_ARG,
+          "neither a URL nor a search is refused");
+    CHECK(mi_extract(&cfg, "https://example.com/", NULL) == MI_ERR_ARG,
+          "a NULL result is refused");
+}
+
 static void test_extract_rejects_a_bad_argument(void) {
     mi_extract_config cfg;
     mi_extract_config_init(&cfg);
-    CHECK(mi_extract(&cfg, "https://example.com/", NULL) == MI_ERR_ARG,
-          "a NULL result is refused");
     CHECK(mi_extract(NULL, "https://example.com/", NULL) == MI_ERR_ARG,
           "a NULL config is refused");
 }
@@ -1050,6 +1113,8 @@ int main(void) {
     test_detect_documents();
     test_sha256();
     test_extract_parses_a_real_page();
+    test_extract_searches_by_name();
+    test_extract_needs_a_url_or_a_search();
     test_extract_rejects_a_bad_argument();
     test_probe_range_support_is_measured();
     test_probe_detects_without_partial_content();

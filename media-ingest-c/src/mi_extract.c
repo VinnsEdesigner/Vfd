@@ -35,6 +35,10 @@
  * each with a long URL. */
 #define EXTRACT_MAX_OUTPUT (8 * 1024 * 1024)
 
+/* The fixed arguments before any per-site ones. Used to size the argv array, so
+ * it must cover the longest branch below. */
+#define EXTRACT_BASE_ARGS 32
+
 void mi_extract_config_init(mi_extract_config *cfg) {
     memset(cfg, 0, sizeof *cfg);
     cfg->binary = NULL;
@@ -43,6 +47,12 @@ void mi_extract_config_init(mi_extract_config *cfg) {
     cfg->enumerate = 0;
     cfg->search_term = NULL;
     cfg->search_limit = 0;
+    cfg->date_after = NULL;
+    cfg->date_before = NULL;
+    cfg->playlist_items = NULL;
+    cfg->match_filter = NULL;
+    cfg->extractor_args = NULL;
+    cfg->extractor_arg_count = 0;
 }
 
 void mi_extract_result_free(mi_extract_result *res) {
@@ -138,7 +148,16 @@ static char *run_extractor(const mi_extract_config *cfg, const char *url, int pr
     if (pipe(pipefd) != 0) return NULL;
 
     const char *binary = binary_for(cfg);
-    const char *argv[24];
+    /*
+     * Sized for the fixed options plus every per-site argument.
+     *
+     * A fixed 24 was enough until extractor arguments were added, and those are
+     * a caller-supplied list — so the bound is derived rather than guessed. The
+     * `+ 8` covers the base command and the trailing URL.
+     */
+    const char **argv = mi_calloc(EXTRACT_BASE_ARGS + (cfg ? cfg->extractor_arg_count : 0) + 8,
+                                  sizeof *argv);
+    if (!argv) return NULL;
     int a = 0;
     argv[a++] = binary;
     if (probe_only) {
@@ -186,6 +205,44 @@ static char *run_extractor(const mi_extract_config *cfg, const char *url, int pr
             argv[a++] = "--cookies";
             argv[a++] = cfg->cookies_file;
         }
+        /*
+         * The discovery filters.
+         *
+         * All four are applied by the extractor *while listing*, which is the
+         * point: a filtered-out item is never resolved, so bounding a crawl costs
+         * nothing where filtering afterwards would mean transferring everything
+         * first. They are only meaningful for a list, but passing one for a
+         * single item is harmless — the extractor ignores a filter it cannot
+         * apply.
+         */
+        if (cfg && cfg->date_after && *cfg->date_after) {
+            argv[a++] = "--dateafter";
+            argv[a++] = cfg->date_after;
+        }
+        if (cfg && cfg->date_before && *cfg->date_before) {
+            argv[a++] = "--datebefore";
+            argv[a++] = cfg->date_before;
+        }
+        if (cfg && cfg->playlist_items && *cfg->playlist_items) {
+            argv[a++] = "--playlist-items";
+            argv[a++] = cfg->playlist_items;
+        }
+        if (cfg && cfg->match_filter && *cfg->match_filter) {
+            argv[a++] = "--match-filters";
+            argv[a++] = cfg->match_filter;
+        }
+        /*
+         * Per-site arguments, verbatim and repeatable.
+         *
+         * This is the escape hatch when a site changes and the extractor needs a
+         * nudge before its next release. The syntax is the extractor's own, so it
+         * is passed through rather than wrapped.
+         */
+        for (size_t i = 0; cfg && i < cfg->extractor_arg_count; i++) {
+            if (!cfg->extractor_args[i] || !*cfg->extractor_args[i]) continue;
+            argv[a++] = "--extractor-args";
+            argv[a++] = cfg->extractor_args[i];
+        }
         argv[a++] = "--";
         argv[a++] = url;
     }
@@ -195,6 +252,7 @@ static char *run_extractor(const mi_extract_config *cfg, const char *url, int pr
     if (pid < 0) {
         close(pipefd[0]);
         close(pipefd[1]);
+        free(argv);
         return NULL;
     }
     if (pid == 0) {
@@ -271,6 +329,7 @@ static char *run_extractor(const mi_extract_config *cfg, const char *url, int pr
     int status = 0;
     waitpid(pid, &status, 0);
     if (exit_code) *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    free(argv);
     if (timed_out) {
         free(buf);
         return NULL;
