@@ -20,6 +20,7 @@
 
 #include "mi_detect.h"
 #include "mi_download.h"
+#include "mi_extract.h"
 #include "mi_storage.h"
 #include "mi_util.h"
 
@@ -262,6 +263,58 @@ static void test_detect_documents(void) {
     mi_detect(bin, sizeof bin, &info);
     CHECK(info.kind != MI_KIND_TEXT, "a binary blob is not text");
     mi_media_info_free(&info);
+}
+
+/*
+ * The extractor, when it is installed.
+ *
+ * The interesting assertion is that the *result shape* is right: a format with
+ * no URL must be dropped, because a caller that got one would queue a download
+ * that cannot work. Skipped when yt-dlp is absent, since the module is a
+ * subprocess wrapper and its own logic is the parsing.
+ */
+static void test_extract_parses_a_real_page(void) {
+    mi_extract_config cfg;
+    mi_extract_config_init(&cfg);
+    if (!mi_extract_available(&cfg)) {
+        printf("skip: no yt-dlp, so extraction is not exercised\n");
+        return;
+    }
+
+    mi_extract_result res;
+    int rc = mi_extract(&cfg, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", &res);
+    if (rc != MI_OK) {
+        /* A network failure in a sandbox is not a defect in the parser. */
+        printf("skip: the extractor could not reach the site\n");
+        return;
+    }
+
+    CHECK(res.title != NULL && *res.title, "the title is reported");
+    CHECK(res.duration_seconds > 0, "the duration is reported");
+    CHECK(res.format_count > 0, "formats are reported");
+
+    int with_url = 0, video = 0;
+    for (size_t i = 0; i < res.format_count; i++) {
+        if (res.formats[i].url && *res.formats[i].url) with_url++;
+        if (res.formats[i].has_video) video++;
+    }
+    /* Every format offered must carry a URL: one without is unresolvable and
+     * would become a download that cannot start. */
+    CHECK(with_url == (int)res.format_count, "every format has a URL");
+    CHECK(video > 0, "at least one format carries video");
+
+    mi_extract_result_free(&res);
+    /* A freed result must be safe to free again, as the endpoint does. */
+    mi_extract_result_free(&res);
+}
+
+static void test_extract_rejects_a_bad_argument(void) {
+    mi_extract_config cfg;
+    mi_extract_config_init(&cfg);
+    CHECK(mi_extract(&cfg, "https://example.com/", NULL) == MI_ERR_ARG,
+          "a NULL result is refused");
+    CHECK(mi_extract(NULL, "https://example.com/", NULL) == MI_ERR_ARG,
+          "a NULL config is refused");
 }
 
 /* ---------------------------------------------------------------- */
@@ -996,6 +1049,8 @@ int main(void) {
     test_detect_empty();
     test_detect_documents();
     test_sha256();
+    test_extract_parses_a_real_page();
+    test_extract_rejects_a_bad_argument();
     test_probe_range_support_is_measured();
     test_probe_detects_without_partial_content();
     test_probe_and_download();

@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "mi_util.h"
@@ -887,6 +889,7 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->header_count = 0;
     cfg->user_agent = NULL;
     cfg->control = NULL;
+    cfg->ffmpeg_path = NULL;
 }
 
 void mi_download_result_free(mi_download_result *res) {
@@ -895,6 +898,110 @@ void mi_download_result_free(mi_download_result *res) {
     free(res->path);
     mi_media_info_free(&res->media);
     memset(res, 0, sizeof *res);
+}
+
+/* ------------------------------------------------------------------ */
+/* Fetching a manifest                                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A playlist is not the video.
+ *
+ * An HLS or DASH URL answers with a text playlist — measured on one YouTube
+ * stream: 48,305 bytes of `#EXTINF` lines where the video is hundreds of
+ * megabytes. The detector correctly calls that `hls`, but the transfer paths
+ * treat it as an ordinary object with a size and range support, so the playlist
+ * itself was saved as the "download". It looked like a success: state `done`,
+ * a file on disk, the right name.
+ *
+ * A manifest needs a *reader* that understands it, and ffmpeg is the one already
+ * in this pipeline. It fetches the playlist, follows every segment, and muxes
+ * them into a single file — which is exactly what "download this stream" means.
+ *
+ * The arguments are passed as an argv array through fork/execvp, never through a
+ * shell: the URL comes from a caller and would otherwise be a command injection.
+ */
+static int download_manifest(const mi_download_config *cfg, const char *url,
+                             const char *dest, mi_progress_fn on_progress, void *user,
+                             mi_download_result *out) {
+    const char *ffmpeg = cfg->ffmpeg_path ? cfg->ffmpeg_path : "ffmpeg";
+
+    const char *argv[24];
+    int a = 0;
+    argv[a++] = ffmpeg;
+    argv[a++] = "-nostdin";
+    argv[a++] = "-loglevel";
+    argv[a++] = "error";
+    /* Overwrite: the destination is Vyzor's own file, and a resumed run must
+     * replace a partial rather than stop to ask. */
+    argv[a++] = "-y";
+    /*
+     * A manifest is a live-shaped thing; without a limit ffmpeg would happily
+     * follow a live stream forever. `-t` is not used because the duration is not
+     * known here — the crawl's own budget is what bounds the caller instead.
+     */
+    argv[a++] = "-i";
+    argv[a++] = url;
+    /* Remux, never re-encode: the segments are already encoded, and copying
+     * them is both faster and lossless. */
+    argv[a++] = "-c";
+    argv[a++] = "copy";
+    argv[a++] = "-bsf:a";
+    argv[a++] = "aac_adtstoasc";
+    /*
+     * The output format has to be stated, because the destination's name is not
+     * a clue: Vyzor saves the transfer as `source.bin` and identifies it by
+     * content afterwards. ffmpeg refuses to mux into a name it cannot read a
+     * container from — measured: "Unable to choose an output format for
+     * 'source.bin'", exit 234, with a valid stream and a working command line.
+     */
+    argv[a++] = "-f";
+    argv[a++] = "mp4";
+    argv[a++] = dest;
+    argv[a] = NULL;
+
+    pid_t pid = fork();
+    if (pid < 0) return MI_ERR_IO;
+    if (pid == 0) {
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+
+    int status = 0;
+    /* Poll rather than wait, so progress is reported while it runs: a stream
+     * takes minutes and a frozen bar reads as a hang. */
+    for (;;) {
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) break;
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            return MI_ERR_IO;
+        }
+        if (on_progress) {
+            mi_progress p;
+            memset(&p, 0, sizeof p);
+            p.total_bytes = -1;
+            p.downloaded_bytes = mi_file_size(dest);
+            on_progress(&p, user);
+        }
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 500 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        mi_logf(MI_LOG_ERROR, "ffmpeg could not read the stream (exit %d)",
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        return MI_ERR_NET;
+    }
+
+    int64_t written = mi_file_size(dest);
+    if (written <= 0) return MI_ERR_IO;
+    out->bytes_written = written;
+
+    /* Identify what was produced, so the caller knows it has real video rather
+     * than another playlist. */
+    mi_detect_file(dest, MI_HEADER_SNIFF, &out->media);
+    return MI_OK;
 }
 
 int mi_download(const mi_download_config *cfg, const char *url, const char *dest,
@@ -942,7 +1049,18 @@ int mi_download(const mi_download_config *cfg, const char *url, const char *dest
         return MI_ERR_ARG;
     }
 
-    if (plan.accept_ranges && plan.total_bytes > 0) {
+    /*
+     * A manifest is read by ffmpeg, not by the ranged or streaming paths.
+     *
+     * Those two treat the URL as an object to copy, and an HLS/DASH URL is a
+     * *description* of many objects — so copying it saved the playlist. This
+     * branch is what turns "download this stream" into the video.
+     */
+    if (plan.have_media &&
+        (plan.media.kind == MI_KIND_HLS || plan.media.kind == MI_KIND_DASH)) {
+        rc = download_manifest(cfg, plan.final_url ? plan.final_url : url, dest,
+                               on_progress, user, out);
+    } else if (plan.accept_ranges && plan.total_bytes > 0) {
         rc = download_ranged(cfg, plan.final_url ? plan.final_url : url,
                              plan.total_bytes, dest, on_progress, user, out,
                              plan.have_media ? &plan.media : NULL);

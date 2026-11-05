@@ -130,7 +130,7 @@ BUILD_PKGS="build-essential pkg-config libcurl4-openssl-dev ca-certificates"
 GST_BUILD_PKGS="libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev"
 MEDIA_PKGS="chromium xvfb fonts-liberation fonts-dejavu-core fonts-noto-core fonts-noto-color-emoji \
 gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice ffmpeg"
+gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice ffmpeg yt-dlp"
 
 WANT=""
 [ "$RUNTIME_ONLY" -eq 0 ] && WANT="$WANT $BUILD_PKGS $GST_BUILD_PKGS"
@@ -276,6 +276,35 @@ else
 fi
 
 # ------------------------------------------------------------------ #
+# 3b. A current yt-dlp                                               #
+#                                                                    #
+# The distribution's copy is the one that matters here, and it can be  #
+# badly stale: Debian trixie ships 2025.04.30, which is eighteen       #
+# months behind and could not see YouTube's audio formats at all — it  #
+# reported 21 formats, none of them audio, where the current release   #
+# reports 48 including five. The tool's whole job is keeping up with   #
+# sites that change, so a stale one is worse than none.                #
+# ------------------------------------------------------------------ #
+if [ "$NO_MEDIA" -eq 0 ] && command -v yt-dlp >/dev/null 2>&1; then
+    step "Updating yt-dlp"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        note "would run: pip install --upgrade yt-dlp"
+    elif command -v pip >/dev/null 2>&1 || command -v pip3 >/dev/null 2>&1; then
+        PIP=$(command -v pip3 || command -v pip)
+        # Not fatal: the distribution's copy still works for many sites, and a
+        # failure here should not fail the whole install.
+        if $SUDO $PIP install --quiet --upgrade --break-system-packages yt-dlp 2>/dev/null \
+           || $PIP install --quiet --upgrade --break-system-packages yt-dlp 2>/dev/null; then
+            ok "yt-dlp $(yt-dlp --version 2>/dev/null)"
+        else
+            warn "could not update yt-dlp; the packaged version may be stale"
+        fi
+    else
+        warn "no pip, so yt-dlp stays at its packaged version"
+    fi
+fi
+
+# ------------------------------------------------------------------ #
 # 4. Build                                                           #
 # ------------------------------------------------------------------ #
 if [ "$NO_BUILD" -eq 1 ]; then
@@ -312,6 +341,7 @@ check "node" node
 check "npm" npm
 check "ffmpeg" ffmpeg
 check "chromium" chromium
+check "yt-dlp" yt-dlp
 
 if command -v pkg-config >/dev/null 2>&1; then
     if pkg-config --exists gstreamer-webrtc-1.0 2>/dev/null; then

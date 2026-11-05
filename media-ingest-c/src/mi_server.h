@@ -111,6 +111,23 @@ typedef struct {
     int rtc_fps;
     int rtc_bitrate_kbps;
     const char *rtc_stun_server; /* e.g. stun://host:19302; NULL = host only */
+    /*
+     * The media extractor, for a site whose stream URL is not in the page.
+     *
+     * A streaming site computes its media URL in JavaScript at play time and
+     * signs it, so it is in neither the HTML nor the browser's traffic. NULL
+     * means "yt-dlp" from PATH; an operator may point at their own build, since
+     * this is the one component whose job is keeping up with those sites.
+     */
+    const char *extractor_path;
+    /*
+     * The ffmpeg binary.
+     *
+     * Used to read a manifest (an HLS or DASH URL is a playlist, not a file) and
+     * to transcode. NULL means "ffmpeg" from PATH; an operator may point at
+     * their own build.
+     */
+    const char *ffmpeg_path;
 } mi_server_config;
 
 typedef struct mi_server mi_server;

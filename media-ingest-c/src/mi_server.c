@@ -23,6 +23,7 @@
 #include "mi_browse.h"
 #include "mi_crawl.h"
 #include "mi_detect.h"
+#include "mi_extract.h"
 #include "mi_download.h"
 #include "mi_hls.h"
 #include "mi_identify.h"
@@ -267,6 +268,18 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->rtc_fps = 0;
     cfg->rtc_bitrate_kbps = 0;
     cfg->rtc_stun_server = NULL;
+    /*
+     * The media extractor, for a site whose stream URL is not in the page.
+     *
+     * NULL means "yt-dlp" from PATH. Named rather than hardcoded so an operator
+     * can point at their own build; a distribution's copy can lag a site's
+     * changes by months, and this is the one component whose whole job is to
+     * keep up with them.
+     */
+    cfg->extractor_path = NULL;
+    /* NULL means "ffmpeg" from PATH. Named so an operator can point at a build
+     * of their own; a distribution's copy can lag. */
+    cfg->ffmpeg_path = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1483,6 +1496,13 @@ static void *download_worker(void *arg) {
      * detector does not recognise are refused — unless the caller asked for
      * one, which is how a PDF or a text file gets through. */
     dcfg.require_media = !j->allow_non_media;
+    /*
+     * ffmpeg is what reads a manifest. An HLS or DASH URL is a playlist, not a
+     * file, so the transfer path hands it to ffmpeg — which fetches every
+     * segment and muxes them. Without this, "downloading" a stream saved the
+     * playlist text and reported success.
+     */
+    dcfg.ffmpeg_path = srv->cfg.ffmpeg_path;
     /* A host that refuses a non-browser agent is a host the operator may have
      * told Vyzor how to present itself to. */
     dcfg.user_agent = srv->cfg.user_agent;
@@ -2964,6 +2984,105 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
         mi_download_plan_free(&plan);
+        mi_json_value_free(in);
+        return;
+    }
+
+    /* POST /api/v1/extract  {url} — the media URLs a page will not link.
+     *
+     * The crawl's browser fallback covers a page that builds its list in
+     * JavaScript. It does not cover a page whose media URL is *signed* — the
+     * player computes it at play time, so it is in neither the HTML nor the
+     * browser's traffic until something asks for it properly. A streaming site
+     * is the case, and the extractor is what resolves it.
+     *
+     * Resolve only: the URLs come back and a download is queued separately, so
+     * the extractor never fetches the media itself. */
+    if (!strcmp(req->path, "/api/v1/extract") && !strcmp(req->method, "POST")) {
+        mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+        const char *url = mi_json_get_string(in, "url", NULL);
+        if (!url || !*url) {
+            send_error(fd, 400, "Bad Request", "missing or empty 'url'", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        if (!mi_render_url_allowed(url)) {
+            send_error(fd, 400, "Bad Request", "that address cannot be read", cors);
+            mi_json_value_free(in);
+            return;
+        }
+
+        mi_extract_config ecfg;
+        mi_extract_config_init(&ecfg);
+        ecfg.binary = srv->cfg.extractor_path;
+        double timeout = mi_json_get_number(in, "timeout_seconds", 0);
+        if (timeout > 0) ecfg.timeout_seconds = timeout;
+
+        mi_extract_result er;
+        int rc = mi_extract(&ecfg, url, &er);
+
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{");
+        mi_json_key(&b, "ok");
+        mi_json_bool(&b, rc == MI_OK);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "url");
+        mi_json_string(&b, url);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "available");
+        mi_json_bool(&b, mi_extract_available(&ecfg));
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "title");
+        mi_json_string(&b, er.title);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "extractor");
+        mi_json_string(&b, er.extractor);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "duration_seconds");
+        mi_json_double(&b, er.duration_seconds);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "thumbnail");
+        mi_json_string(&b, er.thumbnail);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "format_count");
+        mi_json_int(&b, (int64_t)er.format_count);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "formats");
+        mi_json_raw(&b, "[");
+        for (size_t i = 0; i < er.format_count; i++) {
+            const mi_extract_format *f = &er.formats[i];
+            if (i) mi_json_raw(&b, ",");
+            mi_json_raw(&b, "{\"url\":");
+            mi_json_string(&b, f->url);
+            mi_json_raw(&b, ",\"format_id\":");
+            mi_json_string(&b, f->format_id);
+            mi_json_raw(&b, ",\"ext\":");
+            mi_json_string(&b, f->ext);
+            mi_json_raw(&b, ",\"resolution\":");
+            mi_json_string(&b, f->resolution);
+            mi_json_raw(&b, ",\"vcodec\":");
+            mi_json_string(&b, f->vcodec);
+            mi_json_raw(&b, ",\"acodec\":");
+            mi_json_string(&b, f->acodec);
+            mi_json_raw(&b, ",\"mime\":");
+            mi_json_string(&b, f->mime);
+            mi_json_raw(&b, ",\"filesize\":");
+            mi_json_int(&b, f->filesize);
+            mi_json_raw(&b, ",\"bitrate\":");
+            mi_json_double(&b, f->bitrate);
+            mi_json_raw(&b, ",\"height\":");
+            mi_json_int(&b, f->height);
+            mi_json_raw(&b, ",\"has_video\":");
+            mi_json_bool(&b, f->has_video);
+            mi_json_raw(&b, ",\"has_audio\":");
+            mi_json_bool(&b, f->has_audio);
+            mi_json_raw(&b, "}");
+        }
+        mi_json_raw(&b, "]}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        mi_extract_result_free(&er);
         mi_json_value_free(in);
         return;
     }

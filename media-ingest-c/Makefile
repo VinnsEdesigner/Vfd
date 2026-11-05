@@ -20,7 +20,7 @@ LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_storage.c $(SRC_DIR)/mi_json.c \
            $(SRC_DIR)/mi_browse.c $(SRC_DIR)/mi_render.c $(SRC_DIR)/mi_cache.c \
            $(SRC_DIR)/mi_sanitize.c $(SRC_DIR)/mi_identify.c $(SRC_DIR)/mi_outbox.c $(SRC_DIR)/mi_rtc.c $(SRC_DIR)/mi_ws.c $(SRC_DIR)/mi_interactive.c $(SRC_DIR)/mi_mediawatch.c \
-           $(SRC_DIR)/mi_crawl.c \
+           $(SRC_DIR)/mi_crawl.c $(SRC_DIR)/mi_extract.c \
            $(SRC_DIR)/mi_server.c
 CLI_SRC := $(SRC_DIR)/mi_cli.c
 TEST_SRC := tests/test_media_ingest.c

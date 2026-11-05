@@ -60,6 +60,13 @@ typedef struct {
     const char *user_agent;
     /* Optional: lets a caller stop a running download (pause/cancel). */
     const mi_download_control *control;
+    /*
+     * The ffmpeg binary, for a manifest.
+     *
+     * An HLS or DASH URL is a playlist, not a file, so it is read by ffmpeg —
+     * which fetches every segment and muxes them. NULL uses "ffmpeg" from PATH.
+     */
+    const char *ffmpeg_path;
 } mi_download_config;
 
 typedef struct {
