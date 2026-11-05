@@ -547,7 +547,8 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
  */
 static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                      frontier *f, strset *visited, const char *url, int depth,
-                     const char *term, double deadline, double started) {
+                     const char *term, double deadline, double started,
+                     const char *start_url) {
     mi_download_config dcfg;
     mi_download_config_init(&dcfg);
     dcfg.require_media = 0;
@@ -645,7 +646,18 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
      * resolves it again when it runs.
      */
     int extracted = 0;
-    if (cfg->extract_enabled && now_seconds() < deadline) {
+    /*
+     * The extractor runs on the *start* page only.
+     *
+     * It is a Python subprocess costing a second or more, and it is asked about
+     * the page the caller named — a video page. Asking it about every page the
+     * walk reaches would be up to forty subprocesses for no result: a crawl of a
+     * watch page measured 75 seconds that way, where the start page alone
+     * answers in two. The pages a crawl follows are listing and navigation
+     * pages, which are what the link pass is for.
+     */
+    int is_start = start_url && !strcmp(url, start_url);
+    if (is_start && cfg->extract_enabled && now_seconds() < deadline) {
         mi_extract_config ecfg;
         mi_extract_config_init(&ecfg);
         ecfg.binary = cfg->extractor_path;
@@ -883,7 +895,8 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
          * double free. The entry stays in the array; only `head` moves.
          */
         frontier_entry e = frontier_take(&f);
-        read_page(out, cfg, &f, &visited, e.url, e.depth, term, deadline, started);
+        read_page(out, cfg, &f, &visited, e.url, e.depth, term, deadline, started,
+                  site_url);
         pages_read++;
 
         /* Mark everything now queued as visited, so two pages linking the same
