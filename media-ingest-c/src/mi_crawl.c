@@ -33,6 +33,11 @@
 /* The most pages one walk may read, whatever the config says, so a mistake in a
  * caller cannot turn into an unbounded crawl. */
 #define CRAWL_HARD_MAX_PAGES 200
+/* How long to let a click's effect arrive before reading, and how long to let a
+ * page settle after load. Short on purpose: a crawl drives many pages, and a
+ * per-page cost of ten seconds makes the walk useless even when it is right. */
+#define CLICK_SETTLE_SECONDS 0.6
+#define READ_SETTLE_SECONDS 2.0
 
 void mi_crawl_config_init(mi_crawl_config *cfg) {
     memset(cfg, 0, sizeof *cfg);
@@ -42,6 +47,7 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->budget_seconds = 45.0;
     cfg->same_host_only = 0;
     cfg->use_browser_fallback = 1;
+    cfg->max_browser_pages = 3;
     cfg->user_agent = NULL;
     cfg->render_pool = NULL;
     cfg->interactive_pool = NULL;
@@ -227,6 +233,38 @@ int mi_crawl_score(const char *filename, const char *title, const char *term) {
 /* Results                                                             */
 /* ------------------------------------------------------------------ */
 
+/*
+ * The URL that serves the *bytes*, when the page linked a viewer instead.
+ *
+ * A host that shows a file inside its own page commonly links the viewer and
+ * leaves the direct URL for the viewer to request. GitHub is the case that
+ * matters: `/blob/master/Makefile` is an HTML page about the file, and
+ * `/raw/master/Makefile` is the file — the same path with `blob` swapped for
+ * `raw`. Downloading the viewer gets 748 KB of HTML where the file is 82 KB.
+ *
+ * Returns a new string when a direct form is known, or NULL to keep the URL as
+ * it is. Only a rewrite of a *known* host shape is done; guessing at an
+ * arbitrary site would produce URLs that do not exist.
+ */
+static char *direct_url_for(const char *url) {
+    static const struct {
+        const char *viewer; /* the marker in the viewer path */
+        const char *direct; /* what it becomes */
+    } REWRITES[] = {
+        {"/blob/", "/raw/"},
+        {"/src/", "/raw/"},       /* Bitbucket's viewer */
+        {"/-/blob/", "/-/raw/"},  /* GitLab's */
+    };
+    for (size_t i = 0; i < sizeof REWRITES / sizeof REWRITES[0]; i++) {
+        const char *p = strstr(url, REWRITES[i].viewer);
+        if (!p) continue;
+        size_t head = (size_t)(p - url);
+        return mi_asprintf("%.*s%s%s", (int)head, url, REWRITES[i].direct,
+                           p + strlen(REWRITES[i].viewer));
+    }
+    return NULL;
+}
+
 static mi_crawl_hit *add_hit(mi_crawl_result *res, const mi_browse_item *item,
                              int score, const char *found_on, int via_browser) {
     mi_crawl_hit *grown = mi_realloc(res->hits, (res->hit_count + 1) * sizeof *grown);
@@ -234,7 +272,16 @@ static mi_crawl_hit *add_hit(mi_crawl_result *res, const mi_browse_item *item,
     res->hits = grown;
     mi_crawl_hit *h = &res->hits[res->hit_count++];
     memset(h, 0, sizeof *h);
-    h->url = mi_strdup(item->url);
+    /*
+     * Record the URL that serves the bytes, not the viewer.
+     *
+     * A host that shows a file in its own page links the viewer, and the direct
+     * URL is derived rather than linked — so a hit recorded as-is would download
+     * an HTML page. The filename is left alone: it is the same file either way,
+     * and it is what the match was scored on.
+     */
+    char *direct = direct_url_for(item->url);
+    h->url = direct ? direct : mi_strdup(item->url);
     h->filename = mi_strdup(item->filename);
     h->title = item->title ? mi_strdup(item->title) : NULL;
     h->mime = mi_strdup(item->mime ? item->mime : "");
@@ -386,28 +433,37 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
     int links = 0;
 
     /*
-     * Let the page settle, then click, then read.
+     * Settle, then click, then read.
      *
      * The order matters: clicking before the page has finished loading misses
      * elements that do not exist yet, and reading before clicking misses the
-     * listing the click produces. The settle window is bounded by the crawl's
-     * own deadline so a slow page cannot run past the budget.
+     * listing the click produces. Every wait is short, because a crawl pays it
+     * per page and a browser already costs seconds to start.
      */
-    double settle_until = now_seconds() + (cfg->settle_seconds > 0 ? cfg->settle_seconds : 2.0);
+    double settle_until = now_seconds() + (cfg->settle_seconds > 0 ? cfg->settle_seconds
+                                                                   : READ_SETTLE_SECONDS);
     if (settle_until > deadline) settle_until = deadline;
     int closed = 0;
     while (now_seconds() < settle_until && !closed) {
         if (mi_interactive_pump(it, 200) == MI_IT_EV_CLOSED) closed = 1;
     }
 
+    /*
+     * The click pass.
+     *
+     * The selectors are *alternatives* — a consent button, a tab, a "show all" —
+     * not a sequence, and there is no cheap way to know which one applies. So
+     * each is tried with a short wait: a selector that matches nothing costs
+     * 0.6s, and one that matches usually produces its effect within that. The
+     * whole pass is bounded, so a page with no such button pays a few seconds
+     * rather than ten.
+     */
     for (size_t i = 0; i < cfg->click_selector_count && !closed; i++) {
         if (now_seconds() >= deadline) break;
         mi_interactive_click_selector(it, cfg->click_selectors[i]);
-        /* Give the click's effect time to arrive: a click that fetches a list
-         * does so over the network, and reading immediately would miss it. */
-        double until = now_seconds() + 1.5;
+        double until = now_seconds() + CLICK_SETTLE_SECONDS;
         while (now_seconds() < until && !closed) {
-            if (mi_interactive_pump(it, 200) == MI_IT_EV_CLOSED) closed = 1;
+            if (mi_interactive_pump(it, 150) == MI_IT_EV_CLOSED) closed = 1;
         }
     }
 
@@ -560,7 +616,25 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
      * XHR or hidden behind a tab is reachable. The renderer is the fallback for
      * when there is no session available, and can only look.
      */
-    if (hits == 0 && cfg->use_browser_fallback && now_seconds() < deadline) {
+    /*
+     * The browser fallback, and what bounds it.
+     *
+     * A browser costs several seconds a page, and there is no cheap way to know
+     * in advance whether a page needs one: the honest test is to render it and
+     * compare, which is the cost being avoided. Two signals were tried and both
+     * were wrong — "no match on this page" renders nearly every page of a crawl
+     * for a specific name, and "few links on this page" skips a JavaScript
+     * listing whose static HTML is a full navigation with no content in it
+     * (measured: 27 content links and still nothing readable).
+     *
+     * So the correct trigger is kept and the *number* of browsers is capped
+     * instead. A crawl may drive `max_browser_pages` pages; after that it reads
+     * only what the HTML offers. That makes the cost predictable without making
+     * the result wrong — the first few unreadable pages are exactly the ones a
+     * JavaScript site hides its listing behind.
+     */
+    if (hits == 0 && cfg->use_browser_fallback && now_seconds() < deadline &&
+        res->rendered < (cfg->max_browser_pages > 0 ? cfg->max_browser_pages : 3)) {
         if (cfg->interactive_pool && mi_interactive_pool_available(cfg->interactive_pool)) {
             int was_rendered = 0;
             hits += read_page_driven(res, cfg, f, visited, url, depth, term, deadline,
@@ -614,6 +688,39 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
     return hits;
 }
 
+/*
+ * Which of two equally-good matches to prefer.
+ *
+ * A file often appears on a page twice: once as a *viewer* link and once as the
+ * bytes. GitHub is the clearest case — `/blob/master/Makefile` is an HTML page
+ * *about* the file, `/raw/refs/heads/master/Makefile` is the file. Both carry
+ * the same filename, so they score the same, and picking the viewer downloads
+ * the page rather than the file. Measured: the blob URL saved 748,550 bytes of
+ * HTML instead of the 80 KB Makefile.
+ *
+ * The general rule is the one `is_page` already answers: a URL with a real file
+ * extension, or an explicit raw/download path, is the file; anything else is a
+ * page about it. So a page never outranks a non-page at the same score.
+ */
+static int prefers_over(const mi_crawl_hit *a, const mi_crawl_hit *b) {
+    if (a->score != b->score) return a->score > b->score;
+    /*
+     * A raw/download path first, because it is the explicit statement that this
+     * URL is the bytes. It has to be checked before `is_page`, which cannot help
+     * here: "Makefile" has no extension, so both the viewer link and the raw
+     * link look extension-less and `is_page` calls them both pages.
+     */
+    int a_raw = strstr(a->url, "/raw/") != NULL || strstr(a->url, "raw=true") != NULL ||
+                strstr(a->url, "?download") != NULL || strstr(a->url, "/download/") != NULL;
+    int b_raw = strstr(b->url, "/raw/") != NULL || strstr(b->url, "raw=true") != NULL ||
+                strstr(b->url, "?download") != NULL || strstr(b->url, "/download/") != NULL;
+    if (a_raw != b_raw) return a_raw;
+    /* Then a real file extension beats a viewer page. */
+    int a_page = is_page(a->url), b_page = is_page(b->url);
+    if (a_page != b_page) return !a_page;
+    return 0;
+}
+
 int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
              mi_crawl_result *out) {
     if (!cfg || !site_url || !out) return MI_ERR_ARG;
@@ -664,11 +771,12 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
         for (size_t i = f.head; i < f.count; i++) strset_add(&visited, f.items[i].url);
     }
 
-    /* Best match first: the caller asked for a file by name, so the closest
-     * name is the answer and the rest are alternatives. */
+    /* Best match first, and among equals the file rather than a page about it —
+     * the caller asked for a file by name, so the closest name that is also the
+     * bytes is the answer. */
     for (size_t i = 0; i + 1 < out->hit_count; i++) {
         for (size_t j = i + 1; j < out->hit_count; j++) {
-            if (out->hits[j].score > out->hits[i].score) {
+            if (prefers_over(&out->hits[j], &out->hits[i])) {
                 mi_crawl_hit tmp = out->hits[i];
                 out->hits[i] = out->hits[j];
                 out->hits[j] = tmp;

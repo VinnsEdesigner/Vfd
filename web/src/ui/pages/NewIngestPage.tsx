@@ -1,16 +1,26 @@
 /**
- * NewIngestPage — the source form, pipeline step switches, and the probe panel.
+ * NewIngestPage — two ways to start a download.
  *
- * The probe result is passed in already-shaped so this page stays presentational;
- * the caller owns the request.
+ * "Source" takes a URL to a file and runs the pipeline on it.
+ *
+ * "Find on a site" takes a site and a file name, walks the site, and fills the
+ * source form from whichever file you pick. It is a separate mode rather than a
+ * field on the form because the two ask different questions: one wants an
+ * address you already know, the other finds one for you.
+ *
+ * The page stays presentational: every request and every piece of state is
+ * owned by the caller.
  */
 
+import { useState } from 'react';
 import { Card } from '../primitives/Card';
 import { Field } from '../primitives/Field';
 import { SwitchRow } from '../primitives/SwitchRow';
 import { Button } from '../primitives/Button';
 import { Note } from '../primitives/Note';
 import { QualityPicker } from '../downloads/QualityPicker';
+import { SiteSearch } from './SiteSearch';
+import type { SiteSearchProps } from './SiteSearch';
 import type { QualityOption } from '../../hooks/view-models';
 
 export interface IngestFormValue {
@@ -48,23 +58,52 @@ export interface NewIngestPageProps {
   /** Chosen rendition height, when the source advertises variants. */
   selectedQuality: number | null;
   onSelectQuality: (height: number) => void;
+  /**
+   * The site-search feature, passed in whole.
+   *
+   * Grouped rather than spread across a dozen props: it is a self-contained
+   * feature with its own state, and keeping it in one object makes that clear at
+   * the call site.
+   */
+  siteSearch: SiteSearchProps;
 }
 
-export function NewIngestPage({
-  value,
-  onChange,
-  probe,
-  probing,
-  onProbe,
-  onStart,
-  selectedQuality,
-  onSelectQuality,
-}: NewIngestPageProps) {
+export function NewIngestPage(props: NewIngestPageProps) {
+  const {
+    value,
+    onChange,
+    probe,
+    probing,
+    onProbe,
+    onStart,
+    selectedQuality,
+    onSelectQuality,
+    siteSearch,
+  } = props;
   const set = (patch: Partial<IngestFormValue>) => onChange({ ...value, ...patch });
 
+  /*
+   * Which way in the user is taking.
+   *
+   * Local state, not lifted: it is a view choice with no meaning outside this
+   * page, and nothing else needs to know which tab is showing.
+   */
+  const [mode, setMode] = useState<'source' | 'site'>('source');
+
+  if (mode === 'site') {
+    return (
+      <>
+        <ModeTabs mode={mode} onChange={setMode} />
+        <SiteSearch {...siteSearch} />
+      </>
+    );
+  }
+
   return (
-    <div className="grid-2">
-      <Card title="Source">
+    <>
+      <ModeTabs mode={mode} onChange={setMode} />
+      <div className="grid-2">
+        <Card title="Source">
         <div className="form">
           <div className="field field--full">
             <Field
@@ -175,6 +214,43 @@ export function NewIngestPage({
           Sizes shown for a manifest come from its own declared bandwidth.
         </Note>
       </Card>
+      </div>
+    </>
+  );
+}
+
+/**
+ * The two ways in, as a tab pair.
+ *
+ * A plain pair of buttons rather than the shared `Tabs` primitive: that one
+ * carries a count badge and a panel relationship this does not need, and using
+ * it here would mean two of its props meaning nothing.
+ */
+function ModeTabs({
+  mode,
+  onChange,
+}: {
+  mode: 'source' | 'site';
+  onChange: (mode: 'source' | 'site') => void;
+}) {
+  return (
+    <div className="browse__modes" role="group" aria-label="How to start a download">
+      <button
+        type="button"
+        className={mode === 'source' ? 'browse__mode is-active' : 'browse__mode'}
+        aria-pressed={mode === 'source'}
+        onClick={() => onChange('source')}
+      >
+        I have a URL
+      </button>
+      <button
+        type="button"
+        className={mode === 'site' ? 'browse__mode is-active' : 'browse__mode'}
+        aria-pressed={mode === 'site'}
+        onClick={() => onChange('site')}
+      >
+        Find a file on a site
+      </button>
     </div>
   );
 }

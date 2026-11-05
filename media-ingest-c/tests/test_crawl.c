@@ -447,6 +447,127 @@ static void test_crawl_sees_content_after_many_assets(void) {
     stop_site(pid);
 }
 
+/*
+ * The browser cap, and why it exists.
+ *
+ * There is no cheap way to know whether a page needs a browser: the honest test
+ * is to render it and compare, which is the cost being avoided. So the crawl
+ * bounds the cost by counting. Without the cap a crawl for a specific name drove
+ * a browser for nearly every page — measured at two minutes for ten pages —
+ * because most pages of any crawl legitimately match nothing.
+ */
+static void test_crawl_browser_pages_are_capped(void) {
+    /* Five pages, none matching, so every one would be a browser candidate. */
+    static const route routes[] = {
+        {"/", "<a href='/a.html'>a</a><a href='/b.html'>b</a><a href='/c.html'>c</a>"
+              "<a href='/d.html'>d</a>"},
+        {"/a.html", "<a href='/x1.txt'>x</a>"},
+        {"/b.html", "<a href='/x2.txt'>x</a>"},
+        {"/c.html", "<a href='/x3.txt'>x</a>"},
+        {"/d.html", "<a href='/x4.txt'>x</a>"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 5, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 2;
+    cfg.max_pages = 10;
+    /* No browser pool, so nothing can actually render — this asserts the cap is
+     * a bound the walk respects rather than a count of what happened. */
+    cfg.max_browser_pages = 2;
+    cfg.use_browser_fallback = 1;
+    cfg.interactive_pool = NULL;
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "nothingmatchesthis", &res);
+    CHECK(res.page_count >= 5, "the walk still reads every page");
+    CHECK(res.rendered <= 2, "no more than the cap was driven");
+    mi_crawl_result_free(&res);
+    stop_site(pid);
+}
+
+/*
+ * A viewer link must become the URL that serves the bytes.
+ *
+ * A host that shows a file inside its own page links the *viewer*, and the
+ * direct URL is derived rather than linked — so a hit recorded as-is downloads
+ * an HTML page. Measured on GitHub: the blob URL saved 748,550 bytes of HTML
+ * where the file is 81,874 bytes. This is the difference between a working
+ * download and a plausible-looking wrong one, which is why it is pinned.
+ */
+static void test_crawl_rewrites_a_viewer_to_the_direct_url(void) {
+    static const route routes[] = {
+        {"/", "<a href='/owner/repo/blob/master/Makefile'>Makefile</a>"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 1, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 0;
+    cfg.use_browser_fallback = 0;
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "Makefile", &res);
+    CHECK(res.hit_count == 1, "the viewer link is found");
+    if (res.hit_count > 0) {
+        /* The blob path is rewritten to the raw one, which serves the bytes. */
+        CHECK(strstr(res.hits[0].url, "/raw/") != NULL,
+              "a /blob/ link is returned as its /raw/ form");
+        CHECK(strstr(res.hits[0].url, "/blob/") == NULL,
+              "and the viewer path is gone");
+        /* The filename is unchanged: it is the same file either way, and it is
+         * what the match was scored on. */
+        CHECK(strcmp(res.hits[0].filename, "Makefile") == 0, "the name is unchanged");
+    }
+    mi_crawl_result_free(&res);
+    stop_site(pid);
+}
+
+/*
+ * A URL that is already direct must be left alone.
+ *
+ * The rewrite is a transform of a *known* viewer shape, so an ordinary file URL
+ * must come through untouched — a rewrite that guessed would produce addresses
+ * that do not exist.
+ */
+static void test_crawl_leaves_a_direct_url_alone(void) {
+    static const route routes[] = {
+        {"/", "<a href='/files/report-2024.pdf'>report</a>"
+              "<a href='/download/?id=7'>download</a>"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 1, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 0;
+    cfg.use_browser_fallback = 0;
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "report", &res);
+    CHECK(res.hit_count == 1, "an ordinary file URL is found");
+    if (res.hit_count > 0) {
+        CHECK(strstr(res.hits[0].url, "/files/report-2024.pdf") != NULL,
+              "an ordinary file URL is unchanged");
+    }
+    mi_crawl_result_free(&res);
+    stop_site(pid);
+}
+
 static void test_crawl_unreachable_site_is_not_an_error(void) {
     mi_crawl_config cfg;
     mi_crawl_config_init(&cfg);
@@ -481,6 +602,9 @@ int main(void) {
     test_crawl_hit_cap_stops_early();
     test_crawl_finds_extensionless_files();
     test_crawl_sees_content_after_many_assets();
+    test_crawl_browser_pages_are_capped();
+    test_crawl_rewrites_a_viewer_to_the_direct_url();
+    test_crawl_leaves_a_direct_url_alone();
     test_crawl_unreachable_site_is_not_an_error();
     test_crawl_rejects_a_bad_url();
 

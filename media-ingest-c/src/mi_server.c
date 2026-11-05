@@ -3012,6 +3012,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         if (budget > 0) ccfg.budget_seconds = budget;
         ccfg.same_host_only = mi_json_get_bool(in, "same_host_only", 0);
         ccfg.use_browser_fallback = mi_json_get_bool(in, "use_browser", 1);
+        int browser_pages = (int)mi_json_get_number(in, "max_browser_pages", 0);
+        if (browser_pages > 0) ccfg.max_browser_pages = browser_pages;
         /*
          * Selectors to click before reading, so a listing behind a consent
          * button, a tab or a "show all" is reachable. A caller that knows the

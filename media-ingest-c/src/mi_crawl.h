@@ -100,6 +100,16 @@ typedef struct {
      * reports "not found" for a site that plainly has the file.
      */
     int use_browser_fallback;
+    /*
+     * The most pages a walk may drive a browser for.
+     *
+     * A browser costs several seconds a page and there is no cheap way to know
+     * whether one is needed, so the cost is bounded by counting rather than by
+     * guessing. The default is small because the pages that need a browser are
+     * the first few: a JavaScript site hides its listing behind its landing
+     * page, not behind every page on the site.
+     */
+    int max_browser_pages;
     /* The User-Agent to send. NULL uses the built-in default. */
     const char *user_agent;
     /*

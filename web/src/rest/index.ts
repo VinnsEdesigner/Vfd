@@ -16,6 +16,7 @@ import {
 import { createRtcResource, type RtcResource } from './rtc';
 import { createDownloadsResource, type DownloadsResource } from './downloads';
 import { createMediaResource, type MediaResource } from './media';
+import { createCrawlResource, type CrawlResource } from './crawl';
 import { createSystemResource, type SystemResource } from './system';
 
 export interface RestApi {
@@ -23,6 +24,8 @@ export interface RestApi {
   downloads: DownloadsResource;
   media: MediaResource;
   system: SystemResource;
+  /** Walk a site for files whose name matches a term. */
+  crawl: CrawlResource;
   /** List the media a page or directory offers, via Vyzor. */
   browse: BrowseResource;
   /** Show a page itself, via Vyzor, when the site allows framing. */
@@ -42,6 +45,7 @@ export function createRestApi(config: TransportConfig): RestApi {
     downloads: createDownloadsResource(client),
     media: createMediaResource(client),
     system: createSystemResource(client),
+    crawl: createCrawlResource(client),
     browse: createBrowseResource(client),
     page: createPageResource(client),
     render: createRenderResource(client),
@@ -56,4 +60,5 @@ export type { RtcResource } from './rtc';
 export type { LiveVideoSession, LiveVideoHandlers, RtcSignalling } from './rtc-session';
 export type { DownloadsResource } from './downloads';
 export type { MediaResource } from './media';
+export type { CrawlResource } from './crawl';
 export type { SystemResource } from './system';

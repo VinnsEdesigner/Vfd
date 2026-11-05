@@ -20,6 +20,9 @@ export {
   useConvertDownload,
 } from './use-downloads';
 export { useProbe, useDetectBytes } from './use-media';
+export { useCrawl } from './use-crawl';
+export type { CrawlVariables } from './use-crawl';
+export type { CrawlHit, CrawlQuery, CrawlReport, CrawlResult } from '../domain/browse';
 export { useBrowse, useBrowseUrl, usePageFrame, useRenderPage } from './use-browse';
 export type { UseBrowseArgs } from './use-browse';
 export { useLiveSession, lastLiveUrl } from './use-live';

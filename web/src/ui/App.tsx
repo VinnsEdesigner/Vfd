@@ -41,6 +41,7 @@ import {
   StorageSkeleton,
   SettingsSkeleton,
   IngestSkeleton,
+  type SiteSearchValue,
 } from './pages';
 import {
   useDownloads,
@@ -52,6 +53,9 @@ import {
   useRenderPage,
   useLiveSession,
   lastLiveUrl,
+  useCrawl,
+  type CrawlHit,
+  type CrawlReport,
   useLiveVideo,
   useSetStorageLocation,
   useCreateDownload,
@@ -941,6 +945,113 @@ export function App({ initialView = 'overview' }: AppProps) {
    */
   const probeCacheRef = useRef<{ key: string; at: number; outcome: ProbeOutcome } | null>(null);
 
+  /*
+   * Site search: walk a site for a file whose name you know.
+   *
+   * Separate from the probe flow because it answers a different question — the
+   * probe takes a URL and says what it is, this takes a *site and a name* and
+   * finds the URL. Its state lives here rather than in the page so that leaving
+   * "New download" and coming back does not throw the results away.
+   */
+  const crawl = useCrawl();
+  const [siteSearch, setSiteSearch] = useState<SiteSearchValue>({
+    url: '',
+    term: '',
+    depth: 2,
+    useBrowser: true,
+  });
+  /** The hits from the last walk, or null before one has run. */
+  const [crawlHits, setCrawlHits] = useState<CrawlHit[] | null>(null);
+  /** What the walk did, so an empty result can be explained. */
+  const [crawlReport, setCrawlReport] = useState<CrawlReport | null>(null);
+  /** The term the last walk used, for the result heading. */
+  const [crawlTerm, setCrawlTerm] = useState('');
+  /** Why the last walk failed outright, when it did. */
+  const [crawlError, setCrawlError] = useState<string | null>(null);
+  /** The hit whose download is being queued, so its button can spin. */
+  const [crawlQueueing, setCrawlQueueing] = useState<string | null>(null);
+  /** Lets the Stop button cancel a walk in flight. */
+  const crawlAbortRef = useRef<AbortController | null>(null);
+
+  const runCrawl = useCallback(async () => {
+    const url = siteSearch.url.trim();
+    if (!url) return;
+    setCrawlError(null);
+    setCrawlHits(null);
+    setCrawlReport(null);
+    setCrawlTerm(siteSearch.term.trim());
+
+    const controller = new AbortController();
+    crawlAbortRef.current = controller;
+    try {
+      const result = await crawl.mutateAsync({
+        url,
+        term: siteSearch.term.trim(),
+        depth: siteSearch.depth,
+        maxPages: 40,
+        useBrowser: siteSearch.useBrowser,
+        // A few pages may be driven through the browser; each costs seconds, so
+        // the number is bounded rather than the crawl left open-ended.
+        maxBrowserPages: 3,
+        signal: controller.signal,
+      });
+      setCrawlHits(result.hits);
+      setCrawlReport(result.report);
+    } catch (e) {
+      // A cancel is the user's own doing, not a failure to report.
+      if (controller.signal.aborted) {
+        setCrawlHits([]);
+        setCrawlReport(null);
+      } else {
+        setCrawlError(describeError(e));
+        setCrawlHits([]);
+      }
+    } finally {
+      crawlAbortRef.current = null;
+    }
+  }, [crawl, siteSearch]);
+
+  const stopCrawl = useCallback(() => {
+    crawlAbortRef.current?.abort();
+    crawlAbortRef.current = null;
+  }, []);
+
+  /**
+   * Queue a download for a file the crawl found.
+   *
+   * The hit's URL goes into the source form and the download is queued from
+   * there, so the pipeline steps the user chose apply to it — a crawl finds
+   * files, it does not decide what to do with them.
+   */
+  const downloadCrawlHit = useCallback(
+    async (hit: CrawlHit) => {
+      setCrawlQueueing(hit.url);
+      try {
+        await createDownload.mutateAsync({
+          input: {
+            url: hit.url,
+            connections: draft.connections,
+            hls: draft.hls,
+            upload: draft.upload,
+            purge: draft.purge,
+            durationSeconds: draft.durationSeconds,
+            // A file found by name on a site is often not media — a datasheet, a
+            // PDF — and the download path refuses anything the detector does not
+            // recognise unless it is told the payload may be arbitrary.
+            allowNonMedia: true,
+          },
+        });
+        setDraftField('url', hit.url);
+        toast.success('Download queued', hit.filename);
+      } catch (e) {
+        toast.error('Could not queue that file', describeError(e));
+      } finally {
+        setCrawlQueueing(null);
+      }
+    },
+    [createDownload, draft, setDraftField, toast],
+  );
+
   /**
    * Probes the source and returns what was found, so the same result can drive
    * both the probe panel and the format chooser. `announce` keeps the toasts out
@@ -1515,6 +1626,20 @@ export function App({ initialView = 'overview' }: AppProps) {
             onProbe={() => void runProbe(true, false)}
             selectedQuality={selectedQuality}
             onSelectQuality={setSelectedQuality}
+            siteSearch={{
+              value: siteSearch,
+              onChange: setSiteSearch,
+              hits: crawlHits,
+              report: crawlReport,
+              searchedTerm: crawlTerm,
+              running: crawl.isPending,
+              error: crawlError,
+              onRun: () => void runCrawl(),
+              onStop: stopCrawl,
+              onDownload: (hit) => void downloadCrawlHit(hit),
+              queueingUrl: crawlQueueing,
+              canUseBrowser: Boolean(capabilities?.interactive?.available),
+            }}
             onStart={() => void beginDownload()}
           />
           ))}

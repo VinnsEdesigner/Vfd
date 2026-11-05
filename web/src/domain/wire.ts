@@ -110,6 +110,55 @@ export interface WireBrowseResult {
   filter?: string;
 }
 
+/** One file a site crawl found. */
+export interface WireCrawlHit {
+  url: string;
+  filename: string;
+  /** The link text, when the reference was an anchor. */
+  title: string | null;
+  mime: string;
+  /** How well the name matched the term, 0-100. Best match first. */
+  score: number;
+  /** The page this was found on, so a result can be traced back. */
+  found_on: string | null;
+  /** True when this page had to be driven through the browser to see it. */
+  via_browser: boolean;
+}
+
+export interface WireCrawlResult {
+  ok: boolean;
+  url: string;
+  term: string | null;
+  /** How many files matched. */
+  found: number;
+  /** What the walk did, so an empty result can be explained. */
+  pages_read: number;
+  pages_failed: number;
+  pages_rendered: number;
+  skipped_offsite: number;
+  items: WireCrawlHit[];
+}
+
+export interface WireCrawlRequest {
+  url: string;
+  term?: string;
+  depth?: number;
+  max_pages?: number;
+  budget_seconds?: number;
+  same_host_only?: boolean;
+  use_browser?: boolean;
+  /**
+   * The most pages to drive a browser for.
+   *
+   * A browser costs several seconds a page, so the crawl bounds the cost by
+   * counting rather than by guessing which page needs one.
+   */
+  max_browser_pages?: number;
+  /** CSS selectors to click before reading, for a listing behind an interaction. */
+  click_selectors?: string[];
+  settle_seconds?: number;
+}
+
 export interface WireDeleteResult {
   deleted?: boolean;
   cancelled?: boolean;

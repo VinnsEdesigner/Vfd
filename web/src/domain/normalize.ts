@@ -15,9 +15,16 @@ import type {
   ProbeResult,
   StorageConfig,
 } from './media';
-import { browseKindFor, type BrowseItem, type BrowseResult, type LiveMessage } from './browse';
+import {
+  browseKindFor,
+  type BrowseItem,
+  type BrowseResult,
+  type CrawlResult,
+  type LiveMessage,
+} from './browse';
 import type {
   WireBrowseResult,
+  WireCrawlResult,
   WireSystemStorage,
   WireCapabilities,
   WireDownload,
@@ -193,6 +200,37 @@ export function normalizeBrowseResult(w: WireBrowseResult): BrowseResult {
         })
     : [];
   return { items, total: w.count ?? items.length, hasMore: false, title: w.title ?? null };
+}
+
+/**
+ * A crawl result, as the console uses it.
+ *
+ * The wire names are snake_case and the counts arrive flat; this groups them so
+ * a component asks for `report.pagesRead` rather than remembering which of five
+ * sibling fields meant what. Nothing is invented: a field the server did not
+ * send becomes a neutral value rather than a guess.
+ */
+export function normalizeCrawlResult(w: WireCrawlResult): CrawlResult {
+  const items = Array.isArray(w.items) ? w.items : [];
+  return {
+    hits: items.map((i) => ({
+      url: i.url,
+      filename: i.filename && i.filename.trim() ? i.filename : nameFromUrl(i.url),
+      title: i.title && i.title.trim() ? i.title : null,
+      mime: i.mime ?? '',
+      score: typeof i.score === 'number' ? i.score : 0,
+      foundOn: i.found_on ?? null,
+      viaBrowser: Boolean(i.via_browser),
+    })),
+    report: {
+      pagesRead: w.pages_read ?? 0,
+      pagesFailed: w.pages_failed ?? 0,
+      pagesRendered: w.pages_rendered ?? 0,
+      skippedOffsite: w.skipped_offsite ?? 0,
+    },
+    term: w.term ?? '',
+    url: w.url ?? '',
+  };
 }
 
 export function normalizeProbe(w: WireProbeResult): ProbeResult {

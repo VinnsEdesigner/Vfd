@@ -4,6 +4,8 @@ export { DownloadsPage } from './DownloadsPage';
 export type { DownloadsPageProps } from './DownloadsPage';
 export { NewIngestPage } from './NewIngestPage';
 export type { NewIngestPageProps, IngestFormValue, ProbeOutcome } from './NewIngestPage';
+export { SiteSearch } from './SiteSearch';
+export type { SiteSearchProps, SiteSearchValue } from './SiteSearch';
 export { StoragePage, useStorageTab } from './StoragePage';
 export type { StoragePageProps, StorageTab, StorageCredentialsValue } from './StoragePage';
 export { SettingsPage } from './SettingsPage';

@@ -224,3 +224,86 @@ export function browseKindLabel(kind: BrowseKind): string {
       return 'File';
   }
 }
+
+/**
+ * A site crawl: walk a site looking for files whose name matches a term.
+ *
+ * Distinct from a browse, which reads *one* page. A crawl follows the site's
+ * links, so the file someone wants — a datasheet three clicks in — is found
+ * without them having to guess which page lists it.
+ */
+export interface CrawlHit {
+  /** The bytes a download would use. */
+  url: string;
+  /** The name a save should use. */
+  filename: string;
+  /** The link text, when the reference was an anchor. Usually more readable
+   *  than the filename. */
+  title: string | null;
+  mime: string;
+  /**
+   * How well the name matched, 0-100.
+   *
+   * The crawl returns best-first, so the first result is the likely answer.
+   * Shown because a term like "datasheet" legitimately matches a hundred files
+   * and the score is what says which one was asked for.
+   */
+  score: number;
+  /** The page this was found on, so a result can be traced back. */
+  foundOn: string | null;
+  /**
+   * True when this page had to be driven through the browser to see it.
+   *
+   * Worth surfacing: it explains why a crawl took a while, and it is the signal
+   * that the site builds its listing in JavaScript.
+   */
+  viaBrowser: boolean;
+}
+
+/**
+ * What the walk did, whether or not it found anything.
+ *
+ * Kept separate from the hits so an empty result can be *explained* rather than
+ * just reported: "40 pages read, 12 needed the browser, none matched" is a
+ * different answer from "that host refused us", and the user's next move
+ * depends on which it was.
+ */
+export interface CrawlReport {
+  /** How many pages were read. */
+  pagesRead: number;
+  /** How many could not be fetched at all. */
+  pagesFailed: number;
+  /** How many needed the browser to read. */
+  pagesRendered: number;
+  /** Links on another host that were not followed. */
+  skippedOffsite: number;
+}
+
+export interface CrawlResult {
+  hits: CrawlHit[];
+  report: CrawlReport;
+  /** The term that was searched for, echoed back. */
+  term: string;
+  /** The site that was walked. */
+  url: string;
+}
+
+export interface CrawlQuery {
+  /** The site to walk. */
+  url: string;
+  /** The filename to look for. Empty lists every file found. */
+  term: string;
+  /** How many links deep to follow. 0 reads only the page given. */
+  depth: number;
+  /** The most pages to read, a stop on a site with a large index. */
+  maxPages: number;
+  /** Whether a page with no match may be re-read through the browser. */
+  useBrowser: boolean;
+  /**
+   * The most pages to drive a browser for.
+   *
+   * A browser costs several seconds a page, so the crawl bounds that cost by
+   * counting rather than by guessing which page needs one.
+   */
+  maxBrowserPages: number;
+}
