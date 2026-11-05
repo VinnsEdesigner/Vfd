@@ -121,6 +121,15 @@ const THEME_KEY = 'ingest.theme';
  */
 const BROWSE_KEY = 'ingest.browse';
 
+/**
+ * How long a probe result stays usable.
+ *
+ * "Probe" then "Start" is the normal flow and both call the probe, so this is
+ * what stops a download probing its source twice. It is short because a probe
+ * is a live read of a remote source, and a URL's size or type can change.
+ */
+const PROBE_CACHE_MS = 30_000;
+
 export type Theme = 'light' | 'dark';
 
 /** A deletion awaiting confirmation. */
@@ -922,15 +931,36 @@ export function App({ initialView = 'overview' }: AppProps) {
     location.target === 'cloud' ? `s3://${location.bucket}/${location.keyPrefix}` : DEFAULT_CLOUD_PATH;
 
   /**
+   * A just-made probe result, keyed by URL and duration.
+   *
+   * "Probe" then "Start" is the normal flow, and both call this — so without a
+   * cache every download probes its source twice, which doubles the wait for no
+   * new information. A probe is a live network read, so the entry is short-lived
+   * (a source can change under you) and is only reused when the same URL is
+   * asked for again within that window.
+   */
+  const probeCacheRef = useRef<{ key: string; at: number; outcome: ProbeOutcome } | null>(null);
+
+  /**
    * Probes the source and returns what was found, so the same result can drive
    * both the probe panel and the format chooser. `announce` keeps the toasts out
    * of the way when this is a step inside "start a download" rather than a probe
    * the user asked for on its own.
    */
   const runProbe = useCallback(
-    async (announce = true): Promise<ProbeOutcome | null> => {
+    async (announce = true, useCache = true): Promise<ProbeOutcome | null> => {
       const url = draft.url.trim();
       if (!url) return null;
+      const key = `${url}\u0000${draft.durationSeconds ?? 0}`;
+
+      const cached = probeCacheRef.current;
+      if (useCache && cached && cached.key === key && Date.now() - cached.at < PROBE_CACHE_MS) {
+        setProbe(cached.outcome);
+        const cachedQualities = cached.outcome.qualities ?? [];
+        setSelectedQuality(cachedQualities.length > 0 ? (cachedQualities[0]?.height ?? null) : null);
+        return cached.outcome;
+      }
+
       setProbing(true);
       setProbe({ status: 'probing' });
       try {
@@ -960,6 +990,7 @@ export function App({ initialView = 'overview' }: AppProps) {
           confidence: result.media ? result.media.confidence.toFixed(3) : '—',
           qualities,
         };
+        probeCacheRef.current = { key, at: Date.now(), outcome };
         setProbe(outcome);
         // Default to the largest rendition the manifest offers.
         setSelectedQuality(qualities.length > 0 ? (qualities[0]?.height ?? null) : null);
@@ -1481,7 +1512,7 @@ export function App({ initialView = 'overview' }: AppProps) {
             }}
             probe={probe}
             probing={probing}
-            onProbe={runProbe}
+            onProbe={() => void runProbe(true, false)}
             selectedQuality={selectedQuality}
             onSelectQuality={setSelectedQuality}
             onStart={() => void beginDownload()}
