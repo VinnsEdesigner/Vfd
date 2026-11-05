@@ -110,6 +110,15 @@ export interface WireBrowseResult {
   filter?: string;
 }
 
+/** One rendition a resolved stream offers. */
+export interface WireCrawlQuality {
+  height: number;
+  label: string;
+  /** -1 when the extractor did not say. */
+  bytes: number;
+  best: boolean;
+}
+
 /** One file a site crawl found. */
 export interface WireCrawlHit {
   url: string;
@@ -123,6 +132,10 @@ export interface WireCrawlHit {
   found_on: string | null;
   /** True when this page had to be driven through the browser to see it. */
   via_browser: boolean;
+  /** True when a media extractor resolved this page, so it is the media itself. */
+  resolved: boolean;
+  /** The renditions a resolved stream offers, largest first. */
+  qualities?: WireCrawlQuality[];
 }
 
 export interface WireCrawlResult {

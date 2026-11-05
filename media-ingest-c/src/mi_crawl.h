@@ -30,6 +30,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* One selectable quality of a resolved stream. */
+typedef struct {
+    int height;
+    /* A label to show, e.g. "1080p" or "audio only". */
+    char *label;
+    /* Bytes for this choice, or -1 when the extractor did not say. */
+    int64_t bytes;
+    /* 1 when this is the largest offered. */
+    int best;
+} mi_crawl_quality;
+
 /* A file the crawl found. */
 typedef struct {
     char *url;      /* absolute */
@@ -54,6 +65,16 @@ typedef struct {
      * caller asked for — so it ranks first at an equal score.
      */
     int resolved;
+    /*
+     * The qualities a resolved stream offers, largest first, or none.
+     *
+     * A stream is not one file: it is a set of renditions, and which one to take
+     * is the viewer's decision — a phone on mobile data does not want the 4K
+     * master. Reported so the console can offer the choice rather than always
+     * taking the largest, which is what it did before this existed.
+     */
+    mi_crawl_quality *qualities;
+    size_t quality_count;
 } mi_crawl_hit;
 
 /* One page the crawl visited, and what it yielded. Kept so the caller can

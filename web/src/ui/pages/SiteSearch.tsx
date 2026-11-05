@@ -15,6 +15,7 @@
  * nothing, so "no results" is an answer rather than a dead end.
  */
 
+import { useState } from 'react';
 import { Card } from '../primitives/Card';
 import { Button } from '../primitives/Button';
 import { Field } from '../primitives/Field';
@@ -23,7 +24,8 @@ import { Note } from '../primitives/Note';
 import { EmptyState } from '../primitives/EmptyState';
 import { Spinner } from '../primitives/Spinner';
 import { IconSearch, IconDownload } from '../primitives/Icons';
-import { formatBytes } from '../../hooks/view-models';
+import { QualityPicker } from '../downloads/QualityPicker';
+import { formatBytes, type QualityOption } from '../../hooks/view-models';
 import type { CrawlHit, CrawlReport } from '../../hooks';
 
 export interface SiteSearchValue {
@@ -51,8 +53,8 @@ export interface SiteSearchProps {
   error: string | null;
   onRun: () => void;
   onStop: () => void;
-  /** Queue a download for one hit. */
-  onDownload: (hit: CrawlHit) => void;
+  /** Queue a download for one hit, at a chosen height when it offers a choice. */
+  onDownload: (hit: CrawlHit, height?: number) => void;
   /** Which hit is being queued, so its button can spin. */
   queueingUrl: string | null;
   /** Whether the browser fallback is available on this Vyzor. */
@@ -189,18 +191,40 @@ export function SiteSearch({
                     </span>
                   </span>
                   <div className="bcard__actions">
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      loading={queueingUrl === hit.url}
-                      onClick={() => onDownload(hit)}
-                    >
-                      Download
-                    </Button>
+                    {hit.qualities.length > 0 ? (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => onDownload(hit, hit.qualities[0]!.height)}
+                        title={`Download at ${hit.qualities[0]!.label}`}
+                      >
+                        Best ({hit.qualities[0]!.label})
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        loading={queueingUrl === hit.url}
+                        onClick={() => onDownload(hit)}
+                      >
+                        Download
+                      </Button>
+                    )}
                   </div>
                 </li>
               ))}
             </ul>
+            {/*
+              The renditions of a resolved stream, when there is a choice to make.
+              Shown below the list rather than inside each card: a stream's
+              qualities are the same set for every entry that resolved, and a
+              picker per card would be a wall of identical rows.
+            */}
+            <ResolvedQualities
+              hits={hits}
+              queueingUrl={queueingUrl}
+              onDownload={onDownload}
+            />
             <Note className="note">
               Matches are ranked by how well the name fits, so the closest is first.
               Picking one fills the source form, where the pipeline steps are chosen.
@@ -209,6 +233,74 @@ export function SiteSearch({
         )}
       </Card>
     </>
+  );
+}
+
+/**
+ * What a resolved stream offers, and a way to take a smaller one.
+ *
+ * A stream is a set of renditions rather than one file, and which to take is the
+ * viewer's decision — a phone on mobile data does not want the 4K master. Before
+ * this, the download always took the largest: measured at 362 MB where the 720p
+ * rendition is 30 MB, a twelvefold difference the viewer had no say in.
+ *
+ * Only shown when there is a genuine choice, so an ordinary file — the common
+ * case for this feature — gains no extra UI.
+ */
+function ResolvedQualities({
+  hits,
+  queueingUrl,
+  onDownload,
+}: {
+  hits: ReadonlyArray<CrawlHit>;
+  queueingUrl: string | null;
+  onDownload: (hit: CrawlHit, height?: number) => void;
+}) {
+  const [selected, setSelected] = useState<number | null>(null);
+  /*
+   * The first resolved hit, and its renditions.
+   *
+   * A crawl of a streaming page usually yields the media plus the page's own
+   * links, and only the media has qualities — so this finds the one that does
+   * rather than assuming the first hit is it.
+   */
+  const target = hits.find((h) => h.qualities.length > 0) ?? null;
+  if (!target) return null;
+
+  const options: QualityOption[] = target.qualities.map((q) => ({
+    url: target.url,
+    height: q.height,
+    width: 0,
+    label: q.label,
+    codecs: '',
+    bytes: q.bytes,
+    sizeLabel: q.bytes >= 0 ? formatBytes(q.bytes) : 'size unknown',
+  }));
+  const active = selected ?? target.qualities[0]!.height;
+  const chosen = target.qualities.find((q) => q.height === active) ?? target.qualities[0]!;
+
+  return (
+    <Card
+      title="Quality"
+      subtitle={`${target.filename.slice(0, 60)} — ${target.qualities.length} rendition${
+        target.qualities.length === 1 ? '' : 's'
+      }`}
+    >
+      <QualityPicker options={options} selectedHeight={active} onSelect={setSelected} />
+      <div className="form-actions">
+        <Button
+          variant="primary"
+          loading={queueingUrl === target.url}
+          onClick={() => onDownload(target, chosen.height)}
+        >
+          <IconDownload /> Download {chosen.label}
+        </Button>
+      </div>
+      <Note className="note">
+        The sizes are what the source declares for each rendition. Choosing a
+        smaller one downloads less, not a scaled copy of the same file.
+      </Note>
+    </Card>
   );
 }
 

@@ -893,6 +893,7 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->ffmpeg_path = NULL;
     cfg->extract_pages = 0;
     cfg->extractor_path = NULL;
+    cfg->preferred_height = 0;
 }
 
 void mi_download_result_free(mi_download_result *res) {
@@ -1038,16 +1039,44 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
     const mi_extract_format *video = NULL;
     const mi_extract_format *audio = NULL;
     const mi_extract_format *muxed = NULL;
+    /*
+     * The choice, in order of what the viewer asked for.
+     *
+     * `preferred_height` is a *ceiling*: a viewer asking for 720 wants to avoid
+     * the larger file, so 1080 would defeat the point. The nearest height at or
+     * below the request wins, and when nothing is that small the smallest
+     * offered is taken rather than nothing.
+     */
+    int want = cfg->preferred_height;
     for (size_t i = 0; i < er.format_count; i++) {
         const mi_extract_format *f = &er.formats[i];
         if (f->has_video && f->has_audio) {
-            if (!muxed || f->height > muxed->height) muxed = f;
+            if (want > 0) {
+                /* A muxed format is only usable if it fits the ceiling, or is
+                 * the best there is. */
+                if (!muxed) muxed = f;
+                else if (f->height <= want && f->height > muxed->height) muxed = f;
+                else if (muxed->height > want && f->height < muxed->height) muxed = f;
+            } else if (!muxed || f->height > muxed->height) {
+                muxed = f;
+            }
         } else if (f->has_video) {
-            if (!video || f->height > video->height) video = f;
+            if (want > 0) {
+                if (!video) video = f;
+                /* At or below the request, the largest such. */
+                else if (f->height <= want && f->height > video->height) video = f;
+                /* Nothing small enough yet: take the smallest above it. */
+                else if (video->height > want && f->height < video->height) video = f;
+            } else if (!video || f->height > video->height) {
+                video = f;
+            }
         } else if (f->has_audio) {
             if (!audio || f->bitrate > audio->bitrate) audio = f;
         }
     }
+    /* A muxed format that misses the ceiling is only worth taking when there is
+     * no separate video to pair with the audio. */
+    if (muxed && want > 0 && muxed->height > want && video) muxed = NULL;
 
     if (!muxed && !video) {
         mi_extract_result_free(&er);

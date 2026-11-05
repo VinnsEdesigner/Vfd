@@ -231,7 +231,28 @@ export function browseKindLabel(kind: BrowseKind): string {
  * Distinct from a browse, which reads *one* page. A crawl follows the site's
  * links, so the file someone wants — a datasheet three clicks in — is found
  * without them having to guess which page lists it.
+ *
+ * A *streaming* page is the harder case and the reason the extractor is asked:
+ * its media URL is not among its links at all, so a walk that only reads links
+ * reports the channel rather than the video.
  */
+
+/**
+ * One rendition a resolved stream offers.
+ *
+ * A stream is not one file: it is a set of renditions, and which one to take is
+ * the viewer's decision — a phone on mobile data does not want the 4K master.
+ */
+export interface CrawlQuality {
+  height: number;
+  /** A label to show, e.g. "720p". */
+  label: string;
+  /** Bytes for this choice, or -1 when the extractor did not say. */
+  bytes: number;
+  /** True for the largest offered, so the console can say "Best". */
+  best: boolean;
+}
+
 export interface CrawlHit {
   /** The bytes a download would use. */
   url: string;
@@ -258,6 +279,20 @@ export interface CrawlHit {
    * that the site builds its listing in JavaScript.
    */
   viaBrowser: boolean;
+  /**
+   * True when a media extractor resolved this page, so the hit is the *media*
+   * rather than a link the walk found.
+   *
+   * A streaming page's own links match a search just as well as its video, so
+   * this is also what ranks it first.
+   */
+  resolved: boolean;
+  /**
+   * The renditions a resolved stream offers, largest first, or empty.
+   *
+   * Empty for an ordinary file, which has no choice to make.
+   */
+  qualities: CrawlQuality[];
 }
 
 /**

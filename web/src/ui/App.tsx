@@ -1024,7 +1024,7 @@ export function App({ initialView = 'overview' }: AppProps) {
    * files, it does not decide what to do with them.
    */
   const downloadCrawlHit = useCallback(
-    async (hit: CrawlHit) => {
+    async (hit: CrawlHit, height?: number) => {
       setCrawlQueueing(hit.url);
       try {
         await createDownload.mutateAsync({
@@ -1039,10 +1039,17 @@ export function App({ initialView = 'overview' }: AppProps) {
             // PDF — and the download path refuses anything the detector does not
             // recognise unless it is told the payload may be arbitrary.
             allowNonMedia: true,
+            /*
+             * The chosen rendition, when the stream offered a choice. Vyzor reads
+             * the height off this label and takes the nearest at or below it, so
+             * the request is a ceiling rather than an exact match — asking for
+             * 720 means "not the 4K master", and 1080 would defeat that.
+             */
+            ...(height && height > 0 ? { quality: `${height}p` } : {}),
           },
         });
         setDraftField('url', hit.url);
-        toast.success('Download queued', hit.filename);
+        toast.success('Download queued', height ? `${hit.filename} at ${height}p` : hit.filename);
       } catch (e) {
         toast.error('Could not queue that file', describeError(e));
       } finally {
@@ -1636,7 +1643,7 @@ export function App({ initialView = 'overview' }: AppProps) {
               error: crawlError,
               onRun: () => void runCrawl(),
               onStop: stopCrawl,
-              onDownload: (hit) => void downloadCrawlHit(hit),
+              onDownload: (hit, height) => void downloadCrawlHit(hit, height),
               queueingUrl: crawlQueueing,
               canUseBrowser: Boolean(capabilities?.interactive?.available),
             }}

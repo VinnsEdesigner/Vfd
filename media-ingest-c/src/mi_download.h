@@ -78,6 +78,18 @@ typedef struct {
     int extract_pages;
     /* The extractor binary; NULL uses "yt-dlp" from PATH. */
     const char *extractor_path;
+    /*
+     * The height to prefer when resolving a page, e.g. 720.
+     *
+     * A stream offers many renditions and the choice is the viewer's: a phone on
+     * mobile data does not want the 4K master. 0 takes the largest, which is the
+     * old behaviour and the right default when nobody said.
+     *
+     * A request that cannot be met exactly takes the *nearest at or below* it,
+     * because a viewer asking for 720 is asking to avoid the larger file; giving
+     * them 1080 would defeat the point.
+     */
+    int preferred_height;
 } mi_download_config;
 
 typedef struct {

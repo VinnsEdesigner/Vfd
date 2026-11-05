@@ -316,6 +316,10 @@ void mi_crawl_result_free(mi_crawl_result *res) {
         free(res->hits[i].title);
         free(res->hits[i].mime);
         free(res->hits[i].found_on);
+        for (size_t q = 0; q < res->hits[i].quality_count; q++) {
+            free(res->hits[i].qualities[q].label);
+        }
+        free(res->hits[i].qualities);
     }
     free(res->hits);
     for (size_t i = 0; i < res->page_count; i++) free(res->pages[i].url);
@@ -640,6 +644,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
      * a download that fails tomorrow. Recording the page means the download
      * resolves it again when it runs.
      */
+    int extracted = 0;
     if (cfg->extract_enabled && now_seconds() < deadline) {
         mi_extract_config ecfg;
         mi_extract_config_init(&ecfg);
@@ -647,6 +652,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         if (mi_extract_available(&ecfg)) {
             mi_extract_result er;
             if (mi_extract(&ecfg, url, &er) == MI_OK && er.format_count > 0) {
+                extracted = 1;
                 /*
                  * Scored on the page's title, because that is what the caller
                  * searched for — the format list is a technical detail.
@@ -665,7 +671,55 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                         /* Marked so it ranks above the page's own links at an
                          * equal score — a channel link matches a search just as
                          * well as the video does. */
-                        res->hits[res->hit_count - 1].resolved = 1;
+                        mi_crawl_hit *h = &res->hits[res->hit_count - 1];
+                        h->resolved = 1;
+                        /*
+                         * The renditions, largest first, so the console can offer
+                         * the choice. One entry per distinct height, carrying the
+                         * best bitrate at that height — the extractor lists many
+                         * variants of the same size (a codec each) and a picker
+                         * showing all of them would be a wall of near-duplicates.
+                         */
+                        for (size_t fi = 0; fi < er.format_count; fi++) {
+                            const mi_extract_format *fmt = &er.formats[fi];
+                            if (!fmt->has_video) continue;
+                            int height = fmt->height;
+                            if (height <= 0) continue;
+                            int seen = 0;
+                            for (size_t qi = 0; qi < h->quality_count; qi++) {
+                                if (h->qualities[qi].height == height) {
+                                    seen = 1;
+                                    /* Prefer the one that states a size. */
+                                    if (h->qualities[qi].bytes < 0 && fmt->filesize > 0) {
+                                        h->qualities[qi].bytes = fmt->filesize;
+                                    }
+                                    break;
+                                }
+                            }
+                            if (seen) continue;
+                            mi_crawl_quality *grown = mi_realloc(
+                                h->qualities, (h->quality_count + 1) * sizeof *grown);
+                            if (!grown) break;
+                            h->qualities = grown;
+                            mi_crawl_quality *q = &h->qualities[h->quality_count++];
+                            memset(q, 0, sizeof *q);
+                            q->height = height;
+                            q->label = mi_asprintf("%dp", height);
+                            q->bytes = fmt->filesize;
+                            q->best = 0;
+                        }
+                        /* Largest first, and marked, so "Best" needs no guessing
+                         * in the console. */
+                        for (size_t qi = 0; qi + 1 < h->quality_count; qi++) {
+                            for (size_t qj = qi + 1; qj < h->quality_count; qj++) {
+                                if (h->qualities[qj].height > h->qualities[qi].height) {
+                                    mi_crawl_quality tmp = h->qualities[qi];
+                                    h->qualities[qi] = h->qualities[qj];
+                                    h->qualities[qj] = tmp;
+                                }
+                            }
+                        }
+                        if (h->quality_count > 0) h->qualities[0].best = 1;
                     }
                 }
             }
@@ -690,7 +744,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
      * the result wrong — the first few unreadable pages are exactly the ones a
      * JavaScript site hides its listing behind.
      */
-    if (hits == 0 && cfg->use_browser_fallback && now_seconds() < deadline &&
+    if (hits == 0 && !extracted && cfg->use_browser_fallback && now_seconds() < deadline &&
         res->rendered < (cfg->max_browser_pages > 0 ? cfg->max_browser_pages : 3)) {
         if (cfg->interactive_pool && mi_interactive_pool_available(cfg->interactive_pool)) {
             int was_rendered = 0;

@@ -214,6 +214,20 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
     int code = -1;
     char *json = run_extractor(cfg, url, 0, &code);
     if (!json) return MI_ERR_NET;
+    /*
+     * A non-zero exit is a failure, and saying so matters.
+     *
+     * The extractor prints an error to stderr and exits 1 when it cannot read a
+     * page — a site that needs cookies, a missing impersonation dependency, a
+     * video that was taken down. Its stdout is then empty or partial, and
+     * treating that as "resolved, no formats" made every such page look like a
+     * page with no media: the endpoint answered `ok: true` with `title: null`
+     * and zero formats, which reads as success. Measured on three sites at once.
+     */
+    if (code != 0) {
+        free(json);
+        return MI_ERR_NET;
+    }
 
     mi_json *doc = mi_json_parse(json);
     free(json);
@@ -252,10 +266,32 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
                 }
                 dst->bitrate = mi_json_get_number(f, "tbr", -1);
                 dst->height = (int)mi_json_get_number(f, "height", 0);
-                const char *vc = dst->vcodec;
-                const char *ac = dst->acodec;
-                dst->has_video = vc && *vc && strcmp(vc, "none") != 0;
-                dst->has_audio = ac && *ac && strcmp(ac, "none") != 0;
+                /*
+                 * `vcodec` and `acodec` are three-valued, and the difference
+                 * between two of them is the whole bug this fixes:
+                 *
+                 *   "avc1.640028"  a codec name — this stream carries it
+                 *   "none"         explicitly absent — this stream does not
+                 *   absent/null    *unknown* — the extractor could not tell
+                 *
+                 * Reading "unknown" as "absent" dropped every format on
+                 * archive.org, whose entries carry a URL and a resolution but no
+                 * codec names at all: three formats reported, none offered. When
+                 * the codec is unknown, the other fields are what say whether
+                 * there is a picture and a sound.
+                 */
+                const char *vc = mi_json_get_string(f, "vcodec", NULL);
+                const char *ac = mi_json_get_string(f, "acodec", NULL);
+                const char *res = mi_json_get_string(f, "resolution", NULL);
+                const char *aext = mi_json_get_string(f, "audio_ext", NULL);
+                int v_known = vc != NULL;
+                int a_known = ac != NULL;
+                /* Absent means unknown, so the other fields decide. */
+                dst->has_video = v_known ? (vc[0] && strcmp(vc, "none") != 0)
+                                         : (dst->height > 0 || (res && *res));
+                dst->has_audio = a_known ? (ac[0] && strcmp(ac, "none") != 0)
+                                         : (mi_json_get_number(f, "abr", -1) > 0 ||
+                                            (aext && *aext && strcmp(aext, "none") != 0));
                 out->format_count++;
             }
         }

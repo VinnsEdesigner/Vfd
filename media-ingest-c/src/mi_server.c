@@ -1511,6 +1511,18 @@ static void *download_worker(void *arg) {
      */
     dcfg.extract_pages = 1;
     dcfg.extractor_path = srv->cfg.extractor_path;
+    /*
+     * The viewer's quality choice, when they made one.
+     *
+     * The console sends a label ("720p"); the library wants a number, and the
+     * parse is here so the domain stays a number. A label it cannot read is
+     * ignored rather than guessed at, which leaves the largest — the same
+     * behaviour as no choice.
+     */
+    if (j->requested_quality && *j->requested_quality) {
+        int h = atoi(j->requested_quality);
+        if (h > 0) dcfg.preferred_height = h;
+    }
     /* A host that refuses a non-browser agent is a host the operator may have
      * told Vyzor how to present itself to. */
     dcfg.user_agent = srv->cfg.user_agent;
@@ -3233,6 +3245,23 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             mi_json_string(&b, h->found_on);
             mi_json_raw(&b, ",\"via_browser\":");
             mi_json_bool(&b, h->via_browser);
+            mi_json_raw(&b, ",\"resolved\":");
+            mi_json_bool(&b, h->resolved);
+            mi_json_raw(&b, ",\"qualities\":[");
+            for (size_t q = 0; q < h->quality_count; q++) {
+                const mi_crawl_quality *qy = &h->qualities[q];
+                if (q) mi_json_raw(&b, ",");
+                mi_json_raw(&b, "{\"height\":");
+                mi_json_int(&b, qy->height);
+                mi_json_raw(&b, ",\"label\":");
+                mi_json_string(&b, qy->label);
+                mi_json_raw(&b, ",\"bytes\":");
+                mi_json_int(&b, qy->bytes);
+                mi_json_raw(&b, ",\"best\":");
+                mi_json_bool(&b, qy->best);
+                mi_json_raw(&b, "}");
+            }
+            mi_json_raw(&b, "]");
             mi_json_raw(&b, "}");
         }
         mi_json_raw(&b, "]}");

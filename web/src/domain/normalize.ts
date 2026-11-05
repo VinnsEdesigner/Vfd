@@ -221,6 +221,15 @@ export function normalizeCrawlResult(w: WireCrawlResult): CrawlResult {
       score: typeof i.score === 'number' ? i.score : 0,
       foundOn: i.found_on ?? null,
       viaBrowser: Boolean(i.via_browser),
+      resolved: Boolean(i.resolved),
+      qualities: Array.isArray(i.qualities)
+        ? i.qualities.map((q) => ({
+            height: typeof q.height === 'number' ? q.height : 0,
+            label: q.label ?? '',
+            bytes: typeof q.bytes === 'number' ? q.bytes : -1,
+            best: Boolean(q.best),
+          }))
+        : [],
     })),
     report: {
       pagesRead: w.pages_read ?? 0,

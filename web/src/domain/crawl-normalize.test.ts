@@ -44,6 +44,7 @@ describe('normalizeCrawlResult', () => {
             score: 80,
             found_on: 'https://example.com/parts/',
             via_browser: true,
+            resolved: false,
           },
         ],
       }),
@@ -67,6 +68,59 @@ describe('normalizeCrawlResult', () => {
     });
   });
 
+
+  it('carries the renditions of a resolved stream', () => {
+    // A stream is a set of renditions, and the picker needs them in order with
+    // their sizes. Absent qualities must be an empty list, not undefined, so the
+    // UI can ask for `.length` without a guard.
+    const out = normalizeCrawlResult(
+      wire({
+        items: [
+          {
+            url: 'https://example.com/watch',
+            filename: 'A video',
+            title: 'A video',
+            mime: '',
+            score: 80,
+            found_on: 'https://example.com/watch',
+            via_browser: false,
+            resolved: true,
+            qualities: [
+              { height: 2160, label: '2160p', bytes: 358608461, best: true },
+              { height: 720, label: '720p', bytes: 26455880, best: false },
+            ],
+          },
+        ],
+      }),
+    );
+    const hit = out.hits[0]!;
+    expect(hit.resolved).toBe(true);
+    expect(hit.qualities).toHaveLength(2);
+    expect(hit.qualities[0]!.label).toBe('2160p');
+    expect(hit.qualities[0]!.best).toBe(true);
+    expect(hit.qualities[1]!.bytes).toBe(26455880);
+  });
+
+  it('gives an ordinary file an empty quality list rather than undefined', () => {
+    const out = normalizeCrawlResult(
+      wire({
+        items: [
+          {
+            url: 'https://example.com/a.pdf',
+            filename: 'a.pdf',
+            title: null,
+            mime: 'application/pdf',
+            score: 80,
+            found_on: null,
+            via_browser: false,
+            resolved: false,
+          },
+        ],
+      }),
+    );
+    expect(out.hits[0]!.qualities).toEqual([]);
+  });
+
   it('derives a filename when the server sent none', () => {
     const out = normalizeCrawlResult(
       wire({
@@ -79,6 +133,7 @@ describe('normalizeCrawlResult', () => {
             score: 10,
             found_on: null,
             via_browser: false,
+            resolved: false,
           },
         ],
       }),
@@ -100,6 +155,7 @@ describe('normalizeCrawlResult', () => {
             score: 1,
             found_on: null,
             via_browser: false,
+            resolved: false,
           },
         ],
       }),
@@ -119,6 +175,7 @@ describe('normalizeCrawlResult', () => {
             // score absent entirely
             found_on: null,
             via_browser: false,
+            resolved: false,
           } as never,
         ],
       }),
@@ -146,6 +203,7 @@ describe('normalizeCrawlResult', () => {
             score: 5,
             found_on: null,
             via_browser: 1 as never,
+            resolved: false,
           },
         ],
       }),
