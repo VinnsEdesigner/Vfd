@@ -5062,3 +5062,47 @@ input[type='range']:focus-visible {
   background: var(--accent-soft);
   color: var(--accent);
 }
+
+/* ------------------------------------------------------------------ */
+/* Media cards: a picture, a title, the facts                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A list of filenames is hard to choose from. The picture is what someone
+ * recognises, so each row leads with one.
+ */
+.hud__kind {
+  /* The icon slot doubles as the thumbnail frame. */
+  width: 44px;
+  height: 44px;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.hud__thumb {
+  width: 100%;
+  height: 100%;
+  /* Cover, so a wide or tall picture fills the frame instead of leaving bars;
+   * the frame is a recognisable reminder, not a faithful preview. */
+  object-fit: cover;
+  display: block;
+}
+
+/* A picked row is the one thing the viewer asked for. */
+.hud__row--picked {
+  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface-2));
+}
+
+.hud__picked {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: var(--r-sm);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--accent-soft);
+  color: var(--accent);
+  vertical-align: 1px;
+}

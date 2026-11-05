@@ -20,8 +20,9 @@
  *   - manifests: an HLS playlist or a DASH MPD, which is a *set* of qualities
  *     rather than one file, so it is marked as such and its variants are read
  *     from the playlist itself;
- *   - images, separately, because a page's images are usually not what someone
- *     means by "download this" and would otherwise drown the list.
+ *   - images, separately, and only above a size floor: a page's icons and
+ *     spacers are decoration, and a list of them is a list of nothing. An image
+ *     the viewer *picked* is always kept, whatever its size.
  *
  * Duplicates are folded: the same URL fetched twice (a range request, a
  * re-fetch after a seek) is one entry with the larger byte count.
@@ -52,6 +53,39 @@ void mi_mediawatch_clear(mi_mediawatch *w);
  */
 void mi_mediawatch_set_enabled(mi_mediawatch *w, int on);
 int mi_mediawatch_enabled(const mi_mediawatch *w);
+
+/*
+ * Note something the viewer picked.
+ *
+ * WHAT THIS IS FOR
+ *
+ * Watching the network finds everything a page loads, which on a real page is
+ * mostly decoration: icons, spacers, tracking pixels, and the same thumbnail
+ * rendered at six sizes. A list of those is not a list of anything — the one
+ * thing someone wanted is buried under a hundred that are 3 KB and 16x16.
+ *
+ * So a viewer can say so instead: clicking or long-pressing a picture or a player
+ * is the clearest possible statement that *that* is the thing of interest. An
+ * entry picked this way is marked as such and carries what the page knew about
+ * it — its title, its own thumbnail, its natural size — so the list can show
+ * something recognisable rather than a bare URL.
+ */
+int mi_mediawatch_note_picked(mi_mediawatch *w, const char *url, const char *title,
+                              const char *thumb, const char *kind,
+                              int width, int height);
+
+/* Whether the viewer has picked anything, so a caller can say the list is
+ * theirs rather than the page's. */
+int mi_mediawatch_picked_count(const mi_mediawatch *w);
+
+/*
+ * How small an image has to be before it is treated as decoration.
+ *
+ * A page's icons and spacers are a few kilobytes; a photograph is not. This is
+ * what keeps a gallery of thumbnails out of the list while still catching the
+ * full-size image someone actually opened. 0 lists every image.
+ */
+void mi_mediawatch_set_min_image_bytes(mi_mediawatch *w, int64_t bytes);
 
 /*
  * Note a response the page received.

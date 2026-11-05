@@ -29,12 +29,37 @@ typedef struct {
     /* The CDP resource type, kept so a wrong content type can be reasoned about
      * rather than silently trusted. */
     char *resource_type;
+
+    /*
+     * The viewer picked this one.
+     *
+     * The difference between "the page loaded it" and "someone wants it": a
+     * picked entry is kept whatever its size, is listed first, and carries the
+     * metadata the page had for it.
+     */
+    int picked;
+    /* What the page called it — an alt text, a link title, a caption. */
+    char *title;
+    /* A small image the page showed for this thing, so the list can show
+     * something recognisable rather than a filename. */
+    char *thumb;
+    /* The element's natural size, when the page knew it. */
+    int width, height;
 } mw_entry;
 
 struct mi_mediawatch {
     mw_entry *items;
     size_t count, cap;
     int enabled;
+    /*
+     * Below this, an image is decoration.
+     *
+     * A page loads dozens of icons and spacers of a few kilobytes each, and
+     * listing them buries the one picture someone wanted. A picked image is
+     * exempt: the viewer has said it matters.
+     */
+    int64_t min_image_bytes;
+    int picked_count;
     /* Rebuilt lazily, because the list is asked for on a timer and changed on
      * every response. */
     char *json;
@@ -42,7 +67,14 @@ struct mi_mediawatch {
 };
 
 mi_mediawatch *mi_mediawatch_new(void) {
-    return mi_calloc(1, sizeof(mi_mediawatch));
+    mi_mediawatch *w = mi_calloc(1, sizeof(mi_mediawatch));
+    if (w) {
+        /* 24 KB. Comfortably above an icon or a spacer (a few KB) and well
+         * below a photograph or a full-size thumbnail, which is the line that
+         * separates decoration from content on real pages. */
+        w->min_image_bytes = 24 * 1024;
+    }
+    return w;
 }
 
 static void entry_free(mw_entry *e) {
@@ -51,6 +83,8 @@ static void entry_free(mw_entry *e) {
     free(e->kind);
     free(e->variants);
     free(e->resource_type);
+    free(e->title);
+    free(e->thumb);
     memset(e, 0, sizeof *e);
 }
 
@@ -66,7 +100,18 @@ void mi_mediawatch_clear(mi_mediawatch *w) {
     if (!w) return;
     for (size_t i = 0; i < w->count; i++) entry_free(&w->items[i]);
     w->count = 0;
+    w->picked_count = 0;
     w->dirty = 1;
+}
+
+void mi_mediawatch_set_min_image_bytes(mi_mediawatch *w, int64_t bytes) {
+    if (!w) return;
+    w->min_image_bytes = bytes;
+    w->dirty = 1;
+}
+
+int mi_mediawatch_picked_count(const mi_mediawatch *w) {
+    return w ? w->picked_count : 0;
 }
 
 void mi_mediawatch_set_enabled(mi_mediawatch *w, int on) {
@@ -181,6 +226,18 @@ int mi_mediawatch_note(mi_mediawatch *w, const char *url, const char *mime,
         return 0;
     }
 
+    /*
+     * A small image is decoration.
+     *
+     * Icons, spacers, tracking pixels, and the same thumbnail at six sizes: a
+     * real page loads dozens, and a list of them is a list of nothing. A picked
+     * image is exempt, because the viewer has said it matters.
+     */
+    if (!strcmp(kind, "image") && w->min_image_bytes > 0 &&
+        bytes >= 0 && bytes < w->min_image_bytes) {
+        return 0;
+    }
+
     if (w->count >= MW_MAX_ENTRIES) {
         /* Drop the oldest rather than refusing the newest: a list of what a page
          * just loaded is more useful than one of what it loaded first. */
@@ -214,6 +271,66 @@ int mi_mediawatch_note(mi_mediawatch *w, const char *url, const char *mime,
     return 1;
 }
 
+int mi_mediawatch_note_picked(mi_mediawatch *w, const char *url, const char *title,
+                              const char *thumb, const char *kind,
+                              int width, int height) {
+    if (!w || !url || !*url) return 0;
+    if (!strncasecmp(url, "data:", 5) || !strncasecmp(url, "blob:", 5)) return 0;
+
+    /* A picked entry is always kept, whatever its size: the viewer has said it
+     * matters, and that overrules the decoration floor. */
+    const char *k = (kind && *kind) ? kind : "image";
+    mw_entry *e = find(w, url);
+    int is_new = 0;
+    if (!e) {
+        if (w->count >= MW_MAX_ENTRIES) {
+            entry_free(&w->items[0]);
+            memmove(w->items, w->items + 1, (w->count - 1) * sizeof *w->items);
+            w->count--;
+        }
+        if (w->count == w->cap) {
+            size_t cap = w->cap ? w->cap * 2 : 16;
+            mw_entry *grown = mi_realloc(w->items, cap * sizeof *grown);
+            if (!grown) return 0;
+            w->items = grown;
+            w->cap = cap;
+        }
+        e = &w->items[w->count];
+        memset(e, 0, sizeof *e);
+        e->url = mi_strdup(url);
+        e->mime = mi_strdup("");
+        e->kind = mi_strdup(k);
+        e->resource_type = mi_strdup("");
+        e->bytes = -1;
+        e->is_manifest = !strcmp(k, "manifest");
+        if (!e->url || !e->mime || !e->kind || !e->resource_type) {
+            entry_free(e);
+            return 0;
+        }
+        w->count++;
+        is_new = 1;
+    }
+
+    if (!e->picked) {
+        e->picked = 1;
+        w->picked_count++;
+    }
+    /* The page's own words for it, replaced only when this pick has more to
+     * say — a later click should not blank a title an earlier one supplied. */
+    if (title && *title) {
+        free(e->title);
+        e->title = mi_strdup(title);
+    }
+    if (thumb && *thumb) {
+        free(e->thumb);
+        e->thumb = mi_strdup(thumb);
+    }
+    if (width > 0) e->width = width;
+    if (height > 0) e->height = height;
+    w->dirty = 1;
+    return is_new ? 1 : 1;
+}
+
 int mi_mediawatch_note_variants(mi_mediawatch *w, const char *url, const char *variants_json) {
     if (!w || !url || !variants_json) return 0;
     mw_entry *e = find(w, url);
@@ -233,24 +350,50 @@ const char *mi_mediawatch_json(mi_mediawatch *w) {
     mi_json_raw(&b, "[");
     /* Newest first: the thing a page just started playing is what someone is
      * looking for, and a long list should not bury it. */
-    for (size_t n = 0; n < w->count; n++) {
-        const mw_entry *e = &w->items[w->count - 1 - n];
-        if (n) mi_json_raw(&b, ",");
-        mi_json_raw(&b, "{\"url\":");
-        mi_json_string(&b, e->url);
-        mi_json_raw(&b, ",\"kind\":");
-        mi_json_string(&b, e->kind);
-        mi_json_raw(&b, ",\"mime\":");
-        mi_json_string(&b, e->mime);
-        mi_json_raw(&b, ",\"bytes\":");
-        mi_json_int(&b, e->bytes);
-        mi_json_raw(&b, ",\"manifest\":");
-        mi_json_bool(&b, e->is_manifest);
-        if (e->variants) {
-            mi_json_raw(&b, ",\"variants\":");
-            mi_json_raw(&b, e->variants);
+    /*
+     * Picked first, then the rest newest-first.
+     *
+     * The list is read from the top, and the top should be the thing the viewer
+     * actually asked for rather than whatever happened to load last.
+     */
+    int written = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t n = 0; n < w->count; n++) {
+            const mw_entry *e = &w->items[w->count - 1 - n];
+            if ((pass == 0) != (e->picked != 0)) continue;
+            if (written++) mi_json_raw(&b, ",");
+            mi_json_raw(&b, "{\"url\":");
+            mi_json_string(&b, e->url);
+            mi_json_raw(&b, ",\"kind\":");
+            mi_json_string(&b, e->kind);
+            mi_json_raw(&b, ",\"mime\":");
+            mi_json_string(&b, e->mime);
+            mi_json_raw(&b, ",\"bytes\":");
+            mi_json_int(&b, e->bytes);
+            mi_json_raw(&b, ",\"manifest\":");
+            mi_json_bool(&b, e->is_manifest);
+            mi_json_raw(&b, ",\"picked\":");
+            mi_json_bool(&b, e->picked);
+            if (e->title) {
+                mi_json_raw(&b, ",\"title\":");
+                mi_json_string(&b, e->title);
+            }
+            if (e->thumb) {
+                mi_json_raw(&b, ",\"thumb\":");
+                mi_json_string(&b, e->thumb);
+            }
+            if (e->width > 0) {
+                mi_json_raw(&b, ",\"width\":");
+                mi_json_int(&b, e->width);
+                mi_json_raw(&b, ",\"height\":");
+                mi_json_int(&b, e->height);
+            }
+            if (e->variants) {
+                mi_json_raw(&b, ",\"variants\":");
+                mi_json_raw(&b, e->variants);
+            }
+            mi_json_raw(&b, "}");
         }
-        mi_json_raw(&b, "}");
     }
     mi_json_raw(&b, "]");
 

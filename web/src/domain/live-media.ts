@@ -41,6 +41,20 @@ export interface LiveMediaItem {
   variants: LiveMediaVariant[];
   /** The name a save should use, derived from the URL. */
   filename: string;
+  /**
+   * The viewer engaged with this one.
+   *
+   * A picked item is what someone actually asked for, rather than something the
+   * page happened to load, so it is shown first and never filtered out.
+   */
+  picked: boolean;
+  /** What the page called it, when it said. */
+  title: string;
+  /** A small image the page showed for it, when there was one. */
+  thumb: string;
+  /** The media's own size, when the page knew it. 0 when it did not. */
+  width: number;
+  height: number;
 }
 
 const KINDS: ReadonlyArray<LiveMediaKind> = ['video', 'audio', 'image', 'manifest'];
@@ -68,6 +82,11 @@ export function normalizeLiveMedia(w: { items?: WireLiveMedia[] }): LiveMediaIte
       manifest: it.manifest === true,
       variants: normalizeVariants(it.variants),
       filename: filenameFromUrl(it.url),
+      picked: it.picked === true,
+      title: typeof it.title === 'string' ? it.title : '',
+      thumb: typeof it.thumb === 'string' ? it.thumb : '',
+      width: typeof it.width === 'number' ? it.width : 0,
+      height: typeof it.height === 'number' ? it.height : 0,
     });
   }
   return out;
@@ -127,6 +146,30 @@ export function filenameFromUrl(url: string): string {
   if (!name) return 'download';
   if (!path.includes('/')) return 'download';
   return name;
+}
+
+/**
+ * What to call an item: the page's own title when it gave one, and the filename
+ * otherwise.
+ *
+ * A title is what a person recognises — "Sunflower from Silesia" rather than
+ * "120px-Sunflower_from_Silesia2.jpg" — so it is preferred whenever the page
+ * supplied one.
+ */
+export function mediaLabel(item: LiveMediaItem): string {
+  return item.title.trim() || item.filename;
+}
+
+/**
+ * Whether an item has a picture worth showing.
+ *
+ * The page's own thumbnail when it had one, and otherwise the item itself if it
+ * is an image — the same file is both the thing and its own preview.
+ */
+export function mediaThumb(item: LiveMediaItem): string | null {
+  if (item.thumb) return item.thumb;
+  if (item.kind === 'image') return item.url;
+  return null;
 }
 
 /** A byte count as a person reads it. -1 means the source did not say. */

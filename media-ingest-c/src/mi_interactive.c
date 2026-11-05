@@ -149,6 +149,8 @@ struct mi_interactive {
      * the variants can be attached to the right entry. */
     int manifest_probe_id;
     char *manifest_url;
+    /* Whether the picker script and its binding have been installed. */
+    int picker_installed;
     /* An outstanding read of the page's own media elements. */
     int media_probe_id;
     int history_probe_id;
@@ -342,6 +344,125 @@ static double mono_seconds(void) {
 
 /* Declared here because a navigation handler earlier in the file needs
  * them, and both are defined further down. */
+
+static int wait_for_id(mi_interactive *it, int id, int ms);
+
+/*
+ * The picker.
+ *
+ * A page loads dozens of images nobody will ever want — icons, spacers, the same
+ * thumbnail at six sizes. Listing all of them is not a list of anything, so the
+ * engine listens for the one signal that is unambiguous instead: the viewer
+ * clicking or long-pressing a piece of media. That is intent, and it is worth
+ * far more than a heuristic about size.
+ *
+ * Reported per pick: the media's own URL (the full-size one a picture links to,
+ * when it is wrapped in a link — that is usually the real file), a title from the
+ * page's own text, a small image to show for it, and its natural size.
+ *
+ * Injected as a binding, so it works on every navigation without the page's
+ * cooperation, and it is careful to never interfere with the page: listeners are
+ * passive, and nothing is prevented or stopped.
+ */
+static const char *PICKER_JS =
+"(function(){"
+"if(window.__vzPicker)return;window.__vzPicker=1;"
+"function txt(el){"
+"  var t=el.getAttribute&&(el.getAttribute('alt')||el.getAttribute('title'));"
+"  if(t)return t;"
+"  var a=el.closest&&el.closest('a');"
+"  if(a){t=a.getAttribute('title')||a.textContent;if(t)return t.trim().slice(0,200);}"
+"  var f=el.closest&&el.closest('figure');"
+"  if(f){var c=f.querySelector('figcaption');if(c&&c.textContent)return c.textContent.trim().slice(0,200);}"
+"  return '';"
+"}"
+"function thumbFor(el){"
+"  var u=el.currentSrc||el.src||'';"
+"  if(u&&u.indexOf('data:')!==0&&u.indexOf('blob:')!==0)return u;"
+"  var a=el.closest&&el.closest('a');"
+"  if(a){var i=a.querySelector('img');if(i){var s=i.currentSrc||i.src;if(s)return s;}}"
+"  return '';"
+"}"
+"function fullUrl(el){"
+"  /* A picture inside a link usually links to the real file, not the thumbnail. */"
+"  var a=el.closest&&el.closest('a');"
+"  if(a&&a.href&&/\\.(png|jpe?g|gif|webp|avif|bmp|svg|mp4|webm|mkv|mov|mp3|m4a|ogg|flac|wav|m3u8|mpd)(\\?|$)/i.test(a.href))return a.href;"
+"  return el.currentSrc||el.src||'';"
+"}"
+"function report(el){"
+"  try{"
+"    /* An anchor is a pick of the file it points at, not of an element. */"
+"    if(el.tagName==='A'){"
+"      window.__vzPick(JSON.stringify({url:el.href,kind:'image',title:(el.getAttribute('title')||el.textContent||'').trim().slice(0,200),thumb:'',width:0,height:0}));"
+"      return;"
+"    }"
+"    var u=fullUrl(el);"
+"    if(!u||u.indexOf('data:')===0||u.indexOf('blob:')===0)return;"
+"    var k='image';"
+"    if(el.tagName==='VIDEO')k='video';"
+"    else if(el.tagName==='AUDIO')k='audio';"
+"    else if(/\\.(m3u8|mpd)(\\?|$)/i.test(u))k='manifest';"
+"    window.__vzPick(JSON.stringify({"
+"      url:u,"
+"      kind:k,"
+"      title:txt(el),"
+"      thumb:thumbFor(el),"
+"      width:(el.naturalWidth||el.videoWidth||0),"
+"      height:(el.naturalHeight||el.videoHeight||0)"
+"    }));"
+"  }catch(e){}"
+"}"
+"var SEL='img,video,audio';"
+"function targetOf(e){"
+"  var t=e.target;"
+"  if(!t)return null;"
+"  /*"
+"   * The element under the pointer, then its ancestors."
+"   *"
+"   * A click's target is very often a wrapper — a thumbnail sits inside a link,"
+"   * a figure, a gallery cell — so matching only the target itself misses most"
+"   * real clicks. Walking up finds the media the pointer was actually on."
+"   */"
+"  var el=t;"
+"  while(el&&el!==document){"
+"    if(el.tagName==='IMG'||el.tagName==='VIDEO'||el.tagName==='AUDIO')return el;"
+"    el=el.parentElement;"
+"  }"
+"  /*"
+"   * Nothing media in the ancestry: take the media at the point itself."
+"   *"
+"   * `elementsFromPoint` sees through overlays and gives everything under the"
+"   * cursor, which is what makes a click on a caption over a picture still count"
+"   * as a click on the picture."
+"   */"
+"  var stack=(document.elementsFromPoint?document.elementsFromPoint(e.clientX,e.clientY):[]);"
+"  for(var i=0;i<stack.length;i++){"
+"    var s2=stack[i];"
+"    if(s2.tagName==='IMG'||s2.tagName==='VIDEO'||s2.tagName==='AUDIO')return s2;"
+"  }"
+"  /*"
+"   * Still nothing, but the pointer may be inside a link to a media file — a"
+"   * grid of filenames with no thumbnails, say. That link is the pick."
+"   */"
+"  el=t;"
+"  while(el&&el!==document){"
+"    if(el.tagName==='A'&&el.href&&/\\.(png|jpe?g|gif|webp|avif|bmp|svg|mp4|webm|mkv|mov|mp3|m4a|ogg|flac|wav|m3u8|mpd)(\\?|$)/i.test(el.href))return el;"
+"    el=el.parentElement;"
+"  }"
+"  return null;"
+"}"
+"document.addEventListener('click',function(e){var el=targetOf(e);if(el)report(el);},true);"
+"var hold=null,held=null;"
+"document.addEventListener('touchstart',function(e){"
+"  held=targetOf(e);"
+"  if(!held)return;"
+"  hold=setTimeout(function(){if(held)report(held);hold=null;},550);"
+"},true);"
+"['touchend','touchcancel','touchmove'].forEach(function(ev){"
+"  document.addEventListener(ev,function(){if(hold){clearTimeout(hold);hold=null;}},true);"
+"});"
+"})();";
+
 static void media_reset_for_navigation(mi_interactive *it);
 static void refresh_history(mi_interactive *it);
 
@@ -456,6 +577,75 @@ static void set_state_changed(mi_interactive *it) {
     it->state_json = mi_strdup(mi_json_data(&b));
     mi_json_free(&b);
     it->ev_state = 1;
+}
+
+/*
+ * Install the picker.
+ *
+ * `Page.addScriptToEvaluateOnNewDocument` runs it in every document before any
+ * page script, which is what makes it survive navigation without the page's
+ * cooperation. The binding it calls is added with `Runtime.addBinding`, which
+ * arrives at the engine as a `Runtime.bindingCalled` event.
+ */
+static void install_picker(mi_interactive *it) {
+    if (!it || it->closed || it->picker_installed) return;
+    int rid = cdp_command(it, "Runtime.addBinding", "{\"name\":\"__vzPick\"}");
+    wait_for_id(it, rid, 2000);
+
+    mi_json_buf b;
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"source\":");
+    mi_json_string(&b, PICKER_JS);
+    mi_json_raw(&b, "}");
+    rid = cdp_command(it, "Page.addScriptToEvaluateOnNewDocument", mi_json_data(&b));
+    wait_for_id(it, rid, 2000);
+
+    /*
+     * And run it in the document that is already open.
+     *
+     * `addScriptToEvaluateOnNewDocument` only applies to documents created
+     * *after* it is called, and by the time this runs the page has been loaded —
+     * it was the browser's startup argument, so it existed before there was
+     * anything to attach to. Registering alone therefore armed the picker for the
+     * next navigation and left the current page deaf, which is exactly what
+     * happened: the script was "installed" and nothing ever fired.
+     */
+    mi_json_free(&b);
+    mi_json_init(&b);
+    mi_json_raw(&b, "{\"expression\":");
+    mi_json_string(&b, PICKER_JS);
+    mi_json_raw(&b, ",\"returnByValue\":false}");
+    rid = cdp_command(it, "Runtime.evaluate", mi_json_data(&b));
+    wait_for_id(it, rid, 2000);
+    mi_json_free(&b);
+
+    it->picker_installed = 1;
+    mi_logf(MI_LOG_INFO, "live: picker installed");
+}
+
+/* A pick arrived: the viewer engaged with something. */
+static void on_binding_called(mi_interactive *it, const mi_json *params) {
+    const char *name = mi_json_get_string(params, "name", NULL);
+    if (!name || strcmp(name, "__vzPick") != 0) return;
+    const char *payload = mi_json_get_string(params, "payload", NULL);
+    if (!payload) return;
+    mi_json *m = mi_json_parse(payload);
+    if (!m) return;
+
+    const char *url = mi_json_get_string(m, "url", NULL);
+    const char *kind = mi_json_get_string(m, "kind", "image");
+    const char *title = mi_json_get_string(m, "title", NULL);
+    const char *thumb = mi_json_get_string(m, "thumb", NULL);
+    int w = (int)mi_json_get_number(m, "width", 0);
+    int h = (int)mi_json_get_number(m, "height", 0);
+
+    if (url && *url && it->media) {
+        if (mi_mediawatch_note_picked(it->media, url, title, thumb, kind, w, h)) {
+            mi_logf(MI_LOG_INFO, "live: picked %s", url);
+            if (mi_mediawatch_enabled(it->media)) it->ev_media = 1;
+        }
+    }
+    mi_json_value_free(m);
 }
 
 /* Read a string out of the last response's result object. Allocated. */
@@ -822,6 +1012,8 @@ static void handle_event(mi_interactive *it, const char *method, const mi_json *
     } else if (!strcmp(method, "Page.loadEventFired") ||
                !strcmp(method, "Page.frameStoppedLoading")) {
         if (it->loading) { it->loading = 0; set_state_changed(it); }
+    } else if (!strcmp(method, "Runtime.bindingCalled")) {
+        on_binding_called(it, params);
     } else if (!strcmp(method, "Network.responseReceived")) {
         on_response_received(it, params);
     } else if (!strcmp(method, "Network.loadingFinished")) {
@@ -1185,6 +1377,20 @@ mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
     }
     it->pool = pool;
     it->wfd = it->rfd = -1;
+    /*
+     * The media list, created before anything can put something in it.
+     *
+     * The picker is armed during startup and a pick can arrive the moment a
+     * document is live, so this has to exist by then: a pick delivered to a NULL
+     * list is dropped without a word, which is a silent failure that looks like
+     * the picker never fired.
+     *
+     * Publishing is off until the console asks — a viewer who never opens the list
+     * should not pay for the per-change messages — but the collecting itself
+     * always runs, so the list is not empty the first time it is looked at.
+     */
+    it->media = mi_mediawatch_new();
+    if (it->media) mi_mediawatch_set_enabled(it->media, 0);
     snprintf(it->frame_format, sizeof it->frame_format, "jpeg");
     {
         double now = mono_seconds();
@@ -1274,6 +1480,14 @@ mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
          */
         rid = cdp_command(it, "Network.enable", NULL);
         wait_for_id(it, rid, tmo);
+
+        /*
+         * The picker, so a click or a long press on media is reported.
+         *
+         * Installed here rather than lazily because it has to be in place before
+         * the page's own scripts run, or the first navigation would miss it.
+         */
+        install_picker(it);
     }
 
     /* 4. The viewport the console asked for. Without this the browser paints at
@@ -1360,10 +1574,7 @@ mi_it_status mi_interactive_open(mi_interactive_pool *pool, const char *url,
         it->last_ping = now;
         it->last_heard = now;
     }
-    /* Off until the console asks: a viewer that never opens the list should not
-     * pay for the per-request bookkeeping. */
-    it->media = mi_mediawatch_new();
-    if (it->media) mi_mediawatch_set_enabled(it->media, 0);
+
     *out = it;
     return MI_IT_OK;
 
@@ -1733,6 +1944,7 @@ void mi_interactive_rescan_media(mi_interactive *it) {
     char params[1024];
     snprintf(params, sizeof params, "{\"expression\":\"%s\",\"returnByValue\":true}", EXPR);
     it->media_probe_id = cdp_command(it, "Runtime.evaluate", params);
+
 }
 
 int mi_interactive_go_back(mi_interactive *it) {

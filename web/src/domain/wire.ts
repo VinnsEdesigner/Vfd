@@ -220,6 +220,14 @@ export interface WireLiveMedia {
   bytes?: number;
   manifest?: boolean;
   variants?: WireLiveMediaVariant[];
+  /** The viewer clicked or long-pressed this one. */
+  picked?: boolean;
+  /** What the page called it — an alt text, a link title, a caption. */
+  title?: string;
+  /** A small image the page showed for it. */
+  thumb?: string;
+  width?: number;
+  height?: number;
 }
 
 export interface WireLiveMessage {

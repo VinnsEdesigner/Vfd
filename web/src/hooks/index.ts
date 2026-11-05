@@ -34,7 +34,13 @@ export type {
   LiveMediaKind,
   LiveMediaVariant,
 } from '../domain/live-media';
-export { formatMediaSize, formatBandwidth, mediaFormatLabel } from '../domain/live-media';
+export {
+  formatMediaSize,
+  formatBandwidth,
+  mediaFormatLabel,
+  mediaLabel,
+  mediaThumb,
+} from '../domain/live-media';
 export type { LiveStreamStats } from '../rest/browse';
 export type {
   FetchedPage,

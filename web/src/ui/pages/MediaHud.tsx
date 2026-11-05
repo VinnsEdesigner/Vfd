@@ -29,6 +29,8 @@ import {
   formatBandwidth,
   formatMediaSize,
   mediaFormatLabel,
+  mediaLabel,
+  mediaThumb,
   type LiveMediaItem,
   type LiveMediaVariant,
 } from '../../hooks';
@@ -70,19 +72,53 @@ function MediaRow({
   );
   const already = queued?.has(item.url) ?? false;
 
+  const thumb = mediaThumb(item);
+
   return (
-    <li className="hud__row">
+    <li className={item.picked ? 'hud__row hud__row--picked' : 'hud__row'}>
       <div className="hud__row-main">
+        {/*
+          The picture.
+
+          A list of filenames is hard to choose from: what someone recognises is
+          the image itself. The page's own thumbnail is used when it had one, and
+          otherwise the item is its own preview when it is an image.
+
+          A broken or missing picture is normal on the web — a page can serve a
+          thumbnail that later 404s — so it degrades to the kind's icon rather
+          than showing a broken-image box.
+        */}
         <span className={`hud__kind hud__kind--${item.kind}`} aria-hidden="true">
-          {item.kind === 'image' ? <IconImage /> : <IconList />}
+          {thumb ? (
+            <img
+              className="hud__thumb"
+              src={thumb}
+              alt=""
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          ) : item.kind === 'image' ? (
+            <IconImage />
+          ) : (
+            <IconList />
+          )}
         </span>
         <div className="hud__meta">
-          <span className="hud__name" title={item.url}>
-            {item.filename}
+          <span className="hud__name" title={item.title || item.url}>
+            {item.picked ? <span className="hud__picked">Picked</span> : null}
+            {mediaLabel(item)}
           </span>
           <span className="hud__tags">
             <span className="hud__tag">{mediaFormatLabel(item)}</span>
             <span className="hud__tag">{formatMediaSize(item.bytes)}</span>
+            {item.width > 0 && item.height > 0 ? (
+              <span className="hud__tag">
+                {item.width}×{item.height}
+              </span>
+            ) : null}
             {item.mime ? <span className="hud__tag">{item.mime}</span> : null}
           </span>
         </div>
@@ -159,8 +195,22 @@ export function MediaHud({
    */
   const order: Record<string, number> = { video: 0, audio: 1, manifest: 2, image: 3 };
   const shown = useMemo(() => {
-    const list = hideImages ? items.filter((i) => i.kind !== 'image') : items;
-    return [...list].sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9));
+    /*
+     * A pick is never hidden.
+     *
+     * The image toggle exists because a page's icons drown its media — but
+     * something the viewer deliberately clicked is not one of those, and hiding it
+     * would defeat the point of having picked it.
+     */
+    const list = hideImages
+      ? items.filter((i) => i.kind !== 'image' || i.picked)
+      : items;
+    /* Picked first, then by kind: the list is read from the top, and the top
+     * should be what someone asked for. */
+    return [...list].sort((a, b) => {
+      if (a.picked !== b.picked) return a.picked ? -1 : 1;
+      return (order[a.kind] ?? 9) - (order[b.kind] ?? 9);
+    });
   }, [items, hideImages]);
   const imageCount = useMemo(() => items.filter((i) => i.kind === 'image').length, [items]);
 
@@ -203,7 +253,7 @@ export function MediaHud({
           <Spinner />
           <p>
             {watching
-              ? 'Nothing yet. Play something on the page, or press Rescan.'
+              ? 'Nothing yet. Tap a picture or a player on the page to add it, or press Rescan.'
               : 'Not collecting. Press Watch to list what this page loads.'}
           </p>
         </div>
