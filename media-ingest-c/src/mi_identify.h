@@ -3,12 +3,12 @@
  * WHY THIS EXISTS
  *
  * Some sites serve media without a useful extension or content type — a `.bin`,
- * a `.php`, or a URL that ends in nothing at all. The engine's own detector reads
+ * a `.php`, or a URL that ends in nothing at all. Vyzor's own detector reads
  * magic bytes, which is fast and correct for the containers it knows, but it
  * cannot name a file whose header it does not recognise, and it cannot tell an
  * h264 stream from an h265 one.
  *
- * ffprobe can. This asks it, and answers two questions the rest of the engine
+ * ffprobe can. This asks it, and answers two questions the rest of Vyzor
  * needs:
  *
  *   what is it      the container and codecs, which decide the file's real

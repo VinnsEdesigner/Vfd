@@ -7,7 +7,12 @@ export type { NewIngestPageProps, IngestFormValue, ProbeOutcome } from './NewIng
 export { StoragePage, useStorageTab } from './StoragePage';
 export type { StoragePageProps, StorageTab, StorageCredentialsValue } from './StoragePage';
 export { SettingsPage } from './SettingsPage';
-export type { SettingsPageProps, SettingsTab, EngineFacts } from './SettingsPage';
+export type {
+  SettingsPageProps,
+  SettingsTab,
+  VyzorFacts,
+  DeliveryCredentialsValue,
+} from './SettingsPage';
 export { BrowsePage } from './BrowsePage';
 export type { BrowsePageProps, BrowseMode } from './BrowsePage';
 export { InteractiveView } from './InteractiveView';

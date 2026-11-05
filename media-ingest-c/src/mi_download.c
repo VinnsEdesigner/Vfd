@@ -99,7 +99,7 @@ static size_t write_file(char *ptr, size_t size, size_t nmemb, void *userdata) {
 }
 
 /* The User-Agent sent when the caller has not named one. */
-#define MI_DEFAULT_USER_AGENT "media-ingest-c/" MI_ENGINE_VERSION
+#define MI_DEFAULT_USER_AGENT "media-ingest-c/" MI_VYZOR_VERSION
 
 static struct curl_slist *build_headers(const mi_download_config *cfg,
                                         const char *range) {

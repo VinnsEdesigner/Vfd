@@ -230,7 +230,7 @@ describe('normalizeCapabilities', () => {
     expect(c.purge).toBe(false);
   });
 
-  it('treats an engine that did not report live sessions as unable to', () => {
+  it('treats a Vyzor that did not report live sessions as unable to', () => {
     const c = normalizeCapabilities({
       version: '1',
       detectors: [],
@@ -278,7 +278,7 @@ describe('normalizeCapabilities', () => {
     expect(c.interactive?.idleTimeoutSeconds).toBe(180);
     expect(c.interactive?.available).toBe(false);
 
-    // A *reported* zero is meaningful — the engine uses it to mean "no idle
+    // A *reported* zero is meaningful — Vyzor uses it to mean "no idle
     // timeout" — so it must survive normalisation rather than become the default.
     const noIdle = normalizeCapabilities({
       version: '1',

@@ -1,12 +1,12 @@
 /**
- * Turning DOM input into the engine's commands.
+ * Turning DOM input into Vyzor's commands.
  *
  * Kept pure and separate from the component so it can be tested without a
  * browser: the interesting part is the arithmetic (which coordinates, which
  * modifier bits) and the key mapping, not the React wiring around it.
  *
- * The wire shapes here match `ws_dispatch` in the engine's `mi_server.c`; the
- * engine's names are the contract, so they are spelled the same way.
+ * The wire shapes here match `ws_dispatch` in Vyzor's `mi_server.c`; the
+ * Vyzor's names are the contract, so they are spelled the same way.
  */
 
 /**
@@ -132,7 +132,7 @@ export function textMessage(text: string): LiveTextMessage {
 export interface LiveTouchMessage {
   type: 'touch';
   event: 'touchStart' | 'touchMove' | 'touchEnd' | 'touchCancel';
-  /** Flat x,y pairs, which is the shape the engine's parser reads. */
+  /** Flat x,y pairs, which is the shape Vyzor's parser reads. */
   points: number[];
   modifiers: number;
 }

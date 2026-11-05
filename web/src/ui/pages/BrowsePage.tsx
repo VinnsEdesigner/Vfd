@@ -41,7 +41,7 @@ export interface BrowsePageProps {
   hasMore: boolean;
   loading: boolean;
   error: string | null;
-  /** True while a download request is being accepted by the engine. */
+  /** True while a download request is being accepted by Vyzor. */
   queueingId?: string | null;
   onPreview: (item: BrowseItem) => void;
   onDownload: (item: BrowseItem) => void;
@@ -70,7 +70,7 @@ export interface BrowsePageProps {
   filter: BrowseFilter;
   onFilterChange: (filter: BrowseFilter) => void;
 
-  /** Whether the engine can render a page here at all. */
+  /** Whether Vyzor can render a page here at all. */
   canRender: boolean;
   /**
    * The rendered page, once one has been made. Null until the user asks, because
@@ -85,9 +85,9 @@ export interface BrowsePageProps {
   renderedTitle: string | null;
   /** How long the render took, for the record. */
   renderMs: number | null;
-  /** True when the engine served this from its cache rather than rendering. */
+  /** True when Vyzor served this from its cache rather than rendering. */
   renderedFromCache: boolean;
-  /** True when the engine cleaned the page's markup before serving it. */
+  /** True when Vyzor cleaned the page's markup before serving it. */
   renderedSanitized: boolean;
   /** Ask for a render in the given mode. */
   onRender: (mode: RenderMode) => void;
@@ -95,7 +95,7 @@ export interface BrowsePageProps {
   onClearRender: () => void;
 
   /**
-   * Whether the engine can drive a page live, and the session that does it.
+   * Whether Vyzor can drive a page live, and the session that does it.
    *
    * A live page is the richer of the two page views: a render draws it once, a
    * live session keeps it running. When it is available it is the default, with
@@ -104,12 +104,12 @@ export interface BrowsePageProps {
   canGoLive: boolean;
   live: InteractiveViewProps['live'];
   /**
-   * Whether the engine can stream a page as raw video over WebRTC.
+   * Whether Vyzor can stream a page as raw video over WebRTC.
    *
    * A third way to look at a page, and the best one when it is available: the
    * picture path costs a JPEG encode and a CDP acknowledgement per frame, and
    * video does not. Kept behind its own flag because it is a heavier opt-in on
-   * the engine — a session holds an X server as well as a browser.
+   * Vyzor — a session holds an X server as well as a browser.
    */
   canStreamVideo: boolean;
   video: NonNullable<InteractiveViewProps['video']>;
@@ -139,9 +139,9 @@ const KIND_FILTERS: ReadonlyArray<{ id: BrowseKind | 'all'; label: string }> = [
 function renderFailureLabel(f: RenderFailure): string {
   switch (f) {
     case 'disabled':
-      return 'Rendering is turned off on this engine';
+      return 'Rendering is turned off on this Vyzor';
     case 'unavailable':
-      return 'This engine has no browser installed, so it cannot render pages';
+      return 'This Vyzor has no browser installed, so it cannot render pages';
     case 'busy':
       return 'The renderer is busy with another page — try again in a moment';
     case 'timeout':
@@ -157,15 +157,15 @@ function renderFailureLabel(f: RenderFailure): string {
 function renderFailureDetail(f: RenderFailure): string {
   switch (f) {
     case 'disabled':
-      return 'The engine has rendering turned off. It is started with --render on a host that has a browser.';
+      return 'Vyzor has rendering turned off. It is started with --render on a host that has a browser.';
     case 'unavailable':
-      return 'Rendering needs a browser on the engine host. The engine reports this in its capabilities, so the control is only offered where it works.';
+      return 'Rendering needs a browser on Vyzor host. Vyzor reports this in its capabilities, so the control is only offered where it works.';
     case 'busy':
       return 'Only a few pages can be rendered at once, because each one costs about half a gigabyte. Nothing is queued — ask again shortly.';
     case 'timeout':
-      return 'A page that never finishes loading is stopped at the engine’s limit rather than left to run.';
+      return 'A page that never finishes loading is stopped at Vyzor’s limit rather than left to run.';
     case 'refused':
-      return 'Only public http(s) pages are rendered. A file:// path would read the engine’s disk, and loopback or link-local addresses are refused.';
+      return 'Only public http(s) pages are rendered. A file:// path would read Vyzor’s disk, and loopback or link-local addresses are refused.';
     default:
       return 'The browser could not produce a picture of that page.';
   }
@@ -175,11 +175,11 @@ function renderFailureDetail(f: RenderFailure): string {
 function failureShort(f: LiveFailure): string {
   switch (f) {
     case 'disabled':
-      return 'Live pages are turned off on this engine';
+      return 'Live pages are turned off on this Vyzor';
     case 'unavailable':
-      return 'This engine has no browser, so it cannot drive a page';
+      return 'This Vyzor has no browser, so it cannot drive a page';
     case 'busy':
-      return 'The engine is already driving another page';
+      return 'Vyzor is already driving another page';
     case 'refused':
       return 'That address cannot be driven';
     case 'closed':
@@ -194,6 +194,53 @@ function KindGlyph({ kind }: { kind: BrowseKind }) {
   if (kind === 'image') return <IconImage />;
   if (kind === 'audio') return <IconMusic />;
   return <IconFile />;
+}
+
+/**
+ * The tile on a result card.
+ *
+ * A search result carries a thumbnail the source made for it. A page read from a
+ * URL does not: Vyzor lists what the page references, and a listing has no
+ * budget to fetch every referenced image to make one. That is why those cards
+ * used to show a glyph for every entry, even for a wall of JPEGs.
+ *
+ * The fallback is the item's own bytes. An `<img>` pointing at the media URL
+ * costs the browser one scaled decode and needs no CORS — displaying an image
+ * is not reading it — and a video's first frame comes from
+ * `<video preload="metadata">` without fetching the whole file, which is the
+ * same trick the file grid already uses. A tile that fails to load falls back to
+ * the glyph rather than showing a broken image, which is why this is a component
+ * with its own state and not a bare `<img>`.
+ */
+function CardThumb({ item }: { item: BrowseItem }) {
+  const [failed, setFailed] = useState(false);
+  const canPreviewImage = item.kind === 'image';
+  const canPreviewVideo = item.kind === 'video';
+  const src = item.thumbUrl ?? (canPreviewImage ? item.url : null);
+
+  if (failed || (!src && !canPreviewVideo)) {
+    return (
+      <span className="bcard__glyph">
+        <KindGlyph kind={item.kind} />
+      </span>
+    );
+  }
+  if (canPreviewVideo && !item.thumbUrl) {
+    return (
+      <video
+        className="bcard__poster"
+        src={item.url}
+        preload="metadata"
+        muted
+        playsInline
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return (
+    // Decorative: the title is already announced by the button.
+    <img src={src!} alt="" loading="lazy" onError={() => setFailed(true)} />
+  );
 }
 
 /** Waits for the user to stop typing before searching. */
@@ -255,7 +302,7 @@ export function BrowsePage(props: BrowsePageProps) {
    * Which page view is showing: the driveable live session, a rendered
    * picture, or raw video.
    *
-   * Video is the best of the three when the engine can do it — no JPEG encode
+   * Video is the best of the three when Vyzor can do it — no JPEG encode
    * and no per-frame acknowledgement — so it is preferred when available.
    */
   const [pageView, setPageView] = useState<'live' | 'picture' | 'video'>('live');
@@ -264,7 +311,7 @@ export function BrowsePage(props: BrowsePageProps) {
   const searching = term.trim() !== debounced.trim();
   const byUrl = mode === 'url';
   const byPage = mode === 'page';
-  /** A live session is the default page view when the engine can host one. */
+  /** A live session is the default page view when Vyzor can host one. */
   const liveActive = byPage && canGoLive;
   /**
    * Whether the video stage is the one showing.
@@ -285,14 +332,14 @@ export function BrowsePage(props: BrowsePageProps) {
 
   const subtitle = useMemo(() => {
     if (byPage) {
-      if (!canRender && !canGoLive) return 'This engine cannot show pages';
+      if (!canRender && !canGoLive) return 'This Vyzor cannot show pages';
       if (liveActive) {
         if (!sourceUrl.trim()) return 'Use the page live, or draw a picture of it';
         if (liveOpen) return 'Live — click into the page to use it';
         if (live.status === 'connecting') return 'Opening the page…';
         if (live.status === 'closed' && live.failure) return failureShort(live.failure);
       }
-      if (!sourceUrl.trim()) return 'View a page as a real browser would — the engine renders it';
+      if (!sourceUrl.trim()) return 'View a page as a real browser would — Vyzor renders it';
       if (rendering) return 'Rendering that page…';
       if (renderFailure) return renderFailureLabel(renderFailure);
       if (rendered) {
@@ -345,7 +392,7 @@ export function BrowsePage(props: BrowsePageProps) {
   const empty = byUrl
     ? sourceUrl.trim()
       ? { title: 'Nothing to show', body: 'That page had no media this app can fetch, or it could not be read.' }
-      : { title: 'Paste an address to read', body: 'A directory listing, a gallery, or any page with media links — the engine reads it for you.' }
+      : { title: 'Paste an address to read', body: 'A directory listing, a gallery, or any page with media links — Vyzor reads it for you.' }
     : term.trim().length < 2
       ? { title: 'Search for something to keep', body: 'Try “cat”, “birdsong”, “timelapse” — or any subject you need media for.' }
       : searching
@@ -395,8 +442,8 @@ export function BrowsePage(props: BrowsePageProps) {
                 placeholder="https://example.com/"
                 hint={
                   byPage
-                    ? 'The page is fetched by the engine and shown here. A site that forbids being embedded cannot be shown, and says so.'
-                    : 'A page or directory listing. The engine reads it, so nothing is fetched by this browser and no CORS rule applies.'
+                    ? 'The page is fetched by Vyzor and shown here. A site that forbids being embedded cannot be shown, and says so.'
+                    : 'A page or directory listing. Vyzor reads it, so nothing is fetched by this browser and no CORS rule applies.'
                 }
               />
             </div>
@@ -494,7 +541,7 @@ export function BrowsePage(props: BrowsePageProps) {
         )}
       </Card>
 
-      {/* The page view. A live session is the default when the engine can host
+      {/* The page view. A live session is the default when Vyzor can host
           one: it is the page itself, usable, rather than a picture of it. The
           renderer remains for a host that only has that, and as an explicit
           "Picture" mode where both exist. */}
@@ -503,8 +550,8 @@ export function BrowsePage(props: BrowsePageProps) {
           {!canRender && !canGoLive ? (
             <Card>
               <EmptyState
-                title="This engine cannot show pages"
-                description="Showing a page needs a browser on the engine host — either to drive it live or to draw it once. The engine reports this in its capabilities, so this control is only offered where it works."
+                title="This Vyzor cannot show pages"
+                description="Showing a page needs a browser on Vyzor host — either to drive it live or to draw it once. Vyzor reports this in its capabilities, so this control is only offered where it works."
               />
             </Card>
           ) : (
@@ -640,7 +687,7 @@ export function BrowsePage(props: BrowsePageProps) {
                         title={`Rendered text of ${sourceUrl}`}
                         // The strongest sandbox: an opaque origin, no scripts, no
                         // forms, no popups, no top-level navigation. This — not the
-                        // engine's sanitiser — is the boundary that makes rendering
+                        // Vyzor's sanitiser — is the boundary that makes rendering
                         // someone else's markup safe.
                         sandbox=""
                         referrerPolicy="no-referrer"
@@ -652,7 +699,7 @@ export function BrowsePage(props: BrowsePageProps) {
                 <Card>
                   <EmptyState
                     title="Render a page"
-                    description="The engine runs a real browser and draws the page, so a site that forbids being embedded — or that builds itself with JavaScript — still shows. Press Render."
+                    description="Vyzor runs a real browser and draws the page, so a site that forbids being embedded — or that builds itself with JavaScript — still shows. Press Render."
                   />
                 </Card>
               )}
@@ -684,14 +731,7 @@ export function BrowsePage(props: BrowsePageProps) {
                   aria-label={`Preview ${item.title}`}
                 >
                   <span className="bcard__thumb">
-                    {item.thumbUrl ? (
-                      // Decorative: the title is already announced by the button.
-                      <img src={item.thumbUrl} alt="" loading="lazy" />
-                    ) : (
-                      <span className="bcard__glyph">
-                        <KindGlyph kind={item.kind} />
-                      </span>
-                    )}
+                    <CardThumb item={item} />
                   </span>
                   <span className="bcard__body">
                     <span className="bcard__title" title={item.title}>

@@ -1,6 +1,6 @@
 name: Deploy console to Cloudflare Pages
 
-# The console is a static build, so deploying it is: build, upload. The engine is
+# The console is a static build, so deploying it is: build, upload. Vyzor is
 # NOT deployed here — it needs a real disk (Cloudflare Containers have ephemeral
 # storage and a 20 GB ceiling), so it runs wherever it has a volume and this
 # build is pointed at it via VITE_API_BASE_URL.
@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       api_base_url:
-        description: 'Engine URL to bake into the build (blank = same origin)'
+        description: 'Vyzor URL to bake into the build (blank = same origin)'
         required: false
         type: string
 
@@ -42,11 +42,11 @@ jobs:
         working-directory: web
         run: npm ci
 
-      # The integration test drives the *real* engine binary over HTTP, so the
+      # The integration test drives the *real* Vyzor binary over HTTP, so the
       # binary has to exist before the tests run. Without this the suite fails
       # with "server binary not found" — which is exactly what happened until
       # this step was added.
-      - name: Build the engine
+      - name: Build Vyzor
         working-directory: media-ingest-c
         run: |
           sudo apt-get update
@@ -63,15 +63,15 @@ jobs:
       - name: Build
         working-directory: web
         env:
-          # The engine URL, in priority order:
+          # Vyzor URL, in priority order:
           #   1. a manual run's `api_base_url` input;
           #   2. the repository variable, so an operator can point it elsewhere
           #      without editing this file;
-          #   3. the URL this project's engine actually runs at, as a default.
+          #   3. the URL this project's Vyzor actually runs at, as a default.
           #
           # The default matters: with a bare `vars.VITE_API_BASE_URL` and no
           # variable set, the value is empty and the console silently targets its
-          # own origin — a working-looking deploy that cannot reach an engine.
+          # own origin — a working-looking deploy that cannot reach a Vyzor.
           VITE_API_BASE_URL: ${{ inputs.api_base_url || vars.VITE_API_BASE_URL || 'https://work-2-udmvulmbrekbbouh.prod-runtime.all-hands.dev' }}
         run: npm run build
 

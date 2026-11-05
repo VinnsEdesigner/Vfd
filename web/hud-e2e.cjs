@@ -39,7 +39,7 @@ function ok(name, cond, detail = '') {
   await p.waitForTimeout(800);
   await p.getByLabel('Address').first().fill(PAGE);
   // The session only starts when the control is pressed: nothing runs on the
-  // engine until someone asks for a page.
+  // Vyzor until someone asks for a page.
   const openBtn = p.getByRole('button', { name: 'Open live', exact: true }).first();
   if (await openBtn.count()) {
     await openBtn.click();

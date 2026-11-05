@@ -2,7 +2,7 @@
  * View-model tests for the filename a save uses.
  *
  * A file saved without an extension cannot be opened by the OS that receives it,
- * so the extension is not cosmetic. These pin the three cases: the engine's
+ * so the extension is not cosmetic. These pin the three cases: Vyzor's
  * on-disk name wins, a name that already has an extension is left alone, and a
  * bare name gains the detected kind's extension.
  */
@@ -40,7 +40,7 @@ function dl(patch: Partial<Download>): Download {
 const mp4 = { kind: 'mp4', container: 'mp4', confidence: 1, isVideo: true } as Download['media'];
 
 describe('filenameFor', () => {
-  it('prefers the name the engine has on disk', () => {
+  it('prefers the name Vyzor has on disk', () => {
     expect(filenameFor(dl({ name: 'holiday clip', filename: 'holiday clip.mp4' }))).toBe(
       'holiday clip.mp4',
     );

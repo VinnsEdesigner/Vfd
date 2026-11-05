@@ -49,7 +49,7 @@ typedef struct {
     int v8_heap_mb;            /* per-session V8 heap cap */
     int viewport_width;
     int viewport_height;
-    const char *user_agent;    /* NULL uses the engine's default */
+    const char *user_agent;    /* NULL uses Vyzor's default */
     const char *profile_root;  /* where throwaway profiles are made */
     /*
      * Close a session that has had no input and produced no frame for this many
@@ -133,8 +133,8 @@ int mi_interactive_frame_height(mi_interactive *it);
  * The keepalive, for a caller that owns the client socket.
  *
  * A browser that closes a tab does not always send a WebSocket close, and a
- * proxy between it and the engine can hold the connection open regardless — so
- * the engine cannot rely on the close to learn the user is gone. It pings, and a
+ * proxy between it and Vyzor can hold the connection open regardless — so
+ * Vyzor cannot rely on the close to learn the user is gone. It pings, and a
  * client that never answers is dropped, which is what stops a vanished tab from
  * holding the concurrency gate forever.
  */
@@ -189,7 +189,7 @@ void mi_interactive_resize(mi_interactive *it, int width, int height);
 /*
  * Go back or forward in the page's own history.
  *
- * `Page.navigateToHistoryEntry` needs an entry id, so the engine keeps the
+ * `Page.navigateToHistoryEntry` needs an entry id, so Vyzor keeps the
  * browser's history in step from `Page.frameNavigated` and the frame tree. The
  * return says whether there was somewhere to go, so a control can be disabled
  * rather than doing nothing.

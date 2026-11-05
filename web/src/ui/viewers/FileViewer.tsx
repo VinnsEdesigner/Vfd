@@ -33,15 +33,15 @@ export interface FileViewerProps {
   onDelete: () => void;
   /**
    * Converts a container the browser cannot play (MKV, AVI) into MP4. Only
-   * offered for an engine item; a device copy or a remote candidate has no
-   * engine to convert it.
+   * offered for a Vyzor item; a device copy or a remote candidate has no
+   * Vyzor to convert it.
    */
   onConvert?: () => void;
   /** True while a conversion is running, so the button becomes a status line. */
   converting?: boolean;
   /** Why a conversion failed, when it did. */
   conversionError?: string | null;
-  /** The URL of the converted MP4, once the engine has produced it. */
+  /** The URL of the converted MP4, once Vyzor has produced it. */
   convertedUrl?: string | null;
 }
 
@@ -63,7 +63,7 @@ export function FileViewer({
   const [dims, setDims] = useState<{ width: number; height: number } | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   /**
-   * Once the engine has converted the file, the MP4 is what plays — the
+   * Once Vyzor has converted the file, the MP4 is what plays — the
    * original container still cannot be decoded here. This takes precedence over
    * the original capability, so the same viewer switches to the converted file
    * without the user reopening anything.
@@ -124,7 +124,7 @@ export function FileViewer({
   let stage: React.ReactNode;
 
   if (convertedSrc) {
-    // The engine produced an MP4 from the original container; play that.
+    // Vyzor produced an MP4 from the original container; play that.
     stage = <VideoPlayer src={convertedSrc} onError={setPlaybackError} />;
   } else if (!capability.playable) {
     const Glyph = file.isImage ? IconImage : file.isAudio ? IconMusic : IconFile;

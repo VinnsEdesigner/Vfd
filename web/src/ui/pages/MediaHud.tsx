@@ -3,7 +3,7 @@
  *
  * WHAT IT IS
  *
- * An overlay on the live view, off until switched on. While it is on, the engine
+ * An overlay on the live view, off until switched on. While it is on, Vyzor
  * reports what the page fetches, and this lists it — format, size, and for a
  * stream the qualities behind it — with a download or a remove for each.
  *
@@ -15,7 +15,7 @@
  *
  * WHAT IT DOES NOT DO
  *
- * It does not fetch anything. A download is handed to the engine, which is the
+ * It does not fetch anything. A download is handed to Vyzor, which is the
  * thing allowed to fetch on the user's behalf; this only says which URL. A
  * remove is local to the list, because "not interested in this one" is not a
  * statement about the page.
@@ -38,7 +38,7 @@ import {
 export interface MediaHudProps {
   /** Everything the page has loaded, newest first. */
   items: LiveMediaItem[];
-  /** Whether the engine is collecting. Off means the list will not fill. */
+  /** Whether Vyzor is collecting. Off means the list will not fill. */
   watching: boolean;
   /** A download for this URL has been asked for. */
   onDownload: (item: LiveMediaItem, variant?: LiveMediaVariant) => void;
@@ -46,7 +46,7 @@ export interface MediaHudProps {
   onRemove: (url: string) => void;
   /** Turn collection on or off. */
   onWatch: (on: boolean) => void;
-  /** Ask the engine to re-read the page. */
+  /** Ask Vyzor to re-read the page. */
   onRescan: () => void;
   /** Close the overlay. The session keeps running. */
   onClose: () => void;

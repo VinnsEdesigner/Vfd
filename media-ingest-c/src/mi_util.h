@@ -19,9 +19,9 @@ enum {
     MI_ERR_ABORTED = -6
 };
 
-/* The engine's own version. Reported by `--help` and by the API, so it lives in
+/* Vyzor's own version. Reported by `--help` and by the API, so it lives in
  * one place rather than being spelled out in each. */
-#define MI_ENGINE_VERSION "0.1.0"
+#define MI_VYZOR_VERSION "0.1.0"
 
 /* Log levels, controlled by mi_log_set_level(). */
 typedef enum { MI_LOG_QUIET = 0, MI_LOG_ERROR, MI_LOG_INFO, MI_LOG_DEBUG } mi_log_level;
@@ -83,7 +83,7 @@ void mi_hmac_sha256(const void *key, size_t keylen, const void *msg, size_t len,
 void mi_hex_encode(const unsigned char *in, size_t len, char *out);
 
 /* SHA-1 (RFC 3174). Needed only by the WebSocket handshake, which mandates it
- * for the Sec-WebSocket-Accept value; SHA-256 is the engine's own digest. */
+ * for the Sec-WebSocket-Accept value; SHA-256 is Vyzor's own digest. */
 void mi_sha1(const void *data, size_t len, unsigned char out[20]);
 
 /* ------------------------------------------------------------------ */

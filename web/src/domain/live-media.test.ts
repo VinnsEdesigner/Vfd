@@ -17,7 +17,7 @@ import {
 } from './live-media';
 
 describe('normalizeLiveMedia', () => {
-  it('reads a list the engine sent', () => {
+  it('reads a list Vyzor sent', () => {
     const items = normalizeLiveMedia({
       items: [
         { url: 'https://x/a.mp4', kind: 'video', mime: 'video/mp4', bytes: 2048, manifest: false },

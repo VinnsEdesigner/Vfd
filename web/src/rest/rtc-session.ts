@@ -16,7 +16,7 @@
  * same peer connection the video already uses. So the whole session — media and
  * control — is one WebRTC connection, and HTTP only establishes it.
  *
- * Because there is no socket to trickle ICE on, the engine returns the offer only
+ * Because there is no socket to trickle ICE on, Vyzor returns the offer only
  * once its gathering has finished, so the candidates are already in the SDP.
  *
  * WHAT THIS OWNS
@@ -28,7 +28,7 @@
 
 import { normalizeRtcOffer, type LiveVideoState, type LiveVideoViewport } from '../domain/rtc';
 
-/** The label of the data channel that carries input. The engine looks for this
+/** The label of the data channel that carries input. Vyzor looks for this
  *  exact name, so it is a contract, not a preference. */
 const INPUT_LABEL = 'input';
 
@@ -36,7 +36,7 @@ const INPUT_LABEL = 'input';
  * The STUN servers a browser uses to discover its own address.
  *
  * A stream between two hosts on the same network needs none, but one across a
- * NAT does — the engine's host candidates alone are not enough then. Google's is
+ * NAT does — Vyzor's host candidates alone are not enough then. Google's is
  * the conventional public one and needs no account.
  */
 const DEFAULT_ICE: RTCConfiguration = {
@@ -44,7 +44,7 @@ const DEFAULT_ICE: RTCConfiguration = {
 };
 
 export interface LiveVideoHandlers {
-  /** The offer arrived: the engine's capture size is now known. */
+  /** The offer arrived: Vyzor's capture size is now known. */
   onOffer?: (viewport: LiveVideoViewport) => void;
   /** The connection's state changed. */
   onState?: (state: LiveVideoState, connected: boolean) => void;
@@ -57,7 +57,7 @@ export interface LiveVideoHandlers {
 }
 
 /**
- * How the console talks to the engine's signalling.
+ * How the console talks to Vyzor's signalling.
  *
  * Supplied by the rest layer, so this class holds no knowledge of the API's
  * shape — and so a test can drive it without a server.
@@ -113,15 +113,15 @@ export class LiveVideoSession {
   }
 
   /**
-   * Take the engine's offer, produce an answer, and send it back.
+   * Take Vyzor's offer, produce an answer, and send it back.
    *
    * The video transceiver is created `recvonly`: the console only ever receives
-   * media. Without it the browser would offer to send video back, and the engine
+   * media. Without it the browser would offer to send video back, and Vyzor
    * would have to negotiate a stream nothing produces.
    */
   private async applyOffer(sdp: string): Promise<void> {
     if (!sdp) {
-      this.fail('the engine sent an empty offer');
+      this.fail('Vyzor sent an empty offer');
       return;
     }
     let pc: RTCPeerConnection;
@@ -136,7 +136,7 @@ export class LiveVideoSession {
     pc.addTransceiver('video', { direction: 'recvonly' });
 
     /* The input channel, made here so it is part of the offer/answer rather than
-     * needing a second negotiation. The engine finds it by its label. */
+     * needing a second negotiation. Vyzor finds it by its label. */
     try {
       this.channel = pc.createDataChannel(INPUT_LABEL, { ordered: true });
       this.wireChannel(this.channel);
@@ -163,12 +163,12 @@ export class LiveVideoSession {
       await pc.setRemoteDescription({ type: 'offer', sdp });
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      /* No trickle: the answer is sent once. The engine sets it as the remote
+      /* No trickle: the answer is sent once. Vyzor sets it as the remote
        * description rather than adding candidates one at a time, so what it needs
        * is in the document. */
       await this.signalling.answer(this.token, answer.sdp ?? '');
     } catch (e) {
-      this.fail(e instanceof Error ? e.message : 'the engine’s offer could not be answered');
+      this.fail(e instanceof Error ? e.message : 'Vyzor’s offer could not be answered');
     }
   }
 
@@ -220,7 +220,7 @@ export class LiveVideoSession {
     this.setState('closed', false);
     const token = this.token;
     this.token = '';
-    /* The engine frees the browser, the display and the pipeline on this call, so
+    /* Vyzor frees the browser, the display and the pipeline on this call, so
      * it matters even though the peer connection is closing anyway. */
     if (token) void this.signalling.close(token).catch(() => undefined);
     try {

@@ -33,8 +33,8 @@ void registerServiceWorker().then((state) => {
  * It lives here rather than inside `ui` so `App` stays a pure component that can
  * be rendered in tests against any transport. Following the store is what makes
  * Settings → Connection real: changing the endpoint or token there rebuilds the
- * client, so every request goes to the new engine without a reload. A deployed
- * console can therefore point at whichever engine the user runs.
+ * client, so every request goes to the new Vyzor without a reload. A deployed
+ * console can therefore point at whichever Vyzor the user runs.
  */
 function ApiConnection({ children }: { children: React.ReactNode }) {
   const baseUrl = useConnectionStore((s) => s.baseUrl);
@@ -43,7 +43,7 @@ function ApiConnection({ children }: { children: React.ReactNode }) {
     <MediaApiProvider baseUrl={baseUrl} authToken={authToken}>
       {/* Inside the provider, because the client is created by it — calling
           useQueryClient above it would have nothing to return. */}
-      <DropStaleEngineData endpoint={`${baseUrl}\u0000${authToken}`}>{children}</DropStaleEngineData>
+      <DropStaleVyzorData endpoint={`${baseUrl}\u0000${authToken}`}>{children}</DropStaleVyzorData>
     </MediaApiProvider>
   );
 }
@@ -51,14 +51,14 @@ function ApiConnection({ children }: { children: React.ReactNode }) {
 /**
  * Drops everything cached when the endpoint or token changes.
  *
- * Every cached answer belongs to the engine it came from. Without this, one
+ * Every cached answer belongs to Vyzor it came from. Without this, one
  * outlives its endpoint: a capability fetched while the console was still
- * pointing at its own origin — which is not an engine — stays "fresh" for its
+ * pointing at its own origin — which is not a Vyzor — stays "fresh" for its
  * whole stale window, and the UI keeps reporting what the wrong server said.
  * Changing the endpoint in Settings must mean starting over, not blending two
- * engines' answers.
+ * Vyzors' answers.
  */
-function DropStaleEngineData({
+function DropStaleVyzorData({
   endpoint,
   children,
 }: {
@@ -77,7 +77,7 @@ function DropStaleEngineData({
 }
 
 /**
- * Holds the splash until the engine answers its health check, so the shell
+ * Holds the splash until Vyzor answers its health check, so the shell
  * never paints against a server that is not up yet.
  */
 function Boot() {

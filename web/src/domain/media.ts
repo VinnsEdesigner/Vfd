@@ -132,8 +132,8 @@ export interface ProbeResult {
 export interface Capabilities {
   /** The API's own version, e.g. "1". */
   version: string;
-  /** The engine build, e.g. "0.1.0". Null when the server predates the field. */
-  engineVersion: string | null;
+  /** Vyzor build, e.g. "0.1.0". Null when the server predates the field. */
+  vyzorVersion: string | null;
   detectors: MediaKind[];
   hls: boolean;
   upload: boolean;
@@ -142,21 +142,21 @@ export interface Capabilities {
   maxBodyBytes: number | null;
   /** Connection workers the server runs (null when unreported). */
   workers: number | null;
-  /** Whether the host actually has ffmpeg, probed by the engine. */
+  /** Whether the host actually has ffmpeg, probed by Vyzor. */
   ffmpeg: boolean | null;
   /**
    * Whether a page can be rendered here, and within what bounds.
    *
-   * Null when the engine predates rendering, or did not report it — which is
+   * Null when Vyzor predates rendering, or did not report it — which is
    * treated the same as unavailable, so the console never offers a control the
-   * engine cannot honour.
+   * Vyzor cannot honour.
    */
   render: RenderCapability | null;
   /**
    * Whether a page can be driven live here, and within what bounds.
    *
-   * Null when the engine predates live sessions, treated the same as
-   * unavailable so the console never offers a control the engine cannot honour.
+   * Null when Vyzor predates live sessions, treated the same as
+   * unavailable so the console never offers a control Vyzor cannot honour.
    */
   interactive: InteractiveCapability | null;
   /**
@@ -164,13 +164,13 @@ export interface Capabilities {
    *
    * Separate from `interactive` because it is a heavier opt-in: a video
    * session holds an X server as well as a browser, and the frames are
-   * encoded. Null when the engine predates it, treated the same as
+   * encoded. Null when Vyzor predates it, treated the same as
    * unavailable.
    */
   rtc: RtcCapability | null;
 }
 
-/** How the engine can render a page. */
+/** How Vyzor can render a page. */
 export interface RenderCapability {
   enabled: boolean;
   available: boolean;
@@ -182,7 +182,7 @@ export interface RenderCapability {
 }
 
 /**
- * How the engine can host a live, driveable page.
+ * How Vyzor can host a live, driveable page.
  *
  * Separate from rendering because it is a separate opt-in and a separate cost: a
  * render is a second-long subprocess, a live session is a browser held open for
@@ -199,7 +199,7 @@ export interface InteractiveCapability {
 }
 
 /**
- * How the engine can stream a page as live video.
+ * How Vyzor can stream a page as live video.
  *
  * Its own capability because it is its own cost: a video session holds an
  * Xvfb and a Chromium, and the frames are encoded before they leave.
@@ -228,7 +228,7 @@ export interface CreateDownloadInput {
   purge: boolean;
   connections: number;
   /**
-   * Accept a payload the detector does not recognise. Off by default: the engine
+   * Accept a payload the detector does not recognise. Off by default: Vyzor
    * refuses an unexpected payload early, and only a caller that knows it wants a
    * document or a text file should turn that off.
    */
@@ -291,7 +291,7 @@ export interface DownloadCounts {
 
 export interface SystemStorage {
   workDir: string;
-  /** Whether the engine proved it can write to `workDir`. */
+  /** Whether Vyzor proved it can write to `workDir`. */
   writable: boolean;
   /** Why not, when `writable` is false. */
   writeError: string | null;

@@ -2,10 +2,10 @@
  *
  * Two jobs, and deliberately no more:
  *   1. keep the app shell so the installed app opens without a network;
- *   2. serve locally-stored media to the page when the engine is unreachable,
+ *   2. serve locally-stored media to the page when the Vyzor is unreachable,
  *      so a downloaded file can still be played offline.
  *
- * It does NOT cache API responses. The engine's data is live (progress moves
+ * It does NOT cache API responses. The Vyzor's data is live (progress moves
  * every second) and a cached list would be a lie about what is downloading.
  * Media bytes are the exception, because those are immutable once finished.
  *
@@ -53,7 +53,7 @@ function isCacheable(request, url) {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  /* Never touch the engine API: its answers are live and time-sensitive. */
+  /* Never touch the Vyzor API: its answers are live and time-sensitive. */
   if (url.pathname.startsWith('/api/') || url.pathname === '/healthz') return;
   if (!isCacheable(event.request, url)) return;
 

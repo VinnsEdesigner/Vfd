@@ -6,7 +6,7 @@
  * is one WebRTC connection. See `rtc-session.ts` for the full picture.
  *
  * The session token is the credential for the follow-up calls, which is why the
- * engine mints it and the console echoes it.
+ * Vyzor mints it and the console echoes it.
  */
 
 import type { ApiClient } from '../api-client';
@@ -18,9 +18,9 @@ export function createRtcResource(client: ApiClient) {
   /**
    * The signalling, over the same authenticated transport as every other call.
    *
-   * Going through the transport matters: it carries the engine's bearer token, so
-   * a secured engine works the same as an open one, and a failure comes back as a
-   * typed `ApiError` with the engine's own message rather than an opaque status.
+   * Going through the transport matters: it carries Vyzor's bearer token, so
+   * a secured Vyzor works the same as an open one, and a failure comes back as a
+   * typed `ApiError` with Vyzor's own message rather than an opaque status.
    */
   const signalling: RtcSignalling = {
     async open(url: string) {

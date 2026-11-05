@@ -168,7 +168,7 @@ const EXT_BY_KIND: Record<string, string> = {
 };
 
 /**
- * A filename an OS can act on: the on-disk name when the engine reported one,
+ * A filename an OS can act on: the on-disk name when Vyzor reported one,
  * otherwise the display name with the detected kind's extension appended. A
  * save with no extension produces a file no device knows how to open.
  */
@@ -275,7 +275,7 @@ export interface PipelineOptions {
  *   - `sha256` is written after verification;
  *   - `masterPlaylist` / `artifacts` are the output of transcode / upload.
  *
- * A stage the engine cannot report on stays "pending" rather than being guessed
+ * A stage Vyzor cannot report on stays "pending" rather than being guessed
  * at, because a pipeline that shows a stage as done when it is not is worse
  * than one that admits it does not know. Stages a job was not asked to run are
  * "skipped", not "done".
@@ -336,12 +336,12 @@ export interface DownloadView {
   state: DownloadState;
   tone: StatusTone;
   /**
-   * Where the bytes live: the engine's library, or this device. A device copy is
+   * Where the bytes live: Vyzor's library, or this device. A device copy is
    * a first-class entry in the file manager (playable, shareable, openable), not
-   * only a note on an engine record.
+   * only a note on a Vyzor record.
    */
   source: 'engine' | 'device' | 'remote';
-  /** The playback URL for a device copy; null for an engine item. */
+  /** The playback URL for a device copy; null for a Vyzor item. */
   localUrl: string | null;
   /** 0..1 */
   fraction: number;
@@ -383,7 +383,7 @@ export interface DownloadView {
   /** Which stages this download ran, and where each got to. */
   pipeline: PipelineStageView[];
   /** The format the user chose, and the options the job runs — recorded by the
-   *  engine, so "download info" reports what actually happened. */
+   *  Vyzor, so "download info" reports what actually happened. */
   requestedQuality: string | null;
   connections: number;
   hls: boolean;
@@ -535,7 +535,7 @@ export interface DeviceFileInfo {
  *
  * It carries everything the file manager acts on — kind, extension, a playable
  * URL — so a device file is played in place instead of being handed to a new
- * tab. The engine knows nothing about these; they are the user's own copies.
+ * tab. Vyzor knows nothing about these; they are the user's own copies.
  */
 export function toDeviceView(f: DeviceFileInfo): DownloadView {
   const kind = kindFromMime(f.type, f.name);
@@ -561,7 +561,7 @@ export function toDeviceView(f: DeviceFileInfo): DownloadView {
     bytesPerSecond: 0,
     sha256: null,
     masterPlaylist: null,
-    // The bytes are already here; the engine has nothing to convert.
+    // The bytes are already here; Vyzor has nothing to convert.
     conversion: { state: 'none', error: null },
     artifacts: [],
     error: null,

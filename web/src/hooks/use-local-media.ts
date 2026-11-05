@@ -1,14 +1,14 @@
 /**
  * Saving a finished download onto this device, and playing it back.
  *
- * The bytes are streamed straight from the engine into the chosen store, so a
+ * The bytes are streamed straight from Vyzor into the chosen store, so a
  * large file never has to sit in memory: the response body is read chunk by
  * chunk and each chunk is written as it arrives. That is what makes the
  * folder and private-storage tiers usable for real media, and it is why the
  * IndexedDB tier is flagged as small-file-only — it buffers.
  *
  * Nothing here claims success it cannot prove: the size written is checked
- * against the size the engine reported, and a mismatch fails the save.
+ * against the size Vyzor reported, and a mismatch fails the save.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -38,7 +38,7 @@ export interface LocalMediaState {
   refresh: () => Promise<void>;
   /** Streams a finished download into local storage. */
   save: (file: DownloadView) => Promise<StoredItem>;
-  /** Streams a remote URL straight to this device, with no engine involved. */
+  /** Streams a remote URL straight to this device, with no Vyzor involved. */
   saveRemote: (remote: {
     id: string;
     url: string;
@@ -128,7 +128,7 @@ export function useLocalMedia(): LocalMediaState {
 
   /**
    * Stream a URL into the chosen store, reporting progress and verifying the
-   * size. Shared by the engine save and the browse save, because the streaming,
+   * size. Shared by Vyzor save and the browse save, because the streaming,
    * the progress and the size check are identical — only where the bytes come
    * from differs.
    */
@@ -219,7 +219,7 @@ export function useLocalMedia(): LocalMediaState {
 
   /**
    * Save a file from anywhere on the internet straight onto this device, with no
-   * engine involved. Used by Browse, where the point is to keep one file without
+   * Vyzor involved. Used by Browse, where the point is to keep one file without
    * queueing it through the pipeline first.
    */
   const saveRemote = useCallback(
@@ -290,7 +290,7 @@ export function useLocalMedia(): LocalMediaState {
   };
 }
 
-/** The MIME type to store, from the media the engine detected. */
+/** The MIME type to store, from the media Vyzor detected. */
 function mimeOf(file: DownloadView): string {
   if (file.isImage) {
     const ext = file.extension;

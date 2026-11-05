@@ -63,7 +63,7 @@ function renderViewer(props: Partial<React.ComponentProps<typeof FileViewer>> = 
       file={view()}
       src="http://x/movie.mkv/content"
       downloadUrl="http://x/movie.mkv/content"
-      location="Engine library"
+      location="Vyzor library"
       onClose={() => undefined}
       onOpenWith={() => undefined}
       onShare={() => undefined}

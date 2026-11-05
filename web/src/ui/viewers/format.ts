@@ -1,6 +1,6 @@
 /**
  * Which media kinds the browser can actually decode, and the Content-Type the
- * engine will serve for each. Kept in one place so the viewers, the fallback
+ * Vyzor will serve for each. Kept in one place so the viewers, the fallback
  * and any future capability check cannot disagree.
  */
 

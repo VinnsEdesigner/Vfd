@@ -51,7 +51,7 @@ static void test_url_rules(void) {
  *
  * This is the test that was missing, and its absence is why a broken build
  * shipped: the console sends a flat `[x, y]` list while the parser expected
- * nested pairs, so every touch parsed to zero points and the engine forwarded
+ * nested pairs, so every touch parsed to zero points and Vyzor forwarded
  * nothing. The page received no touches at all and looked like a static image.
  * A pure parser with a case per shape catches that without a browser.
  */

@@ -10,7 +10,7 @@ import { Card } from '../primitives/Card';
 import { Button } from '../primitives/Button';
 import { EmptyState } from '../primitives/EmptyState';
 import { StorageChooser } from './StorageChooser';
-import { EngineStorageNotice, type EngineStorageFacts } from './EngineStorageNotice';
+import { VyzorStorageNotice, type VyzorStorageFacts } from './VyzorStorageNotice';
 import { formatBytes } from '../../hooks/view-models';
 import type { StorageEnvironment, StorageTierId } from '../../platform/storage-capabilities';
 import type { StoredItem } from '../../platform/media-store';
@@ -25,8 +25,8 @@ export interface StoragePanelProps {
   items: ReadonlyArray<StoredItem>;
   usage: number;
   offlineStatus: string;
-  /** Where the engine itself writes downloads, when that is known. */
-  engineStorage?: EngineStorageFacts | null;
+  /** Where Vyzor itself writes downloads, when that is known. */
+  vyzorStorage?: VyzorStorageFacts | null;
   busy?: boolean;
   onChoose: (tier: StorageTierId, directory?: FileSystemDirectoryHandle) => void;
   onRegrant?: () => void;
@@ -46,7 +46,7 @@ export function StoragePanel({
   items,
   usage,
   offlineStatus,
-  engineStorage = null,
+  vyzorStorage = null,
   busy = false,
   onChoose,
   onRegrant,
@@ -83,16 +83,16 @@ export function StoragePanel({
 
       {/* First, because it is the actual answer to "where do my downloads go?" —
           the browser options below are only a second copy. */}
-      {engineStorage && (
+      {vyzorStorage && (
         <Card
           title="Where downloads are written"
-          subtitle="The engine owns this path, not the browser"
+          subtitle="Vyzor owns this path, not the browser"
         >
-          <EngineStorageNotice
-            facts={engineStorage}
-            // A same-device engine is writing to a real directory the user can
+          <VyzorStorageNotice
+            facts={vyzorStorage}
+            // A same-device Vyzor is writing to a real directory the user can
             // reach from another app; a remote one is not.
-            browsable={engineStorage.sameDevice}
+            browsable={vyzorStorage.sameDevice}
           />
         </Card>
       )}

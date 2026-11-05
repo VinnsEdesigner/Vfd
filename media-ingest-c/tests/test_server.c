@@ -219,8 +219,8 @@ static void test_http_api(void) {
           "capabilities reports the real body cap");
     CHECK(strstr(body_of(resp), "\"workers\":16") != NULL,
           "capabilities reports the real worker count");
-    CHECK(strstr(body_of(resp), "\"engine_version\":\"0.1.0\"") != NULL,
-          "capabilities reports the engine version");
+    CHECK(strstr(body_of(resp), "\"vyzor_version\":\"0.1.0\"") != NULL,
+          "capabilities reports Vyzor version");
     CHECK(strstr(body_of(resp), "\"ffmpeg\":") != NULL,
           "capabilities reports ffmpeg availability");
     free(resp);
@@ -231,10 +231,10 @@ static void test_http_api(void) {
     CHECK(strstr(body_of(resp), "\"writable\":true") != NULL,
           "system/storage reports writable");
     CHECK(strstr(body_of(resp), cfg.work_dir) != NULL,
-          "system/storage names the engine's directory");
+          "system/storage names Vyzor's directory");
     free(resp);
 
-    /* PUT storage/location moves the engine's directory, and the change is
+    /* PUT storage/location moves Vyzor's directory, and the change is
      * visible on the next read rather than only in the response. */
     {
         const char *newdir = "/tmp/mi-test-relocated";
@@ -379,7 +379,7 @@ static void test_http_api(void) {
 
     /* --- CORS ---
      * The allow list is the difference between "this console can talk to the
-     * engine" and "any website the user visits can read their library and start
+     * Vyzor" and "any website the user visits can read their library and start
      * downloads". Both directions are asserted, because only testing the
      * allowed origin would pass even if the list were ignored. */
     {
@@ -632,9 +632,9 @@ static void test_http_api(void) {
 /* HLS artifact serving + container conversion                       */
 /* ---------------------------------------------------------------- */
 
-/* A minimal HTTP/1.1 server for the engine to download from, so a real download
+/* A minimal HTTP/1.1 server for Vyzor to download from, so a real download
  * can be completed and then converted. It honours a Range request, because the
- * engine's parallel downloader needs one to exercise the real code path. */
+ * Vyzor's parallel downloader needs one to exercise the real code path. */
 static const char *g_mock_body = NULL;
 static size_t g_mock_body_len = 0;
 
@@ -833,7 +833,7 @@ static void test_hls_serve_and_convert(void) {
     CHECK(status == 404, "hls for unknown id 404");
     free(resp);
 
-    /* --- Conversion. Download a real MKV through the engine, then convert. --- */
+    /* --- Conversion. Download a real MKV through Vyzor, then convert. --- */
     if (mi_which("ffmpeg")) {
         const char *mkv_src = "/tmp/mi-test-source.mkv";
         int have_mkv = make_mkv(mkv_src) == 0;
@@ -1244,7 +1244,7 @@ static void slow_serve_conn(int fd) {
     /*
      * Range support matters here, and not for the obvious reason.
      *
-     * With `Accept-Ranges: none` the engine takes its *streaming* path, which
+     * With `Accept-Ranges: none` Vyzor takes its *streaming* path, which
      * reports progress only once, at the end — so a download in flight shows
      * `downloaded_bytes: 0`, and there is no way to tell "transferring" from
      * "stuck". The ranged path reports as it goes. Since the point of this
@@ -1290,7 +1290,7 @@ static void slow_serve_conn(int fd) {
         return;
     }
 
-    /* A HEAD stops at the headers: the engine probes before downloading, and
+    /* A HEAD stops at the headers: Vyzor probes before downloading, and
      * streaming the body in reply would occupy this one-at-a-time server. */
     if (head_only) {
         close(fd);
@@ -1300,7 +1300,7 @@ static void slow_serve_conn(int fd) {
     /*
      * Dribble the range out, slowly enough that a pause always lands mid-flight.
      *
-     * The bytes are a real MP4 header followed by filler, because the engine
+     * The bytes are a real MP4 header followed by filler, because Vyzor
      * sniffs what it downloads and *refuses* a payload it does not recognise —
      * a body of plain text is rejected as "unrecognised payload (detected
      * text)" before the download is ever under way, and the pause then has
@@ -1330,7 +1330,7 @@ static void slow_serve_conn(int fd) {
 /*
  * A child per connection.
  *
- * The engine downloads a ranged source with several connections at once, so a
+ * Vyzor downloads a ranged source with several connections at once, so a
  * server that handles one at a time makes the transfer crawl and the test
  * depend on timing. Forking is what the other test servers do not need — they
  * serve a small file in one go — but this one has to.
@@ -1578,7 +1578,7 @@ static int ws_read_frame(int fd, test_frame *out) {
     return 0;
 }
 
-/* Open a WebSocket to the engine. Returns the fd after a valid 101, or -1, and
+/* Open a WebSocket to Vyzor. Returns the fd after a valid 101, or -1, and
  * sets `*status` to the HTTP status when the upgrade was refused. */
 static int ws_open(int port, const char *path, const char *origin, int *status) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -1680,7 +1680,7 @@ static void test_interactive_endpoint(void) {
     }
 
     /* A disallowed Origin is refused: a WebSocket handshake is not subject to
-     * CORS, so the engine has to check it itself. */
+     * CORS, so Vyzor has to check it itself. */
     {
         int st = 0;
         int fd = ws_open(port, "/api/v1/interactive?url=https%3A%2F%2Fexample.com%2F",
@@ -1705,7 +1705,7 @@ static void test_interactive_endpoint(void) {
                     if (strstr((char *)f.payload, "\"ready\"")) saw_ready = 1;
                     if (strstr((char *)f.payload, "\"frame\"")) saw_frame_header = 1;
                 } else if (f.opcode == MI_WS_BINARY) {
-                    /* A JPEG: the engine streams JPEG frames. */
+                    /* A JPEG: Vyzor streams JPEG frames. */
                     if (f.len > 2 && f.payload[0] == 0xFF && f.payload[1] == 0xD8) saw_binary = 1;
                 }
                 free(f.payload);
@@ -1714,7 +1714,7 @@ static void test_interactive_endpoint(void) {
             CHECK(saw_frame_header, "interactive: a frame header arrived");
             CHECK(saw_binary, "interactive: a JPEG frame arrived");
 
-            /* A masked close from the client, then the engine's close reply. */
+            /* A masked close from the client, then Vyzor's close reply. */
             ws_send_frame(fd, MI_WS_CLOSE, (const unsigned char *)"", 0);
             int closed = 0;
             for (int i = 0; i < 30; i++) {
@@ -1821,7 +1821,7 @@ static void test_user_agent(void) {
     char url[128];
     snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
 
-    /* The built-in default identifies the engine, and is what is sent when the
+    /* The built-in default identifies Vyzor, and is what is sent when the
      * caller has named nothing. */
     {
         mi_download_config cfg;
@@ -1830,7 +1830,7 @@ static void test_user_agent(void) {
         char *body = mi_download_fetch_text(&cfg, url, 64 * 1024);
         CHECK(body != NULL, "user-agent: default fetch succeeds");
         CHECK(body && strstr(body, "media-ingest-c/") != NULL,
-              "user-agent: the default agent identifies the engine");
+              "user-agent: the default agent identifies Vyzor");
         free(body);
     }
 

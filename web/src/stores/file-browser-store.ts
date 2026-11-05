@@ -23,7 +23,7 @@ export type StateFilter = 'all' | 'ongoing' | 'done' | 'problem';
  * Where the bytes are. A separate axis from type and state, because "show me
  * only what is on this device" is a question about storage, not about media.
  */
-export type LocationFilter = 'all' | 'device' | 'engine';
+export type LocationFilter = 'all' | 'device' | 'vyzor';
 
 export interface FileBrowserPreferences {
   view: ViewMode;
@@ -48,7 +48,7 @@ const SORT_KEYS: ReadonlySet<string> = new Set(['name', 'size', 'date', 'type'])
 const DIRECTIONS: ReadonlySet<string> = new Set(['asc', 'desc']);
 const TYPE_FILTERS: ReadonlySet<string> = new Set(['all', 'video', 'audio', 'image']);
 const STATE_FILTERS: ReadonlySet<string> = new Set(['all', 'ongoing', 'done', 'problem']);
-const LOCATION_FILTERS: ReadonlySet<string> = new Set(['all', 'device', 'engine']);
+const LOCATION_FILTERS: ReadonlySet<string> = new Set(['all', 'device', 'vyzor']);
 
 /**
  * Read the persisted preferences, discarding anything that is not a value this

@@ -22,17 +22,17 @@ export function useCapabilities() {
     queryFn: ({ signal }) => api.system.capabilities(signal),
     staleTime: 5 * 60_000,
     /*
-     * Capabilities describe the *engine*, and the engine can change underneath a
+     * Capabilities describe the *Vyzor*, and Vyzor can change underneath a
      * console that is already open — restarted with rendering turned on, or with
      * live sessions, or pointed at a different host by a reverse proxy. The app
      * disables refetch-on-focus globally (a background refetch should not
      * replace content with a skeleton), but for this query that default is
      * wrong: without a refetch a long-lived tab keeps the answer it first got
-     * and never notices the engine can now do more, which shows up as a feature
+     * and never notices Vyzor can now do more, which shows up as a feature
      * that stays hidden after it becomes available.
      *
      * The query is one small GET, so re-asking on focus and on a slow interval is
-     * cheap next to being wrong about what the engine can do.
+     * cheap next to being wrong about what Vyzor can do.
      */
     refetchOnWindowFocus: true,
     refetchInterval: 60_000,
@@ -56,7 +56,7 @@ export function useStorageConfig() {
   });
 }
 
-/** Point the engine at a different download directory. */
+/** Point Vyzor at a different download directory. */
 export function useSetStorageLocation() {
   const { api } = useMediaApi();
   const queryClient = useQueryClient();

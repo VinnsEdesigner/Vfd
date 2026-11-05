@@ -4,7 +4,7 @@
  *
  * A live session pushes pictures to a browser over a socket. The socket can
  * always be slower than the browser that paints into it, and when it is, the
- * engine has three options and only one of them is right:
+ * Vyzor has three options and only one of them is right:
  *
  *   block         stop reading from Chromium while the socket drains. Simple,
  *                 and wrong: the whole session stalls, including the input the
@@ -40,7 +40,7 @@ typedef struct mi_outbox mi_outbox;
  * A queue holding at most `max_bytes` of pending messages.
  *
  * The bound is what makes this safe: without it, a client that stops reading
- * while the page keeps painting would grow the engine's memory until it died.
+ * while the page keeps painting would grow Vyzor's memory until it died.
  * A few hundred kilobytes holds several pictures, which is more than a live view
  * needs and far less than a leak.
  */

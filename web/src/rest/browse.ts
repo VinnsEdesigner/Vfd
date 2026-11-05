@@ -1,9 +1,9 @@
 /**
  * Where browse results come from.
  *
- * Deliberately NOT routed through the engine's transport. That transport prefixes
- * the engine's base URL and attaches its bearer token to every request, so using
- * it here would send the user's engine credentials to a third-party host. This
+ * Deliberately NOT routed through Vyzor's transport. That transport prefixes
+ * Vyzor's base URL and attaches its bearer token to every request, so using
+ * it here would send the user's Vyzor credentials to a third-party host. This
  * source talks to its provider directly, with no credentials at all.
  *
  * Wikimedia Commons is the provider because it is open, needs no API key, sends
@@ -120,13 +120,13 @@ export interface BrowseSourceOptions {
 }
 
 /**
- * List the media a page or directory offers, by asking the engine.
+ * List the media a page or directory offers, by asking Vyzor.
  *
- * This has to go through the engine rather than the browser: the browser
+ * This has to go through Vyzor rather than the browser: the browser
  * enforces CORS, and most media hosts send no CORS headers, so a direct fetch
- * from the page is blocked. The engine has no such limit. It also means the
- * user's engine credentials are used for the request, which is correct — the
- * engine is the thing allowed to fetch on their behalf.
+ * from the page is blocked. Vyzor has no such limit. It also means the
+ * user's Vyzor credentials are used for the request, which is correct — the
+ * Vyzor is the thing allowed to fetch on their behalf.
  */
 export function createBrowseResource(client: ApiClient) {
   return {
@@ -151,8 +151,8 @@ export type BrowseResource = ReturnType<typeof createBrowseResource>;
 /**
  * The URL the console embeds to show a page, and whether the site allows it.
  *
- * The bytes are served by the engine — the console cannot fetch another origin
- * itself — and the engine reports the site's framing policy in a header, so a
+ * The bytes are served by Vyzor — the console cannot fetch another origin
+ * itself — and Vyzor reports the site's framing policy in a header, so a
  * refusal can be explained before the frame is shown empty.
  */
 export function createPageResource(client: ApiClient) {
@@ -164,7 +164,7 @@ export function createPageResource(client: ApiClient) {
       );
     },
 
-    /** Ask the engine to fetch the page and report its framing policy. */
+    /** Ask Vyzor to fetch the page and report its framing policy. */
     async inspect(url: string, signal?: AbortSignal): Promise<FetchedPage> {
       const headers = await client.transport.head({
         method: 'GET',
@@ -185,9 +185,9 @@ export function createPageResource(client: ApiClient) {
 export type PageResource = ReturnType<typeof createPageResource>;
 
 /**
- * Rendering a page with the engine's browser.
+ * Rendering a page with Vyzor's browser.
  *
- * The image is not fetched here: the console points an <img> at the engine's
+ * The image is not fetched here: the console points an <img> at Vyzor's
  * render URL, so the browser streams and caches it the way it does any other
  * image, and a large render never passes through JS memory.
  *
@@ -209,8 +209,8 @@ export function createRenderResource(client: ApiClient) {
      * Render a page and return a URL the browser can display.
      *
      * The bytes are fetched *here* rather than by pointing an `<img>` at the
-     * engine, because an image request carries no Authorization header: it would
-     * work on an open engine and 401 on a secured one, silently showing a broken
+     * Vyzor, because an image request carries no Authorization header: it would
+     * work on an open Vyzor and 401 on a secured one, silently showing a broken
      * image. Fetching with the same auth as every other call, then handing over a
      * blob, makes the two cases identical.
      *
@@ -233,11 +233,11 @@ export function createRenderResource(client: ApiClient) {
           title: res.headers['x-vyzorix-title'] ?? null,
           elapsedMs: Number(res.headers['x-vyzorix-render-ms'] ?? 0),
           truncated: res.headers['x-vyzorix-render-truncated'] === 'yes',
-          /** True when the engine served this from its cache rather than
+          /** True when Vyzor served this from its cache rather than
            *  rendering again, so the UI can say why it was instant. */
           fromCache: res.headers['x-vyzorix-render-cache'] === 'hit',
           /**
-           * True when the engine stripped the page's scripts, handlers and
+           * True when Vyzor stripped the page's scripts, handlers and
            * frames before serving it. Worth saying, because "Page text" looks
            * like the site and is not: it is a cleaned copy of it.
            */
@@ -256,12 +256,12 @@ export type RenderResource = ReturnType<typeof createRenderResource>;
  * A live, driveable page session.
  *
  * Unlike every other resource here, this one is a WebSocket rather than a
- * request: the engine streams image frames down and the console sends input
+ * request: Vyzor streams image frames down and the console sends input
  * events up. `open` hands back a small handle that owns the socket and decodes
  * both directions into the domain.
  *
  * The token cannot travel as a header — a browser's WebSocket API sets none — so
- * it goes in the query string, which is why the engine accepts it there and
+ * it goes in the query string, which is why Vyzor accepts it there and
  * checks the Origin in exchange.
  */
 export function createLiveResource(client: ApiClient) {
@@ -283,7 +283,7 @@ export function createLiveResource(client: ApiClient) {
      * is responsible for revoking frame blob URLs when it replaces them, which
      * `onFrame` is told about through the `LiveFrame` it receives.
      *
-     * `touch` tells the engine to emulate a touch device, so the page lays itself
+     * `touch` tells Vyzor to emulate a touch device, so the page lays itself
      * out the way it would on this device and a forwarded finger behaves as one.
      */
     open(
@@ -316,7 +316,7 @@ export type LiveStatus = 'connecting' | 'open' | 'closed';
 /**
  * One live session.
  *
- * Owns a WebSocket and a small state machine over the engine's two message
+ * Owns a WebSocket and a small state machine over Vyzor's two message
  * kinds: JSON text (ready/state/closed/error and image headers) and binary
  * (the image itself). A binary frame is paired with the header that preceded it
  * so the caller gets one `LiveFrame` rather than two callbacks.
@@ -325,12 +325,12 @@ export type LiveStatus = 'connecting' | 'open' | 'closed';
 export interface LiveStreamStats {
   /** Frames received and decoded. */
   received: number;
-  /** The highest `seq` seen — the engine's own count of frames it produced. */
+  /** The highest `seq` seen — Vyzor's own count of frames it produced. */
   highestSeq: number;
   /**
-   * Frames the engine produced but this client never saw.
+   * Frames Vyzor produced but this client never saw.
    *
-   * A gap in `seq` is a frame the engine dropped to keep the view current, or
+   * A gap in `seq` is a frame Vyzor dropped to keep the view current, or
    * one lost in transit. Either way it is the number that says whether the link
    * is keeping up.
    */
@@ -351,10 +351,25 @@ export class LiveSession {
   /** A failure captured before close, so the close callback can name it. */
   private failure: LiveFailure | null = null;
   /**
+   * The application-level heartbeat, and the visibility listeners that keep it
+   * meaningful.
+   *
+   * Vyzor gives up on a client it has not heard from, and the browser's own
+   * answer to a protocol ping is not a reliable sign of life: a backgrounded tab
+   * throttles its timers, and a phone that sleeps suspends the socket entirely.
+   * So the console says "still here" itself, and when the tab comes back to the
+   * foreground it says so at once rather than waiting for the next tick — which
+   * is exactly the moment Vyzor is most likely to have stopped hearing.
+   */
+  private heartbeat: number | null = null;
+  private onVisibility: (() => void) | null = null;
+  /** The interval between heartbeats. Well inside Vyzor's silence window. */
+  private static readonly HEARTBEAT_MS = 20_000;
+  /**
    * What the stream is doing, measured.
    *
    * These numbers exist because the latency question could not be answered by
-   * reasoning: the engine measures microseconds to produce a frame, so if the
+   * reasoning: Vyzor measures microseconds to produce a frame, so if the
    * user sees seconds the delay is either in the transport or in the paint. The
    * `seq` gap separates those — a gap means frames were dropped to keep up (a
    * link problem), while a growing `worstGapMs` with no gap means each frame
@@ -401,6 +416,7 @@ export class LiveSession {
 
     socket.onopen = () => {
       this.status = 'open';
+      this.startHeartbeat();
       this.handlers.onOpen?.();
     };
 
@@ -419,8 +435,9 @@ export class LiveSession {
 
     socket.onclose = (ev: CloseEvent) => {
       this.status = 'closed';
+      this.stopHeartbeat();
       // A 1000 close is deliberate; anything else, or a socket that never
-      // opened, is a failure worth naming. The engine reports the specific
+      // opened, is a failure worth naming. Vyzor reports the specific
       // reason (busy, refused, disabled) as an HTTP status on the handshake,
       // which the browser surfaces only as a close code, so the mapping here is
       // coarse on purpose.
@@ -473,7 +490,7 @@ export class LiveSession {
     this.stats.received++;
     if (header && header.seq > 0) {
       if (this.stats.highestSeq > 0 && header.seq > this.stats.highestSeq + 1) {
-        /* A gap means the engine dropped a frame to keep up, or one was lost. */
+        /* A gap means Vyzor dropped a frame to keep up, or one was lost. */
         this.stats.skipped += header.seq - this.stats.highestSeq - 1;
       }
       this.stats.highestSeq = Math.max(this.stats.highestSeq, header.seq);
@@ -490,12 +507,50 @@ export class LiveSession {
     this.handlers.onFrame?.(frame);
   }
 
+  /**
+   * Say "still here" to Vyzor, and keep saying it.
+   *
+   * The message is a no-op on Vyzor's side; what matters is that bytes
+   * arrive, because Vyzor's silence window is measured against *any* bytes
+   * received, not against a specific answer. `setInterval` is throttled in a
+   * background tab (to roughly once a minute) but not stopped, which is enough:
+   * Vyzor's window is minutes, not seconds.
+   */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeat = window.setInterval(() => {
+      this.send({ type: 'ping' });
+    }, LiveSession.HEARTBEAT_MS);
+    /*
+     * A tab that returns to the foreground has, by definition, just been away.
+     * Sending a heartbeat now closes the gap immediately instead of leaving the
+     * Vyzor to decide, on its own clock, that the client is gone.
+     */
+    if (typeof document !== 'undefined') {
+      this.onVisibility = () => {
+        if (document.visibilityState === 'visible') this.send({ type: 'ping' });
+      };
+      document.addEventListener('visibilitychange', this.onVisibility);
+    }
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeat !== null) {
+      window.clearInterval(this.heartbeat);
+      this.heartbeat = null;
+    }
+    if (this.onVisibility && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibility);
+    }
+    this.onVisibility = null;
+  }
+
   /** What the stream is doing. A copy, so a caller cannot disturb it. */
   streamStats(): LiveStreamStats {
     return { ...this.stats };
   }
 
-  /** Send a command to the engine. A no-op once the socket is gone. */
+  /** Send a command to Vyzor. A no-op once the socket is gone. */
   send(message: unknown): void {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(message));
@@ -503,8 +558,9 @@ export class LiveSession {
   }
 
   close(): void {
+    this.stopHeartbeat();
     if (this.socket) {
-      // A clean close code, so the engine sees a deliberate departure rather
+      // A clean close code, so Vyzor sees a deliberate departure rather
       // than a dropped connection.
       try {
         this.socket.close(1000, 'client closed');

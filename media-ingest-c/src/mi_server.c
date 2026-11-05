@@ -210,7 +210,7 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->allow_origins = NULL;
     cfg->auth_token = NULL;
     cfg->max_downloads = 200;
-    /* NULL means the engine's own default agent. */
+    /* NULL means Vyzor's own default agent. */
     cfg->user_agent = NULL;
     /*
      * Rendering is opt-in.
@@ -241,8 +241,16 @@ void mi_server_config_init(mi_server_config *cfg) {
      */
     cfg->interactive_enabled = 0;
     cfg->interactive_max_concurrent = 1;
-    cfg->interactive_idle_seconds = 180;
+    cfg->interactive_idle_seconds = 300;
     cfg->interactive_v8_heap_mb = 256;
+    /*
+     * The keepalive window, and its own knobs. The console sends an
+     * application-level heartbeat, so this is the backstop for a client that has
+     * genuinely gone rather than the only way to notice one. The built-in
+     * defaults live in mi_interactive.c; these are 0 so they apply.
+     */
+    cfg->interactive_keepalive_ping_seconds = 0;
+    cfg->interactive_keepalive_timeout_seconds = 0;
     /*
      * Live video over WebRTC. A third opt-in, and the most demanding: it needs
      * a browser on a real X display, so it costs an Xvfb and a Chromium per
@@ -1475,7 +1483,7 @@ static void *download_worker(void *arg) {
      * one, which is how a PDF or a text file gets through. */
     dcfg.require_media = !j->allow_non_media;
     /* A host that refuses a non-browser agent is a host the operator may have
-     * told the engine how to present itself to. */
+     * told Vyzor how to present itself to. */
     dcfg.user_agent = srv->cfg.user_agent;
 
     char *out_dir = j->out_dir ? mi_strdup(j->out_dir)
@@ -1893,7 +1901,7 @@ static char *query_str(const char *query, const char *name) {
 
 /* Forward one JSON command from the console to the browser. Unknown types are
  * ignored rather than fatal, so a newer console is not broken by an older
- * engine. */
+ * Vyzor. */
 static void ws_dispatch(mi_interactive *it, const mi_json *m) {
     const char *type = mi_json_get_string(m, "type", NULL);
     if (!type) return;
@@ -1946,6 +1954,17 @@ static void ws_dispatch(mi_interactive *it, const mi_json *m) {
         mi_interactive_watch_media(it, mi_json_get_bool(m, "on", 1));
     } else if (!strcmp(type, "rescan")) {
         mi_interactive_rescan_media(it);
+    } else if (!strcmp(type, "ping")) {
+        /*
+         * The console's own heartbeat.
+         *
+         * A browser answers a protocol ping automatically, but a backgrounded
+         * tab throttles its timers and a suspended phone stops answering at all,
+         * so the browser's pong alone is not a reliable sign of life. The console
+         * sends this on a timer that survives being backgrounded, and receiving
+         * any bytes already counts as being heard (see the read loop) — this
+         * handler exists so a heartbeat is a no-op rather than an error.
+         */
     } else if (!strcmp(type, "touch")) {
         /* Both point shapes are accepted; see mi_interactive_parse_points. */
         double coords[32];
@@ -2222,13 +2241,13 @@ static void handle_rtc_open(mi_server *srv, int fd, http_request *req, const cha
     if (!srv->rtc) {
         mi_json_value_free(body);
         send_error(fd, 503, "Service Unavailable",
-                   "live video is not enabled on this engine", cors);
+                   "live video is not enabled on this Vyzor", cors);
         return;
     }
     if (!mi_rtc_pool_available(srv->rtc)) {
         mi_json_value_free(body);
         send_error(fd, 503, "Service Unavailable",
-                   "no browser, Xvfb or GStreamer webrtc plugins on the engine host", cors);
+                   "no browser, Xvfb or GStreamer webrtc plugins on Vyzor host", cors);
         return;
     }
 
@@ -2386,7 +2405,7 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
     }
     /* The Origin is checked here too, because a WebSocket handshake is not
      * subject to CORS: without this, any page a user visits could open a
-     * session to their engine. */
+     * session to their Vyzor. */
     const char *origin = request_header(req, "Origin");
     if (srv->cfg.allow_origins && origin && !origin_allowed(srv->cfg.allow_origins, origin)) {
         send_error(fd, 403, "Forbidden", "origin is not allowed", NULL);
@@ -2402,13 +2421,13 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
 
     if (!srv->driver) {
         send_error(fd, 503, "Service Unavailable",
-                   "live sessions are not enabled on this engine", NULL);
+                   "live sessions are not enabled on this Vyzor", NULL);
         free(url);
         return;
     }
     if (!mi_interactive_pool_available(srv->driver)) {
         send_error(fd, 503, "Service Unavailable",
-                   "no browser is installed on the engine host", NULL);
+                   "no browser is installed on Vyzor host", NULL);
         free(url);
         return;
     }
@@ -2695,7 +2714,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
      *
      * There is no WebSocket here on purpose: the offer, the answer and the
      * state are one request each, and input rides a WebRTC data channel. A
-     * session is identified by a token the engine mints, which is why these
+     * session is identified by a token Vyzor mints, which is why these
      * routes are handled before the bearer check — a browser cannot put an
      * Authorization header on a WebRTC connection's setup, and the token is
      * the credential.
@@ -2791,8 +2810,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_int(&b, srv->cfg.max_body_bytes);
         mi_json_raw(&b, ",\"workers\":");
         mi_json_int(&b, srv->cfg.workers);
-        mi_json_raw(&b, ",\"engine_version\":");
-        mi_json_string(&b, MI_ENGINE_VERSION);
+        mi_json_raw(&b, ",\"vyzor_version\":");
+        mi_json_string(&b, MI_VYZOR_VERSION);
         /* Whether transcoding is actually possible is a property of this host,
          * so it is probed rather than asserted. */
         mi_json_raw(&b, ",\"ffmpeg\":");
@@ -2952,7 +2971,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
      *
      * The console cannot do this itself: the browser enforces CORS and most
      * media hosts send no CORS headers, so a direct fetch from the page is
-     * blocked. The engine is not bound by that, so the listing happens here. */
+     * blocked. Vyzor is not bound by that, so the listing happens here. */
     if (!strcmp(req->path, "/api/v1/browse") && !strcmp(req->method, "POST")) {
         mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
         const char *url = mi_json_get_string(in, "url", NULL);
@@ -3019,7 +3038,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
 
     /* GET /api/v1/page?url=… — the fetched bytes of a page, to be shown.
      *
-     * The console cannot fetch an arbitrary site itself (CORS), so the engine
+     * The console cannot fetch an arbitrary site itself (CORS), so Vyzor
      * does, and the console renders the result. The response says whether the
      * site permits being framed: a browser enforces X-Frame-Options and CSP
      * frame-ancestors on the framed document, so a site that refuses is
@@ -3106,17 +3125,17 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
      * A render is expensive — roughly half a gigabyte and a second or two — so
      * a request that arrives when the gate is full is refused with 503 and a
      * Retry-After rather than queued. A queue behind a slow page would grow
-     * without bound and take the whole engine down with it.
+     * without bound and take the whole Vyzor down with it.
      */
     if (!strcmp(req->path, "/api/v1/render") && !strcmp(req->method, "GET")) {
         if (!srv->renderer) {
             send_error(fd, 503, "Service Unavailable",
-                       "rendering is not enabled on this engine", cors);
+                       "rendering is not enabled on this Vyzor", cors);
             return;
         }
         if (!mi_render_pool_available(srv->renderer)) {
             send_error(fd, 503, "Service Unavailable",
-                       "no browser is installed on the engine host", cors);
+                       "no browser is installed on Vyzor host", cors);
             return;
         }
 
@@ -3634,7 +3653,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
 
     /* GET /api/v1/system/storage — real disk + library figures.
      * Everything here is measured, never estimated: statvfs for the volume and
-     * a walk of the work dir for what this engine has written. */
+     * a walk of the work dir for what this Vyzor has written. */
     if (!strcmp(req->path, "/api/v1/system/storage") && !strcmp(req->method, "GET")) {
         const char *work_dir = srv->download_dir;
 
@@ -3670,7 +3689,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                                        fs_device, sizeof fs_device) == 0;
 
         /* Writability is proven, not assumed: the UI needs to know whether the
-         * engine can really write here before it offers the path as a choice. */
+         * Vyzor can really write here before it offers the path as a choice. */
         char werr[160] = {0};
         int writable = probe_writable(work_dir, werr, sizeof werr) == 0;
 
@@ -3854,7 +3873,7 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
         rcfg.profile_root = cfg->render_profile_root;
 
         /* The cache lives beside the downloads unless told otherwise: it is the
-         * same volume the operator already sized for this engine's data. */
+         * same volume the operator already sized for this Vyzor's data. */
         char *cache_dir = NULL;
         if (cfg->render_cache_dir && *cfg->render_cache_dir) {
             cache_dir = mi_strdup(cfg->render_cache_dir);

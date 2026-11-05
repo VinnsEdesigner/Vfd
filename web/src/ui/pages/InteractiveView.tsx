@@ -1,7 +1,7 @@
 /**
  * InteractiveView — a page you can actually use.
  *
- * This replaces a picture of a page with the page itself: the engine keeps a
+ * This replaces a picture of a page with the page itself: Vyzor keeps a
  * browser alive, streams what it draws, and forwards the input this view
  * captures. A search box can be typed in, a link followed, a page scrolled —
  * none of which a screenshot can do.
@@ -9,17 +9,17 @@
  * WHAT THIS VIEW OWNS
  *
  *   the canvas        an <img> showing the latest frame
- *   the input bridge  DOM events, mapped to the engine's commands
+ *   the input bridge  DOM events, mapped to Vyzor's commands
  *   the sizing        keeping the browser's viewport in step with the stage
  *
  * WHAT IT DOES NOT OWN
  *
  *   the socket        that is the `useLiveSession` hook, passed in as `live`
- *   the engine        the engine decides whether a page may be driven at all
+ *   Vyzor        Vyzor decides whether a page may be driven at all
  *
- * A page driven here runs with the engine's browser, unsandboxed (an
+ * A page driven here runs with Vyzor's browser, unsandboxed (an
  * unprivileged container cannot use Chromium's namespace sandbox). That is why
- * the engine only opens pages the operator would be willing to visit, and why
+ * Vyzor only opens pages the operator would be willing to visit, and why
  * this view says plainly that the page is live.
  */
 
@@ -58,13 +58,13 @@ export interface LiveViewProps {
   status: LiveStatus;
   frame: LiveFrame | null;
   page: LivePageState | null;
-  /** The size the engine is drawing at, once open. Locks the stage's shape. */
+  /** The size Vyzor is drawing at, once open. Locks the stage's shape. */
   viewport: { width: number; height: number } | null;
   /**
    * What the stream is doing: frames received, frames skipped, worst gap.
    *
    * Shown in the bar because a live view that stutters is otherwise impossible
-   * to diagnose from the outside — a gap means the engine dropped frames to keep
+   * to diagnose from the outside — a gap means Vyzor dropped frames to keep
    * up, and a large gap with no skips means the link itself is slow.
    */
   stats: LiveStreamStats | null;
@@ -80,7 +80,7 @@ export interface InteractiveViewProps {
   url: string;
   live: LiveViewProps;
   /**
-   * A raw-video session, when the engine can host one and the viewer chose
+   * A raw-video session, when Vyzor can host one and the viewer chose
    * it. Absent means the JPEG path is the only one available, which is the
    * behaviour this view had before video existed.
    *
@@ -122,11 +122,11 @@ export interface InteractiveViewProps {
 function failureLabel(f: LiveFailure): string {
   switch (f) {
     case 'disabled':
-      return 'Live pages are turned off on this engine';
+      return 'Live pages are turned off on this Vyzor';
     case 'unavailable':
-      return 'This engine has no browser installed, so it cannot drive a page';
+      return 'This Vyzor has no browser installed, so it cannot drive a page';
     case 'busy':
-      return 'The engine is already driving another page — try again in a moment';
+      return 'Vyzor is already driving another page — try again in a moment';
     case 'refused':
       return 'That address cannot be driven — only public http(s) pages can';
     case 'closed':
@@ -139,17 +139,17 @@ function failureLabel(f: LiveFailure): string {
 function failureDetail(f: LiveFailure): string {
   switch (f) {
     case 'disabled':
-      return 'The engine has live sessions turned off. It is started with --interactive on a host that has a browser.';
+      return 'Vyzor has live sessions turned off. It is started with --interactive on a host that has a browser.';
     case 'unavailable':
-      return 'Driving a page needs a browser on the engine host. The engine reports this in its capabilities, so this control is only offered where it works.';
+      return 'Driving a page needs a browser on Vyzor host. Vyzor reports this in its capabilities, so this control is only offered where it works.';
     case 'busy':
       return 'Only a few pages can be driven at once, because each one holds a whole browser open. Nothing is queued — close the other session or ask again shortly.';
     case 'refused':
-      return 'Only public http(s) pages are driven. A file:// path would read the engine’s disk, and loopback or link-local addresses are refused.';
+      return 'Only public http(s) pages are driven. A file:// path would read Vyzor’s disk, and loopback or link-local addresses are refused.';
     case 'closed':
-      return 'The engine closed the session — a page that sat idle is closed rather than left running, and a page that crashed is reported here.';
+      return 'Vyzor closed the session — a page that sat idle is closed rather than left running, and a page that crashed is reported here.';
     default:
-      return 'The engine’s browser could not open that page.';
+      return 'Vyzor’s browser could not open that page.';
   }
 }
 
@@ -195,7 +195,7 @@ export function InteractiveView({
     videoOpen(videoUrl, el);
   }, [videoOn, videoUrl, videoOpen]);
 
-  // A session left running when the stage goes away would hold the engine's one
+  // A session left running when the stage goes away would hold Vyzor's one
   // slot, so it is closed on unmount.
   useEffect(
     () => () => {
@@ -222,7 +222,7 @@ export function InteractiveView({
    * character that arrives is forwarded to the page and then cleared.
    */
   const kbdRef = useRef<HTMLTextAreaElement | null>(null);
-  /** The last viewport we told the engine about, so we do not repeat ourselves. */
+  /** The last viewport we told Vyzor about, so we do not repeat ourselves. */
   const sentSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
   /*
    * Whether the stage is driving a page, which is what enables the input
@@ -235,7 +235,7 @@ export function InteractiveView({
   const [hudOpen, setHudOpen] = useState(false);
 
   /**
-   * Tell the engine the size the page should be drawn at.
+   * Tell Vyzor the size the page should be drawn at.
    *
    * Only used when the viewport is *not* fixed — on a phone it is, so this is
    * inert there. Re-fitting a live page on every stage resize is what made the
@@ -321,7 +321,7 @@ export function InteractiveView({
    *
    * A tap focuses whatever is under it — a link, a button, blank space — and a
    * real browser only opens a keyboard when that was a text field. The console
-   * cannot see the page's DOM, so the engine reports whether an editable element
+   * cannot see the page's DOM, so Vyzor reports whether an editable element
    * is focused (`page.editing`) and the keyboard is raised on that answer rather
    * than on the tap. A tap that focuses nothing therefore does nothing.
    */
@@ -381,7 +381,7 @@ export function InteractiveView({
    * and no tap to focus a field, so the on-screen keyboard never appears.
    *
    * The mapping is deliberately simple: one or two fingers, tracked by id, sent
-   * as the engine's flat point list. A tap goes through as touchStart/touchEnd
+   * as Vyzor's flat point list. A tap goes through as touchStart/touchEnd
    * *and* as a mouse click, because a page's field focus follows the click that
    * Chrome synthesises from a tap, and that synthesis does not always happen for
    * injected touches.
@@ -664,7 +664,7 @@ export function InteractiveView({
             size="sm"
             onClick={() => send({ type: 'screenshot' })}
             disabled={!isLive}
-            title="Ask the engine for a full-resolution still"
+            title="Ask Vyzor for a full-resolution still"
           >
             <IconImage /> Still
           </Button>
@@ -682,14 +682,14 @@ export function InteractiveView({
       {status === 'idle' && !videoOn && (
         <EmptyState
           title="Open this page live"
-          description="The engine keeps a browser on this page so you can use it — type in it, follow a link, scroll. Press Open to start; nothing runs until you do."
+          description="Vyzor keeps a browser on this page so you can use it — type in it, follow a link, scroll. Press Open to start; nothing runs until you do."
         />
       )}
 
       {status === 'connecting' && (
         <div className="live__waiting">
           <Spinner size="lg" />
-          <p>The engine is opening this page in a browser…</p>
+          <p>Vyzor is opening this page in a browser…</p>
         </div>
       )}
 
@@ -706,10 +706,10 @@ export function InteractiveView({
 
       {isLive && (
         <>
-          {/* A page driven by the engine's browser runs unsandboxed, so say so
+          {/* A page driven by Vyzor's browser runs unsandboxed, so say so
               rather than let it look like an ordinary frame. */}
           <Note className="live__note">
-            This page is being driven by the engine’s own browser. It is not sandboxed — only open
+            This page is being driven by Vyzor’s own browser. It is not sandboxed — only open
             pages you would be willing to visit.
           </Note>
           {/*
@@ -778,7 +778,7 @@ export function InteractiveView({
                 ref={imgRef}
                 className="live__frame"
                 src={shownFrame.url}
-                alt={`The engine’s view of ${liveUrl}`}
+                alt={`Vyzor’s view of ${liveUrl}`}
                 draggable={false}
               />
             ) : (
@@ -821,7 +821,7 @@ export function InteractiveView({
           {/*
             What the stream is doing, in the open. A live view that stutters is
             otherwise impossible to diagnose from the outside: a rising skip count
-            means the engine is dropping frames to keep up, while a large worst-gap
+            means Vyzor is dropping frames to keep up, while a large worst-gap
             with no skips means the link itself is slow. Both are worth knowing,
             and neither is guessable from the picture.
           */}

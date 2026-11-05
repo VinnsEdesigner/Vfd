@@ -1,7 +1,7 @@
 /**
  * Live-session socket tests.
  *
- * The engine sends two kinds of message over one socket: JSON text (ready, state,
+ * Vyzor sends two kinds of message over one socket: JSON text (ready, state,
  * closed, error, and a header for each image) and binary (the image itself). The
  * decoder's job is to pair a header with the binary that follows it and hand the
  * caller one `LiveFrame`, and to revoke nothing it does not own.
@@ -67,12 +67,12 @@ beforeEach(() => {
 });
 
 function client() {
-  return createApiClient({ baseUrl: 'http://engine.test:8787' });
+  return createApiClient({ baseUrl: 'http://Vyzor.test:8787' });
 }
 
 describe('createLiveResource', () => {
   it('builds a ws:// url with the query and, when set, the token', () => {
-    const withToken = createApiClient({ baseUrl: 'http://engine.test:8787', authToken: 'secret' });
+    const withToken = createApiClient({ baseUrl: 'http://Vyzor.test:8787', authToken: 'secret' });
     const url = createLiveResource(withToken).url('https://example.com/', 800, 600);
     const parsed = new URL(url);
     expect(parsed.protocol).toBe('ws:');
@@ -83,8 +83,8 @@ describe('createLiveResource', () => {
     expect(parsed.searchParams.get('token')).toBe('secret');
   });
 
-  it('uses wss: for an https engine and omits the token when there is none', () => {
-    const secure = createApiClient({ baseUrl: 'https://engine.example' });
+  it('uses wss: for an https Vyzor and omits the token when there is none', () => {
+    const secure = createApiClient({ baseUrl: 'https://Vyzor.example' });
     const url = createLiveResource(secure).url('https://example.com/', 1024, 768);
     expect(new URL(url).protocol).toBe('wss:');
     expect(new URL(url).searchParams.has('token')).toBe(false);
@@ -104,7 +104,7 @@ describe('LiveSession decoding', () => {
     onOpen?: () => void;
     onClose?: (f: string, r: string) => void;
   }) {
-    const session = new LiveSession('ws://engine.test/api/v1/interactive?url=x', handlers);
+    const session = new LiveSession('ws://Vyzor.test/api/v1/interactive?url=x', handlers);
     session.connect();
     return { session, socket: FakeSocket.instances[0]! };
   }
@@ -180,7 +180,7 @@ describe('LiveSession decoding', () => {
     expect(onClose).toHaveBeenCalledWith('failed', expect.any(String));
   });
 
-  it('names a closed-by-engine session from its message', () => {
+  it('names a closed-by-Vyzor session from its message', () => {
     const onClose = vi.fn();
     const { socket } = sessionWith({ onClose });
     socket.open();
@@ -195,5 +195,74 @@ describe('LiveSession decoding', () => {
     socket.open();
     expect(() => socket.onmessage?.({ data: 'not json' })).not.toThrow();
     expect(onMessage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The heartbeat.
+ *
+ * The engine gives up on a client it has not heard from, and the browser's own
+ * pong is not a reliable sign of life — a backgrounded tab throttles its timers
+ * and a sleeping phone stops answering entirely. So the console says "still
+ * here" itself. These pin that it does, that it stops when the session ends, and
+ * that returning to the foreground says so at once.
+ */
+describe('LiveSession heartbeat', () => {
+  it('sends a ping on an interval while the socket is open', () => {
+    vi.useFakeTimers();
+    try {
+      const { session, socket } = (() => {
+        const s = new LiveSession('ws://vyzor.test/api/v1/interactive?url=x', {});
+        s.connect();
+        return { session: s, socket: FakeSocket.instances[0]! };
+      })();
+      socket.open();
+      vi.advanceTimersByTime(20_000);
+      expect(socket.sent).toEqual([JSON.stringify({ type: 'ping' })]);
+      vi.advanceTimersByTime(20_000);
+      expect(socket.sent).toHaveLength(2);
+      session.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops heartbeating once the session is closed', () => {
+    vi.useFakeTimers();
+    try {
+      const s = new LiveSession('ws://vyzor.test/api/v1/interactive?url=x', {});
+      s.connect();
+      const socket = FakeSocket.instances[0]!;
+      socket.open();
+      vi.advanceTimersByTime(20_000);
+      const before = socket.sent.length;
+      s.close();
+      vi.advanceTimersByTime(60_000);
+      expect(socket.sent.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends a ping when the tab returns to the foreground', () => {
+    const listeners: Array<() => void> = [];
+    const original = (globalThis as { document?: unknown }).document;
+    (globalThis as { document?: unknown }).document = {
+      visibilityState: 'visible',
+      addEventListener: (_: string, fn: () => void) => listeners.push(fn),
+      removeEventListener: () => {},
+    };
+    try {
+      const s = new LiveSession('ws://vyzor.test/api/v1/interactive?url=x', {});
+      s.connect();
+      const socket = FakeSocket.instances[0]!;
+      socket.open();
+      expect(listeners).toHaveLength(1);
+      listeners[0]!();
+      expect(socket.sent).toContain(JSON.stringify({ type: 'ping' }));
+      s.close();
+    } finally {
+      (globalThis as { document?: unknown }).document = original;
+    }
   });
 });

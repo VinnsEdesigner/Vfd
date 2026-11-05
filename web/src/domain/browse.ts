@@ -3,7 +3,7 @@
  *
  * These are *candidates* — files that live somewhere else on the internet and can
  * be fetched. They are not library items: nothing here is on this device or in
- * the engine until the user asks for it. Keeping the two apart is why the browse
+ * Vyzor until the user asks for it. Keeping the two apart is why the browse
  * view cannot accidentally present a remote URL as if it were already saved.
  *
  * Pure domain: no framework types, no fetch, no React.
@@ -63,7 +63,7 @@ export interface BrowseQuery {
 export type BrowseFilter = 'media' | 'all';
 
 /**
- * A page the engine fetched, to be shown rather than listed.
+ * A page Vyzor fetched, to be shown rather than listed.
  *
  * `framable` is whether the site permits being embedded. A browser enforces the
  * site's own X-Frame-Options / CSP on the framed document, so a refusal is
@@ -74,7 +74,7 @@ export type BrowseFilter = 'media' | 'all';
  * renderer: it runs a real browser and returns a picture instead.
  */
 export interface FetchedPage {
-  /** The URL the engine should be asked to serve the bytes from. */
+  /** The URL Vyzor should be asked to serve the bytes from. */
   url: string;
   framable: boolean;
   /** Which header refused framing, when one did. */
@@ -102,7 +102,7 @@ export interface RenderedPage {
  * something specific for each rather than one vague failure.
  */
 export type RenderFailure =
-  | 'disabled'   /* the engine has rendering turned off */
+  | 'disabled'   /* Vyzor has rendering turned off */
   | 'unavailable'/* enabled, but no browser on the host */
   | 'busy'       /* the gate is full; worth retrying */
   | 'timeout'    /* the page did not settle */
@@ -117,12 +117,12 @@ export type RenderFailure =
  * request because it is a stream in both directions: frames out, input in.
  *
  * The capability that says whether this is possible lives in `media.ts` with the
- * rest of the engine capabilities; the wire shape is in `wire.ts`.
+ * rest of Vyzor capabilities; the wire shape is in `wire.ts`.
  */
 
 /** Why a live session ended, or could not start. */
 export type LiveFailure =
-  | 'disabled'    /* the engine has live sessions turned off */
+  | 'disabled'    /* Vyzor has live sessions turned off */
   | 'unavailable' /* enabled, but no browser on the host */
   | 'busy'        /* the gate is full; worth retrying */
   | 'refused'     /* the URL is not one we drive */

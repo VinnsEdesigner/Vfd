@@ -1,10 +1,10 @@
 /* mi_cli.c - command line front end.
  *
- *   media-ingest detect  <url>
- *   media-ingest fetch   <url> -o <dir> [-c N] [-H "K: V"] ...
- *   media-ingest detect-file <path>
- *   media-ingest hls     <input> -o <dir> [--renditions 1080,720,480]
- *   media-ingest ingest  <url> -o <dir> --hls <hlsdir>
+ *   vyzor detect  <url>
+ *   vyzor fetch   <url> -o <dir> [-c N] [-H "K: V"] ...
+ *   vyzor detect-file <path>
+ *   vyzor hls     <input> -o <dir> [--renditions 1080,720,480]
+ *   vyzor ingest  <url> -o <dir> --hls <hlsdir>
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -23,7 +23,7 @@
 #include "mi_storage.h"
 #include "mi_util.h"
 
-#define MI_VERSION MI_ENGINE_VERSION
+#define MI_VERSION MI_VYZOR_VERSION
 
 /* ------------------------------------------------------------------ */
 /* storage option bundle                                               */
@@ -482,7 +482,8 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
                      const char *user_agent, int render, int render_timeout,
                      int render_concurrent, const char *render_cache_dir,
                      int render_cache_ttl, int interactive, int interactive_concurrent,
-                     int interactive_idle, int rtc, int rtc_concurrent, int rtc_fps,
+                     int interactive_idle, int interactive_keepalive,
+                     int interactive_silence, int rtc, int rtc_concurrent, int rtc_fps,
                      int rtc_bitrate, const char *rtc_stun) {
     mi_server_config cfg;
     mi_server_config_init(&cfg);
@@ -500,6 +501,8 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
     cfg.interactive_enabled = interactive;
     if (interactive_concurrent > 0) cfg.interactive_max_concurrent = interactive_concurrent;
     if (interactive_idle > 0) cfg.interactive_idle_seconds = interactive_idle;
+    if (interactive_keepalive > 0) cfg.interactive_keepalive_ping_seconds = interactive_keepalive;
+    if (interactive_silence > 0) cfg.interactive_keepalive_timeout_seconds = interactive_silence;
     cfg.rtc_enabled = rtc;
     if (rtc_concurrent > 0) cfg.rtc_max_concurrent = rtc_concurrent;
     if (rtc_fps > 0) cfg.rtc_fps = rtc_fps;
@@ -566,22 +569,23 @@ static int cmd_upload(const char *local, const storage_opts *o) {
 
 static void usage(void) {
     fprintf(stderr,
-            "media-ingest " MI_VERSION "\n"
+            "vyzor " MI_VERSION "\n"
             "Usage:\n"
-            "  media-ingest detect <url> [-H 'K: V']...\n"
-            "  media-ingest detect-file <path>\n"
-            "  media-ingest fetch <url> -o <dir> [-n name] [-c N] [--chunk-size N]\n"
+            "  vyzor detect <url> [-H 'K: V']...\n"
+            "  vyzor detect-file <path>\n"
+            "  vyzor fetch <url> -o <dir> [-n name] [-c N] [--chunk-size N]\n"
             "                          [--allow-non-video] [--max-bytes N] [-q] [-H 'K: V']...\n"
-            "  media-ingest hls <input> -o <dir> [--renditions 1080,720,480] [--segment-seconds N]\n"
-            "  media-ingest ingest <url> -o <dir> [--hls <dir>] [--upload] [-c N] [-q] [-H 'K: V']...\n"
-            "  media-ingest serve [--host H] [--port N] [--work-dir D] [--auth-token T]\n"
+            "  vyzor hls <input> -o <dir> [--renditions 1080,720,480] [--segment-seconds N]\n"
+            "  vyzor ingest <url> -o <dir> [--hls <dir>] [--upload] [-c N] [-q] [-H 'K: V']...\n"
+            "  vyzor serve [--host H] [--port N] [--work-dir D] [--auth-token T]\n"
             "                      [--allow-origin ORIGINS] [--user-agent UA]\n"
             "                      [--render] [--render-timeout SECONDS] [--render-concurrent N]\n"
             "                      [--render-cache DIR] [--render-cache-ttl SECONDS] [--no-render-cache]\n"
             "                      [--interactive] [--interactive-concurrent N] [--interactive-idle SECONDS]\n"
+            "                      [--interactive-keepalive SECONDS] [--interactive-silence SECONDS]\n"
             "                      [--rtc] [--rtc-concurrent N] [--rtc-fps N] [--rtc-bitrate KBPS]\n"
             "                      [--rtc-stun URL]\n"
-            "  media-ingest upload <file-or-dir> --bucket B --access-key K --secret-key S\n"
+            "  vyzor upload <file-or-dir> --bucket B --access-key K --secret-key S\n"
             "                          [--endpoint URL] [--region R] [--prefix P] [--cdn-base URL]\n"
             "                          [--path-style|--virtual-host] [--purge --cf-token T --cf-zone Z]\n"
             "Storage (S3-compatible: AWS S3, Cloudflare R2, MinIO, B2, Spaces):\n"
@@ -661,7 +665,7 @@ int main(int argc, char **argv) {
         if (p && *p) serve_port = atoi(p);
     }
     /* Some hosts refuse a request that does not look like a browser, so what the
-     * engine calls itself is settable rather than compiled in. */
+     * Vyzor calls itself is settable rather than compiled in. */
     const char *serve_user_agent = getenv("MI_USER_AGENT");
     /* Rendering is opt-in: it costs about half a gigabyte per render and needs
      * a browser on the host. MI_RENDER=1 turns it on without a flag. */
@@ -672,6 +676,8 @@ int main(int argc, char **argv) {
     int serve_interactive = getenv("MI_INTERACTIVE") != NULL;
     int serve_interactive_concurrent = 0;
     int serve_interactive_idle = 0;
+    int serve_interactive_keepalive = 0;
+    int serve_interactive_silence = 0;
     int serve_rtc = getenv("MI_RTC") != NULL;
     int serve_rtc_concurrent = 0;
     int serve_rtc_fps = 0;
@@ -706,6 +712,7 @@ int main(int argc, char **argv) {
         OPT_RENDER, OPT_RENDER_TIMEOUT, OPT_RENDER_CONCURRENT,
         OPT_RENDER_CACHE, OPT_RENDER_CACHE_TTL, OPT_NO_RENDER_CACHE,
         OPT_INTERACTIVE, OPT_INTERACTIVE_CONCURRENT, OPT_INTERACTIVE_IDLE,
+        OPT_INTERACTIVE_KEEPALIVE, OPT_INTERACTIVE_SILENCE,
         OPT_RTC, OPT_RTC_CONCURRENT, OPT_RTC_FPS, OPT_RTC_BITRATE, OPT_RTC_STUN
     };
     static struct option long_opts[] = {
@@ -748,6 +755,8 @@ int main(int argc, char **argv) {
         {"interactive", no_argument, 0, OPT_INTERACTIVE},
         {"interactive-concurrent", required_argument, 0, OPT_INTERACTIVE_CONCURRENT},
         {"interactive-idle", required_argument, 0, OPT_INTERACTIVE_IDLE},
+        {"interactive-keepalive", required_argument, 0, OPT_INTERACTIVE_KEEPALIVE},
+        {"interactive-silence", required_argument, 0, OPT_INTERACTIVE_SILENCE},
         {"rtc", no_argument, 0, OPT_RTC},
         {"rtc-concurrent", required_argument, 0, OPT_RTC_CONCURRENT},
         {"rtc-fps", required_argument, 0, OPT_RTC_FPS},
@@ -806,6 +815,8 @@ int main(int argc, char **argv) {
             case OPT_INTERACTIVE: serve_interactive = 1; break;
             case OPT_INTERACTIVE_CONCURRENT: serve_interactive_concurrent = atoi(optarg); break;
             case OPT_INTERACTIVE_IDLE: serve_interactive_idle = atoi(optarg); break;
+            case OPT_INTERACTIVE_KEEPALIVE: serve_interactive_keepalive = atoi(optarg); break;
+            case OPT_INTERACTIVE_SILENCE: serve_interactive_silence = atoi(optarg); break;
             case OPT_RTC: serve_rtc = 1; break;
             case OPT_RTC_CONCURRENT: serve_rtc_concurrent = atoi(optarg); break;
             case OPT_RTC_FPS: serve_rtc_fps = atoi(optarg); break;
@@ -876,7 +887,8 @@ int main(int argc, char **argv) {
                            serve_render_timeout, serve_render_concurrent,
                            serve_render_cache, serve_render_cache_ttl,
                            serve_interactive, serve_interactive_concurrent,
-                           serve_interactive_idle, serve_rtc, serve_rtc_concurrent,
+                           serve_interactive_idle, serve_interactive_keepalive,
+                           serve_interactive_silence, serve_rtc, serve_rtc_concurrent,
                            serve_rtc_fps, serve_rtc_bitrate, serve_rtc_stun);
             break;
         default: rc = 2;

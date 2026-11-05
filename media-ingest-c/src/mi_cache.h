@@ -10,7 +10,7 @@
  * changed is not served from yesterday.
  *
  * The payload lives on disk and only the index is in memory. Memory is this
- * engine's binding constraint — a render holds half a gigabyte while it runs —
+ * Vyzor's binding constraint — a render holds half a gigabyte while it runs —
  * so the cache must not compete with it, and a screenshot is not something to
  * keep resident.
  */
