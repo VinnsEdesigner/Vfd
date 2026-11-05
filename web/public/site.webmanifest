@@ -1,6 +1,6 @@
 {
-  "name": "Vyzorix File Downloader",
-  "short_name": "Vyzorix",
+  "name": "Vfd",
+  "short_name": "Vfd",
   "description": "Download, transcode and deliver media.",
   "start_url": "/",
   "display": "standalone",

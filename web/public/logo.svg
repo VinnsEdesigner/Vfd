@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Vyzorix File Downloader">
-  <title>Vyzorix File Downloader</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Vfd">
+  <title>Vfd</title>
 
   <defs>
     <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
@@ -17,7 +17,7 @@
         fill="#ffffff" opacity="0.16"/>
 
   <!-- The V doubles as the arrowhead: a shaft descends into a chevron, and the
-       pair lands in a tray. Reads as "Vyzorix" and as "download" at once. -->
+       pair lands in a tray. Reads as "Vfd" and as "download" at once. -->
   <g fill="none" stroke="url(#mark)" stroke-width="50" stroke-linecap="round" stroke-linejoin="round">
     <path d="M256 108 L256 232"/>
     <path d="M156 190 L256 292 L356 190"/>
