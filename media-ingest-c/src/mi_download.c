@@ -1190,6 +1190,48 @@ int mi_download(const mi_download_config *cfg, const char *url, const char *dest
     }
 
     int recognised = plan.media.is_video || plan.media.is_image || plan.media.is_audio;
+    /*
+     * A page the extractor knows is asked *before* the payload is judged.
+     *
+     * The media check refuses anything the detector does not recognise, and a
+     * streaming page is an HTML document — so a watch page was refused here,
+     * before the extractor was ever consulted, and the download failed with no
+     * log line and no explanation. The check is right for a URL that is *meant*
+     * to be a file; it must not pre-empt the case where the URL is a page whose
+     * media lives somewhere else.
+     */
+    if (cfg->extract_pages && !recognised) {
+        int src = download_stream_page(cfg, plan.final_url ? plan.final_url : url, dest,
+                                       on_progress, user, out);
+        if (src == MI_OK) {
+            mi_download_plan_free(&plan);
+            return MI_OK;
+        }
+        /*
+         * The extractor failed, and the URL is a *page*.
+         *
+         * Falling through here would copy the HTML and report success — a
+         * 3,271-byte `<!DOCTYPE html>` saved as the video, `state: done`. That is
+         * the worst shape of failure: it looks right, and the user only finds out
+         * when they open the file. A URL that probed as a page, that the
+         * extractor was asked about and could not resolve, is a URL whose media
+         * is not available — so it is reported as a failure with the reason.
+         *
+         * A URL with real bytes still falls through: the extractor not knowing a
+         * site says nothing about a URL that is plainly a file.
+         */
+        if (!recognised && plan.total_bytes <= 0) {
+            mi_logf(MI_LOG_ERROR,
+                    "the page could not be resolved to media, and it is not a file "
+                    "(the extractor may be rate-limited or out of date)");
+            mi_download_plan_free(&plan);
+            mi_download_result_free(out);
+            return MI_ERR_NET;
+        }
+        /* Not a page the extractor knows. Fall through, so a refusal below is
+         * reported with its own reason rather than as a failed extraction. */
+    }
+
     if (plan.have_media && cfg->require_media && !recognised) {
         mi_logf(MI_LOG_ERROR, "refusing unrecognised payload (detected %s)",
                 mi_kind_name(plan.media.kind));
@@ -1216,37 +1258,6 @@ int mi_download(const mi_download_config *cfg, const char *url, const char *dest
         (plan.media.kind == MI_KIND_HLS || plan.media.kind == MI_KIND_DASH)) {
         rc = download_manifest(cfg, plan.final_url ? plan.final_url : url, dest,
                                on_progress, user, out);
-    } else if (cfg->extract_pages && (!plan.have_media || !plan.media.is_video)) {
-        /*
-         * A page the extractor can read, rather than a file.
-         *
-         * The probe of a streaming page finds an HTML document, so the media
-         * check either refuses it or reports no video. The page is where the
-         * streams are, so the extractor is asked — and if it knows the page, the
-         * download is its streams muxed together.
-         *
-         * Tried *before* the ordinary paths because a page that the extractor
-         * recognises is not something a ranged copy can fetch: the bytes are not
-         * at this URL at all.
-         */
-        int src = download_stream_page(cfg, plan.final_url ? plan.final_url : url, dest,
-                                       on_progress, user, out);
-        if (src == MI_OK) {
-            rc = MI_OK;
-        } else if (!plan.have_media || plan.total_bytes <= 0) {
-            /* The extractor did not know it and there is nothing to copy. */
-            rc = src;
-        } else {
-            /* The extractor did not know it, but the URL is a real object, so
-             * fall through to the ordinary transfer. */
-            rc = plan.accept_ranges && plan.total_bytes > 0
-                     ? download_ranged(cfg, plan.final_url ? plan.final_url : url,
-                                       plan.total_bytes, dest, on_progress, user, out,
-                                       plan.have_media ? &plan.media : NULL)
-                     : download_stream(cfg, plan.final_url ? plan.final_url : url, dest,
-                                       on_progress, user, out,
-                                       plan.have_media ? &plan.media : NULL);
-        }
     } else if (plan.accept_ranges && plan.total_bytes > 0) {
         rc = download_ranged(cfg, plan.final_url ? plan.final_url : url,
                              plan.total_bytes, dest, on_progress, user, out,

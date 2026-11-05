@@ -121,6 +121,9 @@ static char *run_extractor(const mi_extract_config *cfg, const char *url, int pr
         execvp(argv[0], (char *const *)argv);
         _exit(127);
     }
+    /* The parent must close its copy of the write end, or the read below never
+     * sees EOF: the child's exit leaves the pipe open through this fd and the
+     * loop waits for a writer that will never write again. */
     close(pipefd[1]);
 
     /*
@@ -213,7 +216,10 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
 
     int code = -1;
     char *json = run_extractor(cfg, url, 0, &code);
-    if (!json) return MI_ERR_NET;
+    if (!json) {
+        mi_logf(MI_LOG_ERROR, "extract: the extractor produced no output (exit %d)", code);
+        return MI_ERR_NET;
+    }
     /*
      * A non-zero exit is a failure, and saying so matters.
      *
@@ -225,6 +231,8 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
      * and zero formats, which reads as success. Measured on three sites at once.
      */
     if (code != 0) {
+        mi_logf(MI_LOG_ERROR, "extract: the extractor exited %d (%zu bytes of output)",
+                code, strlen(json));
         free(json);
         return MI_ERR_NET;
     }
