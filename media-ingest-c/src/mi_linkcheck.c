@@ -38,32 +38,6 @@ static int is_checkable(const char *u) {
     return u && (strncasecmp(u, "http://", 7) == 0 || strncasecmp(u, "https://", 8) == 0);
 }
 
-/* Resolve `ref` against `base`. */
-static char *resolve_url(const char *base, const char *ref) {
-    if (!ref || !*ref) return NULL;
-    if (strstr(ref, "://") || !strncmp(ref, "//", 2)) return mi_strdup(ref);
-    if (!base || !*base) return mi_strdup(ref);
-    if (*ref == '#') return mi_strdup(base);
-    if (*ref == '/') {
-        const char *p = strstr(base, "://");
-        if (!p) return mi_strdup(ref);
-        const char *slash = strchr(p + 3, '/');
-        size_t origin = slash ? (size_t)(slash - base) : strlen(base);
-        char *out = mi_malloc(origin + strlen(ref) + 1);
-        if (!out) return NULL;
-        memcpy(out, base, origin);
-        strcpy(out + origin, ref);
-        return out;
-    }
-    const char *slash = strrchr(base, '/');
-    if (!slash) return mi_strdup(ref);
-    size_t dir = (size_t)(slash - base) + 1;
-    char *out = mi_malloc(dir + strlen(ref) + 1);
-    if (!out) return NULL;
-    memcpy(out, base, dir);
-    strcpy(out + dir, ref);
-    return out;
-}
 
 /* A work item: one link to check, and where to write the answer. */
 typedef struct {
