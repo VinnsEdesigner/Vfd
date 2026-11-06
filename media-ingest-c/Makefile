@@ -22,7 +22,8 @@ LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_sanitize.c $(SRC_DIR)/mi_identify.c $(SRC_DIR)/mi_outbox.c $(SRC_DIR)/mi_rtc.c $(SRC_DIR)/mi_ws.c $(SRC_DIR)/mi_interactive.c $(SRC_DIR)/mi_mediawatch.c \
            $(SRC_DIR)/mi_crawl.c $(SRC_DIR)/mi_extract.c \
            $(SRC_DIR)/mi_identity.c $(SRC_DIR)/mi_captcha.c $(SRC_DIR)/mi_turso.c \
-           $(SRC_DIR)/mi_impersonate.c \
+           $(SRC_DIR)/mi_impersonate.c $(SRC_DIR)/mi_antibot.c \
+           $(SRC_DIR)/mi_browser_headers.c \
            $(SRC_DIR)/mi_frontier.c \
            $(SRC_DIR)/mi_server.c
 CLI_SRC := $(SRC_DIR)/mi_cli.c
@@ -42,6 +43,8 @@ TEST_IDENTITY_SRC := tests/test_identity.c
 TEST_CAPTCHA_SRC := tests/test_captcha.c
 TEST_FRONTIER_SRC := tests/test_frontier.c
 TEST_IMPERSONATE_SRC := tests/test_impersonate.c
+TEST_ANTIBOT_SRC := tests/test_antibot.c
+TEST_BROWSER_HEADERS_SRC := tests/test_browser_headers.c
 
 .PHONY: all clean test
 
@@ -101,7 +104,13 @@ $(BUILD)/test_frontier: $(LIB_SRC) $(TEST_FRONTIER_SRC) | $(BUILD)
 $(BUILD)/test_impersonate: $(LIB_SRC) $(TEST_IMPERSONATE_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_IMPERSONATE_SRC) $(LDLIBS)
 
-test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate
+$(BUILD)/test_antibot: $(LIB_SRC) $(TEST_ANTIBOT_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_ANTIBOT_SRC) $(LDLIBS)
+
+$(BUILD)/test_browser_headers: $(LIB_SRC) $(TEST_BROWSER_HEADERS_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_BROWSER_HEADERS_SRC) $(LDLIBS)
+
+test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate $(BUILD)/test_antibot $(BUILD)/test_browser_headers
 	$(BUILD)/test_media_ingest
 	$(BUILD)/test_server
 	$(BUILD)/test_render
@@ -118,6 +127,8 @@ test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUI
 	$(BUILD)/test_captcha
 	$(BUILD)/test_frontier
 	$(BUILD)/test_impersonate
+	$(BUILD)/test_antibot
+	$(BUILD)/test_browser_headers
 
 clean:
 	rm -rf $(BUILD)

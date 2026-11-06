@@ -16,6 +16,7 @@
 #include "mi_identity.h"
 #include "mi_impersonate.h"
 #include "mi_json.h"
+#include "mi_browser_headers.h"
 #include "mi_util.h"
 
 #define MI_HEADER_SNIFF 8192
@@ -110,7 +111,28 @@ static size_t write_file(char *ptr, size_t size, size_t nmemb, void *userdata) {
 static struct curl_slist *build_headers(const mi_download_config *cfg,
                                         const char *range) {
     struct curl_slist *list = NULL;
-    list = curl_slist_append(list, "Accept: */*");
+
+    /*
+     * A browser, when one was named.
+     *
+     * A site that checks header *coherence* — a UA claiming Chrome with no
+     * `sec-ch-ua`, or a client hint that disagrees with the UA — blocks the
+     * request however good the TLS fingerprint is. When the caller named a
+     * browser to imitate, the same coherent header set a real one sends is used,
+     * derived from the same family and version so the two cannot drift apart.
+     * The caller's own headers are appended after and win, so this is a default,
+     * not an override.
+     */
+    if (cfg->impersonate && *cfg->impersonate) {
+        char *bh[16];
+        size_t bn = mi_browser_headers(mi_browser_family_of(cfg->impersonate), NULL,
+                                       cfg->user_agent, bh, 16);
+        for (size_t i = 0; i < bn; i++) list = curl_slist_append(list, bh[i]);
+        mi_browser_headers_free(bh, bn);
+    } else {
+        list = curl_slist_append(list, "Accept: */*");
+    }
+
     /* The caller's agent when it named one, the built-in otherwise. A caller
      * header list can still override this, because it is appended after. */
     char *ua = mi_asprintf("User-Agent: %s",
