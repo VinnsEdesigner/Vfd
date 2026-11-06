@@ -32,7 +32,7 @@ import { Spinner } from '../primitives/Spinner';
 import { QualityPicker } from '../downloads/QualityPicker';
 import { IconSearch, IconDownload, IconPlay, IconRefresh } from '../primitives/Icons';
 import { formatBytes, type QualityOption } from '../../hooks/view-models';
-import { KNOWN_SITES, accessLabel } from '../../domain/sites';
+import { KNOWN_SITES, accessLabel } from '../../hooks';
 import type { ExtractEntry, ExtractResult } from '../../hooks';
 
 export type VideoMode = 'search' | 'channel';

@@ -317,6 +317,7 @@ void mi_crawl_result_free(mi_crawl_result *res) {
         free(res->hits[i].title);
         free(res->hits[i].mime);
         free(res->hits[i].found_on);
+        free(res->hits[i].thumbnail);
         for (size_t q = 0; q < res->hits[i].quality_count; q++) {
             free(res->hits[i].qualities[q].label);
         }
@@ -687,6 +688,8 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                          * well as the video does. */
                         mi_crawl_hit *h = &res->hits[res->hit_count - 1];
                         h->resolved = 1;
+                        /* The page's own poster, when the extractor reported one. */
+                        if (er.thumbnail && *er.thumbnail) h->thumbnail = mi_strdup(er.thumbnail);
                         /*
                          * The renditions, largest first, so the console can offer
                          * the choice. One entry per distinct height, carrying the

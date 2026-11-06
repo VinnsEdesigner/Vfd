@@ -293,6 +293,14 @@ export interface CrawlHit {
    * Empty for an ordinary file, which has no choice to make.
    */
   qualities: CrawlQuality[];
+  /**
+   * A poster for the result, when one was found.
+   *
+   * Null when neither the extractor reported one nor the link was an image —
+   * the card then shows a glyph by kind, which is honest about having no
+   * picture rather than showing a broken one.
+   */
+  thumbnail: string | null;
 }
 
 /**

@@ -134,6 +134,8 @@ export interface WireCrawlHit {
   via_browser: boolean;
   /** True when a media extractor resolved this page, so it is the media itself. */
   resolved: boolean;
+  /** A poster for the result, when one was found. */
+  thumbnail?: string | null;
   /** The renditions a resolved stream offers, largest first. */
   qualities?: WireCrawlQuality[];
 }

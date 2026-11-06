@@ -173,9 +173,32 @@ export function SiteSearch({
               {hits.map((hit) => (
                 <li key={hit.url} className="bcard">
                   <span className="bcard__thumb">
-                    <span className="bcard__glyph">
-                      <IconDownload />
-                    </span>
+                    {hit.thumbnail ? (
+                      /*
+                       * The poster the extractor reported, or an image link the
+                       * walk found. Fetched by the browser directly — the engine
+                       * is not in this path, and an image request carries no
+                       * credentials anyway, so a host that serves its pictures
+                       * publicly just works.
+                       */
+                      <img
+                        src={hit.thumbnail}
+                        alt=""
+                        loading="lazy"
+                        onError={(e) => {
+                          // A poster that will not load is worse than none: the
+                          // card falls back to the glyph rather than a broken
+                          // image.
+                          const img = e.currentTarget;
+                          img.style.display = 'none';
+                          img.parentElement?.classList.add('bcard__thumb--failed');
+                        }}
+                      />
+                    ) : (
+                      <span className="bcard__glyph">
+                        <IconDownload />
+                      </span>
+                    )}
                   </span>
                   <span className="bcard__body">
                     <span className="bcard__title" title={hit.url}>

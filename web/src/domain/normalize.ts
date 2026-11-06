@@ -225,6 +225,7 @@ export function normalizeCrawlResult(w: WireCrawlResult): CrawlResult {
       foundOn: i.found_on ?? null,
       viaBrowser: Boolean(i.via_browser),
       resolved: Boolean(i.resolved),
+      thumbnail: i.thumbnail && i.thumbnail.trim() ? i.thumbnail : null,
       qualities: Array.isArray(i.qualities)
         ? i.qualities.map((q) => ({
             height: typeof q.height === 'number' ? q.height : 0,

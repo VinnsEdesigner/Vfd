@@ -1137,6 +1137,19 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
             mi_extract_result_free(&er);
             return MI_ERR_IO;
         }
+        /* A pause must be honoured here too: ffmpeg is doing the transfer, so
+         * the downloader's own stop callback never runs. The child is killed and
+         * the partial file discarded — a muxed stream cannot resume. */
+        if (cfg->control && cfg->control->stop && cfg->control->stop(cfg->control->user)) {
+            kill(pid, SIGTERM);
+            struct timespec grace = {.tv_sec = 2, .tv_nsec = 0};
+            nanosleep(&grace, NULL);
+            if (waitpid(pid, &status, WNOHANG) != pid) kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            mi_extract_result_free(&er);
+            unlink(dest);
+            return MI_ERR_ABORTED;
+        }
         if (on_progress) {
             mi_progress p;
             memset(&p, 0, sizeof p);
@@ -1202,8 +1215,21 @@ int mi_download(const mi_download_config *cfg, const char *url, const char *dest
      * media lives somewhere else.
      */
     if (cfg->extract_pages && !recognised) {
+        /*
+         * Which tool will be asked, logged because the choice is by host and a
+         * wrong one is otherwise invisible — the user sees "download failed" and
+         * nothing says the gallery extractor was handed a video site.
+         */
+        mi_extract_config xcfg;
+        mi_extract_config_init(&xcfg);
+        xcfg.binary = cfg->extractor_path;
+        xcfg.gallery_binary = cfg->gallery_extractor_path;
+        mi_logf(MI_LOG_INFO, "download: extractor %s for %s",
+                mi_extract_pick(&xcfg, url) == MI_EXTRACT_GALLERY ? "gallery-dl" : "yt-dlp",
+                url);
         int src = download_stream_page(cfg, plan.final_url ? plan.final_url : url, dest,
                                        on_progress, user, out);
+        mi_logf(MI_LOG_INFO, "download: the extractor returned %d", src);
         if (src == MI_OK) {
             mi_download_plan_free(&plan);
             return MI_OK;

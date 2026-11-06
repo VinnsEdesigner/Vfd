@@ -26,6 +26,10 @@ export type { CrawlHit, CrawlQuery, CrawlReport, CrawlResult } from '../domain/b
 export { useExtract } from './use-extract';
 export type { ExtractVariables } from './use-extract';
 export type { ExtractEntry, ExtractQuery, ExtractResult } from '../domain/browse';
+/* The sites list is presentation data, but it is domain-shaped, so `ui` reaches
+ * it through this layer like everything else. */
+export { KNOWN_SITES, accessLabel, canSearch } from '../domain/sites';
+export type { SiteEntry, SiteAccess } from '../domain/sites';
 export { useBrowse, useBrowseUrl, usePageFrame, useRenderPage } from './use-browse';
 export type { UseBrowseArgs } from './use-browse';
 export { useLiveSession, lastLiveUrl } from './use-live';

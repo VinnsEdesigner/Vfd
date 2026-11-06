@@ -446,6 +446,46 @@ static char *dup_string(const mi_json *o, const char *key) {
 }
 
 /*
+ * The best thumbnail URL for an object, or NULL.
+ *
+ * yt-dlp reports thumbnails two ways and only one of them is usually populated:
+ * `thumbnail` is a single URL and is frequently null, while `thumbnails` is a
+ * list of `{url, width, height}`. Measured on a search: `thumbnail` was null for
+ * every entry and `thumbnails` held two each — so reading only the singular field
+ * meant every result card lost its poster, which is exactly the complaint.
+ *
+ * The list is preferred, and the largest by width within it: a poster is shown in
+ * a card, and the biggest of a set of sizes looks right at any card size where
+ * the smallest does not.
+ */
+static char *best_thumbnail(const mi_json *o) {
+    const mi_json *list = mi_json_get(o, "thumbnails");
+    if (list && list->type == MI_JSON_ARRAY && list->count > 0) {
+        const mi_json *best = NULL;
+        double best_w = -1;
+        for (size_t i = 0; i < list->count; i++) {
+            const mi_json *t = list->items[i];
+            if (!t || t->type != MI_JSON_OBJECT) continue;
+            const char *u = mi_json_get_string(t, "url", NULL);
+            if (!u || !*u) continue;
+            /* A thumbnail with no stated size still beats none, so it competes
+             * with a width of 0 rather than being skipped. */
+            double w = mi_json_get_number(t, "width", 0);
+            if (!best || w > best_w) {
+                best = t;
+                best_w = w;
+            }
+        }
+        if (best) {
+            const char *u = mi_json_get_string(best, "url", NULL);
+            if (u && *u) return mi_strdup(u);
+        }
+    }
+    /* Then the single field, for an extractor that only sets that one. */
+    return dup_string(o, "thumbnail");
+}
+
+/*
  * gallery-dl's output, as the same result shape.
  *
  * It answers a different question and returns a different shape: a flat list of
@@ -530,7 +570,7 @@ static int parse_gallery(const mi_json *doc, mi_extract_result *out) {
         dst->uploader = dup_string(meta, "username");
         if (!dst->uploader) dst->uploader = dup_string(meta, "owner");
         if (!dst->uploader) dst->uploader = dup_string(meta, "artist");
-        dst->thumbnail = NULL;
+        dst->thumbnail = best_thumbnail(meta);
         /* An image has no duration; a queued post might. */
         dst->duration_seconds = mi_json_get_number(meta, "duration", -1);
         /* A queued external URL is not itself a file — it is somewhere to look. */
@@ -616,7 +656,7 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
 
     out->title = dup_string(doc, "title");
     out->extractor = dup_string(doc, "extractor");
-    out->thumbnail = dup_string(doc, "thumbnail");
+    out->thumbnail = best_thumbnail(doc);
     double dur = mi_json_get_number(doc, "duration", -1);
     out->duration_seconds = dur;
 
@@ -698,7 +738,7 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
                 dst->id = dup_string(e, "id");
                 dst->title = dup_string(e, "title");
                 dst->uploader = dup_string(e, "uploader");
-                dst->thumbnail = dup_string(e, "thumbnail");
+                dst->thumbnail = best_thumbnail(e);
                 dst->duration_seconds = mi_json_get_number(e, "duration", -1);
                 const char *eu = mi_json_get_string(e, "url", NULL);
                 if (eu && *eu) dst->url = mi_strdup(eu);

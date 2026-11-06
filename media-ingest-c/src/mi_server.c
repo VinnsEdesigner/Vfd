@@ -3347,6 +3347,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             mi_json_bool(&b, h->via_browser);
             mi_json_raw(&b, ",\"resolved\":");
             mi_json_bool(&b, h->resolved);
+            mi_json_raw(&b, ",\"thumbnail\":");
+            mi_json_string(&b, h->thumbnail);
             mi_json_raw(&b, ",\"qualities\":[");
             for (size_t q = 0; q < h->quality_count; q++) {
                 const mi_crawl_quality *qy = &h->qualities[q];

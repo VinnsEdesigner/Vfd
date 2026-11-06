@@ -75,6 +75,18 @@ typedef struct {
      */
     mi_crawl_quality *qualities;
     size_t quality_count;
+    /*
+     * A poster for the result, when one was found.
+     *
+     * A file listing is a wall of names without one, and a person recognises a
+     * video by its picture long before its title. Two sources, in order: the
+     * media extractor reports a thumbnail for a page it resolved, and a link the
+     * walk found may itself be an image — a gallery's own thumbnails are often
+     * linked beside the full files.
+     *
+     * NULL when neither applies, which the console shows as a kind glyph.
+     */
+    char *thumbnail;
 } mi_crawl_hit;
 
 /* One page the crawl visited, and what it yielded. Kept so the caller can
