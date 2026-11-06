@@ -12,6 +12,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "mi_charset.h"
 #include "mi_extract.h"
 #include "mi_identity.h"
 #include "mi_impersonate.h"
@@ -779,6 +780,7 @@ void mi_fetch_info_free(mi_fetch_info *info) {
     free(info->frame_blocker);
     free(info->etag);
     free(info->last_modified);
+    free(info->encoding);
     memset(info, 0, sizeof *info);
 }
 
@@ -1028,7 +1030,35 @@ char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
         free(b.data);
         return NULL;
     }
-    if (b.len > max_bytes) b.data[max_bytes] = '\0';
+    if (b.len > max_bytes) {
+        b.data[max_bytes] = '\0';
+        b.len = max_bytes;
+    }
+
+    /*
+     * Decode to UTF-8 before returning.
+     *
+     * The parser assumes UTF-8, so a page in windows-1252, Shift-JIS or GBK
+     * would otherwise come out as mojibake — and, worse, the *extracted data*
+     * would be wrong, because a selector runs over the mis-decoded bytes. The
+     * encoding is sniffed from the BOM, the Content-Type and a `<meta>` prescan,
+     * in the order the HTML Standard prescribes, and transcoded here so every
+     * consumer sees correct text. The chosen encoding is reported on `info`.
+     */
+    {
+        const char *ct = info && info->content_type ? info->content_type : NULL;
+        mi_charset chosen = MI_CS_UNKNOWN;
+        char *utf8 = mi_charset_decode_document(ct, (const unsigned char *)b.data,
+                                                b.len, MI_CS_UTF8, &chosen);
+        if (utf8) {
+            free(b.data);
+            b.data = utf8;
+            if (info) {
+                free(info->encoding);
+                info->encoding = mi_strdup(mi_charset_name(chosen));
+            }
+        }
+    }
     return b.data;
 }
 

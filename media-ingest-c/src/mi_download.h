@@ -202,6 +202,9 @@ typedef struct {
      */
     char *etag;
     char *last_modified;
+    /* The encoding the body was decoded from, for reporting. NULL when the
+     * fetch did not decode (a non-document fetch). */
+    char *encoding;
     /* 1 when the server answered 304 Not Modified: the body is empty and the
      * caller's cached copy is still current. */
     int not_modified;
