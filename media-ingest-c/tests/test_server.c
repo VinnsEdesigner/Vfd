@@ -1970,7 +1970,87 @@ static void test_egress_settings(void) {
     mi_server_free(srv);
 }
 
+/*
+ * The extract-rows endpoint: a page in, rows out. The `html` input is used so
+ * the test needs no network, and the rule is the same shape a caller sends.
+ */
+static void test_extract_rows_endpoint(void) {
+    mi_server_config cfg;
+    mi_server_config_init(&cfg);
+    cfg.port = 0;
+    cfg.work_dir = "/tmp/mi-test-extract-rows";
+    cfg.auth_token = "testtoken";
+    mi_mkdir_p(cfg.work_dir);
+
+    mi_server *srv = mi_server_new(&cfg);
+    CHECK(srv != NULL, "extract-rows: server new");
+    CHECK(mi_server_listen(srv) == MI_OK, "extract-rows: server listen");
+    int port = mi_server_port(srv);
+
+    pthread_t th;
+    pthread_create(&th, NULL, server_thread, srv);
+
+    int status = 0;
+    char *resp;
+
+    /*
+     * A page and a rule. The HTML uses single-quoted attributes so the JSON
+     * needs no escaping of them, and the rule reads a relative link that must
+     * come out absolute.
+     */
+    const char *body =
+        "{\"url\":\"https://shop.example/list\","
+        "\"html\":\"<div class='product'><h2 class='name'>Widget</h2>"
+        "<span class='price'>$9.99</span><a href='/w/1'>b</a></div>\","
+        "\"rule\":{\"container\":\".product\",\"fields\":["
+        "{\"name\":\"title\",\"selector\":\".name\"},"
+        "{\"name\":\"url\",\"selector\":\"a\",\"from\":\"href\"}]}}";
+    resp = http_call(port, "POST", "/api/v1/extract-rows", body, "testtoken", &status);
+    CHECK(status == 200, "extract-rows 200");
+    CHECK(strstr(body_of(resp), "\"count\":1") != NULL, "one row");
+    CHECK(strstr(body_of(resp), "\"title\":\"Widget\"") != NULL, "the title field");
+    CHECK(strstr(body_of(resp), "https://shop.example/w/1") != NULL,
+          "the relative href is resolved against the page url");
+    free(resp);
+
+    /* CSV is a different body: a header, then rows. */
+    const char *csvbody =
+        "{\"format\":\"csv\",\"html\":\"<div class='p'><b>x</b>,<i>y</i></div>\","
+        "\"rule\":{\"container\":\".p\",\"fields\":["
+        "{\"name\":\"a\",\"selector\":\"b\"},{\"name\":\"b\",\"selector\":\"i\"}]}}";
+    resp = http_call(port, "POST", "/api/v1/extract-rows", csvbody, "testtoken", &status);
+    CHECK(status == 200, "extract-rows csv 200");
+    CHECK(strstr(body_of(resp), "a,b\r\n") != NULL, "the csv header");
+    CHECK(strstr(body_of(resp), "x,y\r\n") != NULL, "the csv row");
+    free(resp);
+
+    /* A malformed rule is refused, with a reason. */
+    resp = http_call(port, "POST", "/api/v1/extract-rows",
+                     "{\"html\":\"<p>x</p>\",\"rule\":{\"fields\":[]}}",
+                     "testtoken", &status);
+    CHECK(status == 422, "an empty fields array -> 422");
+    free(resp);
+
+    /* No rule at all is a bad request. */
+    resp = http_call(port, "POST", "/api/v1/extract-rows", "{\"html\":\"<p>x</p>\"}",
+                     "testtoken", &status);
+    CHECK(status == 400, "no rule -> 400");
+    free(resp);
+
+    /* Neither a url nor html is a bad request. */
+    resp = http_call(port, "POST", "/api/v1/extract-rows",
+                     "{\"rule\":{\"fields\":[{\"name\":\"a\",\"selector\":\"p\"}]}}",
+                     "testtoken", &status);
+    CHECK(status == 400, "no url and no html -> 400");
+    free(resp);
+
+    mi_server_stop(srv);
+    pthread_join(th, NULL);
+    mi_server_free(srv);
+}
+
 int main(void) {
+
 
     signal(SIGPIPE, SIG_IGN);
     mi_log_set_level(MI_LOG_ERROR);
@@ -1986,6 +2066,7 @@ int main(void) {
     test_interactive_endpoint();
     test_http_api();
     test_egress_settings();
+    test_extract_rows_endpoint();
     test_hls_serve_and_convert();
 
     printf("\n%d checks, %d failures\n", g_checks, g_failures);

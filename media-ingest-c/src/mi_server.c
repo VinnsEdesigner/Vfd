@@ -25,6 +25,7 @@
 #include "mi_detect.h"
 #include "mi_extract.h"
 #include "mi_captcha.h"
+#include "mi_extract_rows.h"
 #include "mi_politeness.h"
 #include "mi_download.h"
 #include "mi_hls.h"
@@ -3290,6 +3291,142 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
         mi_extract_result_free(&er);
+        mi_json_value_free(in);
+        return;
+    }
+
+    /*
+     * POST /api/v1/extract-rows  {url, rule, format} — fetch a page and read the
+     * data out of it by rule.
+     *
+     * The crawl finds *files* by name; this answers the other question a person
+     * has: "every product with its name, price and link". `rule` is a rule set
+     * (a container selector and a field per column), `format` is "json" (the
+     * default) or "csv".
+     *
+     * The page is fetched here, through the same path as everything else — same
+     * identity, proxy, impersonation, anti-bot brain — so a site that refuses the
+     * engine refuses this too, and the brain's memory applies. A `html` field may
+     * be given instead of `url`, so a caller that already has the page (a render,
+     * a browser session) can extract without a second fetch.
+     */
+    if (!strcmp(req->path, "/api/v1/extract-rows") && !strcmp(req->method, "POST")) {
+        mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+        const char *url = mi_json_get_string(in, "url", NULL);
+        const char *html = mi_json_get_string(in, "html", NULL);
+        const mi_json *rule_v = mi_json_get(in, "rule");
+        if (!rule_v || rule_v->type != MI_JSON_OBJECT) {
+            send_error(fd, 400, "Bad Request", "missing 'rule' object", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        if ((!url || !*url) && (!html || !*html)) {
+            send_error(fd, 400, "Bad Request", "give a 'url' or 'html'", cors);
+            mi_json_value_free(in);
+            return;
+        }
+
+        /* Re-serialise the rule object to hand to the parser. */
+        mi_json_buf rb;
+        mi_json_init(&rb);
+        mi_json_emit_value(&rb, rule_v);
+        char rerr[200] = {0};
+        mi_row_rule *rule = mi_row_rule_parse(mi_json_data(&rb), rerr, sizeof rerr);
+        mi_json_free(&rb);
+        if (!rule) {
+            send_error(fd, 422, "Unprocessable Entity", rerr, cors);
+            mi_json_value_free(in);
+            return;
+        }
+
+        char *page = NULL;
+        char fetch_err[200] = {0};
+        if (html && *html) {
+            page = mi_strdup(html);
+        } else {
+            if (!mi_render_url_allowed(url)) {
+                send_error(fd, 400, "Bad Request", "that address cannot be fetched", cors);
+                mi_row_rule_free(rule);
+                mi_json_value_free(in);
+                return;
+            }
+            mi_download_config dcfg;
+            mi_download_config_init(&dcfg);
+            dcfg.require_media = 0;
+            dcfg.user_agent = srv->cfg.user_agent;
+            dcfg.proxy = srv->cfg.proxy;
+            dcfg.impersonate = srv->cfg.impersonate;
+            dcfg.cookies_text = srv->cfg.cookies_text;
+            dcfg.brain = srv->brain;
+            dcfg.timeout_seconds = 30;
+            page = mi_download_fetch_document(&dcfg, url, 8 * 1024 * 1024, NULL);
+            if (!page) {
+                /* A refusal is named, so the caller knows whether to retry. */
+                mi_block_kind block = MI_BLOCK_NONE;
+                char *host = mi_antibot_host_of(url);
+                if (host && srv->brain) {
+                    int fails = mi_antibot_failures(srv->brain, host);
+                    if (fails > 0) block = MI_BLOCK_UNKNOWN;
+                }
+                free(host);
+                mi_json_buf eb;
+                mi_json_init(&eb);
+                mi_json_raw(&eb, "{\"error\":\"could not fetch that page\",\"blocked\":");
+                mi_json_bool(&eb, block != MI_BLOCK_NONE);
+                mi_json_raw(&eb, "}");
+                send_json(fd, 502, "Bad Gateway", &eb, cors);
+                mi_json_free(&eb);
+                (void)fetch_err;
+                mi_row_rule_free(rule);
+                mi_json_value_free(in);
+                return;
+            }
+        }
+
+        mi_rows rows;
+        char eerr[200] = {0};
+        if (mi_extract_rows(rule, page, strlen(page), url, &rows, eerr, sizeof eerr) != 0) {
+            send_error(fd, 422, "Unprocessable Entity", eerr, cors);
+            free(page);
+            mi_row_rule_free(rule);
+            mi_json_value_free(in);
+            return;
+        }
+
+        const char *format = mi_json_get_string(in, "format", "json");
+        if (!strcmp(format, "csv")) {
+            char *csv = mi_rows_to_csv(&rows);
+            size_t len = csv ? strlen(csv) : 0;
+            char header[256];
+            int hn = snprintf(header, sizeof header,
+                              "HTTP/1.1 200 OK\r\n"
+                              "Content-Type: text/csv; charset=utf-8\r\n"
+                              "Content-Length: %zu\r\n"
+                              "%s%s%s"
+                              "Connection: close\r\n\r\n",
+                              len,
+                              cors ? "Access-Control-Allow-Origin: " : "",
+                              cors ? cors : "",
+                              cors ? "\r\n" : "");
+            if (hn > 0) send_all(fd, header, (size_t)hn);
+            if (len) send_all(fd, csv, len);
+            free(csv);
+        } else {
+            char *json = mi_rows_to_json(&rows);
+            mi_json_buf b;
+            mi_json_init(&b);
+            mi_json_raw(&b, "{\"rows\":");
+            mi_json_raw(&b, json ? json : "[]");
+            mi_json_raw(&b, ",\"count\":");
+            mi_json_int(&b, (int64_t)rows.row_count);
+            mi_json_raw(&b, "}");
+            send_json(fd, 200, "OK", &b, cors);
+            mi_json_free(&b);
+            free(json);
+        }
+        mi_rows_free(&rows);
+        free(page);
+        mi_row_rule_free(rule);
         mi_json_value_free(in);
         return;
     }
