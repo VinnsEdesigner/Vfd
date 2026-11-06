@@ -89,6 +89,29 @@ typedef struct {
 
 void mi_extract_result_free(mi_extract_result *res);
 
+/*
+ * Which extractor to ask.
+ *
+ * Two tools, complementary rather than competing:
+ *
+ *   yt-dlp      video. Streams, formats, and it knows how to pick a rendition.
+ *   gallery-dl  images, galleries and posts. 4,927 sites against yt-dlp's
+ *               1,755, and most of the extra are image hosts.
+ *
+ * A photo site is gallery-dl's job and a video site is yt-dlp's, so the choice is
+ * made per URL. `AUTO` prefers gallery-dl for a host it recognises, because
+ * asking yt-dlp about an image gallery usually returns nothing at all.
+ *
+ * The host list is deliberately short and explicit: guessing from a URL's shape
+ * would send a video to the wrong tool, and a wrong guess costs the user an empty
+ * result they cannot explain.
+ */
+typedef enum {
+    MI_EXTRACT_AUTO = 0, /* pick by host */
+    MI_EXTRACT_VIDEO,    /* yt-dlp */
+    MI_EXTRACT_GALLERY   /* gallery-dl */
+} mi_extract_kind;
+
 typedef struct {
     /*
      * The extractor binary. NULL uses "yt-dlp" from PATH.
@@ -97,6 +120,16 @@ typedef struct {
      * a distribution's copy can lag a site's changes by months.
      */
     const char *binary;
+    /*
+     * The gallery extractor's binary. NULL uses "gallery-dl" from PATH.
+     *
+     * A second tool rather than a second mode: it answers a different question —
+     * "what images are on this page" rather than "what streams does this video
+     * have" — and returns a different shape, so it has its own parser.
+     */
+    const char *gallery_binary;
+    /* Which extractor to use. AUTO picks by host. */
+    mi_extract_kind kind;
     /* Seconds allowed for the resolve. It is a network operation against a
      * site that may be slow to answer, so this is generous. */
     double timeout_seconds;
@@ -167,6 +200,22 @@ typedef struct {
 } mi_extract_config;
 
 void mi_extract_config_init(mi_extract_config *cfg);
+
+/*
+ * The extractor to use for a URL, honouring an explicit choice.
+ *
+ * Exposed so a caller can say which it picked, and so the choice can be tested
+ * without running a subprocess.
+ */
+mi_extract_kind mi_extract_pick(const mi_extract_config *cfg, const char *url);
+
+/*
+ * Whether the extractor of that kind is usable: the binary exists and answers.
+ *
+ * Called before offering the feature, so the console never shows a control that
+ * cannot work. Cached after the first call — it does not change at runtime.
+ */
+int mi_extract_available_kind(const mi_extract_config *cfg, mi_extract_kind kind);
 
 /*
  * Ask the extractor what `url` offers.

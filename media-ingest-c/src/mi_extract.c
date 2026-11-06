@@ -42,6 +42,8 @@
 void mi_extract_config_init(mi_extract_config *cfg) {
     memset(cfg, 0, sizeof *cfg);
     cfg->binary = NULL;
+    cfg->gallery_binary = NULL;
+    cfg->kind = MI_EXTRACT_AUTO;
     cfg->timeout_seconds = 60.0;
     cfg->cookies_file = NULL;
     cfg->enumerate = 0;
@@ -91,6 +93,60 @@ static const char *binary_for(const mi_extract_config *cfg) {
     return (cfg && cfg->binary && *cfg->binary) ? cfg->binary : "yt-dlp";
 }
 
+static const char *gallery_binary_for(const mi_extract_config *cfg) {
+    return (cfg && cfg->gallery_binary && *cfg->gallery_binary) ? cfg->gallery_binary
+                                                                : "gallery-dl";
+}
+
+/*
+ * Hosts gallery-dl handles that yt-dlp does not, as host *fragments*.
+ *
+ * A fragment so a subdomain or a country domain still matches ("flickr" catches
+ * both flickr.com and live.staticflickr.com). Deliberately short: this decides
+ * which tool is asked first, and every entry should be a site where yt-dlp
+ * genuinely returns nothing. A site that is merely image-heavy but also has
+ * video (Reddit, X) is left out, because yt-dlp handles those.
+ */
+const char *const MI_GALLERY_HOSTS[] = {
+    "flickr", "imgur", "deviantart", "artstation", "pixiv", "danbooru",
+    "gelbooru", "safebooru", "e-hentai", "tumblr", "pinterest", "500px",
+    "unsplash", "pexels", "photobucket", "smugmug", "weasyl", "furaffinity",
+    "newgrounds", "baraag", "mastodon", "bluesky", "vk.com", "weibo",
+    "naver", "bcy.net", "lofter", "wikiart", "manga", "comic", NULL
+};
+
+/** Does any fragment appear in the host of `url`? */
+static int host_matches(const char *url, const char *const *fragments) {
+    /* The host, between the scheme and the first path separator. */
+    const char *p = strstr(url, "://");
+    if (!p) return 0;
+    p += 3;
+    const char *end = p;
+    while (*end && *end != '/' && *end != '?' && *end != '#') end++;
+    size_t n = (size_t)(end - p);
+    if (n == 0 || n > 255) return 0;
+    char host[256];
+    memcpy(host, p, n);
+    host[n] = '\0';
+    for (size_t i = 0; fragments[i]; i++) {
+        if (strcasestr(host, fragments[i])) return 1;
+    }
+    return 0;
+}
+
+mi_extract_kind mi_extract_pick(const mi_extract_config *cfg, const char *url) {
+    if (cfg && cfg->kind != MI_EXTRACT_AUTO) return cfg->kind;
+    /*
+     * AUTO: gallery-dl for a host it is known for, yt-dlp otherwise.
+     *
+     * yt-dlp is the default because it is the one that handles video, which is
+     * the commoner case; a host on the gallery list is the exception where
+     * yt-dlp would return nothing.
+     */
+    if (url && host_matches(url, MI_GALLERY_HOSTS)) return MI_EXTRACT_GALLERY;
+    return MI_EXTRACT_VIDEO;
+}
+
 /*
  * The URL or query to hand the extractor.
  *
@@ -137,17 +193,22 @@ static const char *find_js_runtime(void) {
 }
 
 /*
- * Run the extractor on `url` and return its stdout, or NULL.
+ * Run an extractor and return its stdout, or NULL.
  *
  * `probe_only` adds the flags that make it resolve without downloading, and is
  * what `mi_extract_available` uses so the check cannot fetch anything.
+ *
+ * The two tools take different flags for the same intent: yt-dlp dumps one JSON
+ * object with `-J`, gallery-dl dumps a list of tuples with `-j`, and both need to
+ * be told not to download.
  */
-static char *run_extractor(const mi_extract_config *cfg, const char *url, int probe_only,
-                           int *exit_code) {
+static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind kind,
+                                const char *url, int probe_only, int *exit_code) {
     int pipefd[2];
     if (pipe(pipefd) != 0) return NULL;
 
-    const char *binary = binary_for(cfg);
+    const char *binary = (kind == MI_EXTRACT_GALLERY) ? gallery_binary_for(cfg)
+                                                      : binary_for(cfg);
     /*
      * Sized for the fixed options plus every per-site argument.
      *
@@ -162,6 +223,24 @@ static char *run_extractor(const mi_extract_config *cfg, const char *url, int pr
     argv[a++] = binary;
     if (probe_only) {
         argv[a++] = "--version";
+    } else if (kind == MI_EXTRACT_GALLERY) {
+        /*
+         * gallery-dl: dump the metadata, download nothing.
+         *
+         * Its flags differ from yt-dlp's for the same intent. `-j` is the JSON
+         * dump and `--no-download` is the resolve-only switch; there is no
+         * `--skip-download`, and no JS runtime or format selection because it is
+         * not resolving streams.
+         */
+        argv[a++] = "-j";
+        argv[a++] = "--no-download";
+        argv[a++] = "--no-colors";
+        if (cfg && cfg->cookies_file && *cfg->cookies_file) {
+            argv[a++] = "--cookies";
+            argv[a++] = cfg->cookies_file;
+        }
+        argv[a++] = "--";
+        argv[a++] = url;
     } else {
         /* Resolve only: never fetch the media. The URLs are handed to Vyzor's own
          * download path, so the extractor has no business downloading. */
@@ -337,22 +416,137 @@ static char *run_extractor(const mi_extract_config *cfg, const char *url, int pr
     return buf;
 }
 
-/* A cached answer for `mi_extract_available`: it cannot change at runtime. */
-static int g_available = -1;
+/*
+ * A cached answer per extractor: which binaries exist cannot change at runtime.
+ *
+ * Two entries rather than one, because the tools are independent — a host may
+ * have yt-dlp and not gallery-dl, and the console should then offer video search
+ * and not the gallery list.
+ */
+static int g_available[2] = {-1, -1};
+
+int mi_extract_available_kind(const mi_extract_config *cfg, mi_extract_kind kind) {
+    int slot = (kind == MI_EXTRACT_GALLERY) ? 1 : 0;
+    if (g_available[slot] >= 0) return g_available[slot];
+    int code = -1;
+    char *out = run_extractor_kind(cfg, kind, NULL, 1, &code);
+    g_available[slot] = (out != NULL && code == 0) ? 1 : 0;
+    free(out);
+    return g_available[slot];
+}
 
 int mi_extract_available(const mi_extract_config *cfg) {
-    if (g_available >= 0) return g_available;
-    int code = -1;
-    char *out = run_extractor(cfg, NULL, 1, &code);
-    g_available = (out != NULL && code == 0) ? 1 : 0;
-    free(out);
-    return g_available;
+    return mi_extract_available_kind(cfg, MI_EXTRACT_VIDEO);
 }
 
 /* A string field, or NULL. */
 static char *dup_string(const mi_json *o, const char *key) {
     const char *v = mi_json_get_string(o, key, NULL);
     return (v && *v) ? mi_strdup(v) : NULL;
+}
+
+/*
+ * gallery-dl's output, as the same result shape.
+ *
+ * It answers a different question and returns a different shape: a flat list of
+ * `[kind, ...]` tuples rather than one object with a formats array.
+ *
+ *   2  directory   [2, {metadata}]           sets the metadata for what follows
+ *   3  file        [3, "url", {metadata}]    one file, with its own URL
+ *   6  queue       [6, "url", {metadata}]    an external URL another extractor
+ *                                            should handle — a linked post
+ *
+ * The length is what identifies the kind, not the constant, because the JSON
+ * form does not carry the documented 3-element tuple for a directory. Measured:
+ * a directory arrives as a 2-element array and a file as a 3-element one.
+ *
+ * The metadata is carried forward: a file's dict often omits fields the
+ * directory set (the category, the uploader), and a card that showed a bare
+ * filename would be less useful than one that showed where it came from.
+ */
+static int parse_gallery(const mi_json *doc, mi_extract_result *out) {
+    if (!doc || doc->type != MI_JSON_ARRAY) return MI_ERR_ARG;
+
+    /*
+     * The entries array is allocated up front, sized to the whole document.
+     *
+     * Only some tuples become entries — a directory and a queue are not files —
+     * so this over-allocates, which is the right trade: a gallery-dl document is
+     * a flat list, and counting the files first would mean walking it twice for
+     * a few hundred bytes.
+     */
+    if (doc->count > 0) {
+        out->entries = mi_calloc(doc->count, sizeof *out->entries);
+        if (!out->entries) return MI_ERR_NOMEM;
+    }
+
+    /* The most recent directory metadata, merged into each file's. */
+    const mi_json *dir_meta = NULL;
+
+    for (size_t i = 0; i < doc->count; i++) {
+        const mi_json *e = doc->items[i];
+        if (!e || e->type != MI_JSON_ARRAY || e->count < 2) continue;
+        const mi_json *kind = e->items[0];
+        if (!kind || kind->type != MI_JSON_NUMBER) continue;
+        int k = (int)kind->number;
+
+        if (k == 2) {
+            /* A directory: remember its metadata for the files that follow. */
+            const mi_json *meta = e->items[1];
+            if (meta && meta->type == MI_JSON_OBJECT) dir_meta = meta;
+            continue;
+        }
+        if (k != 3 && k != 6) continue;
+
+        /* A file (3) or an external URL to queue (6): both carry a URL. */
+        const mi_json *url = e->items[1];
+        if (!url || url->type != MI_JSON_STRING || !url->string || !*url->string) continue;
+        const mi_json *meta = e->count > 2 ? e->items[2] : NULL;
+        if (!meta || meta->type != MI_JSON_OBJECT) meta = dir_meta;
+        if (!meta || meta->type != MI_JSON_OBJECT) continue;
+
+        const char *fn = mi_json_get_string(meta, "filename", NULL);
+        const char *title = mi_json_get_string(meta, "title", NULL);
+        const char *cat = mi_json_get_string(meta, "category", NULL);
+        const char *ext = mi_json_get_string(meta, "extension", NULL);
+
+        mi_extract_entry *dst = &out->entries[out->entry_count];
+        memset(dst, 0, sizeof *dst);
+        dst->duration_seconds = -1;
+        dst->id = dup_string(meta, "id");
+        /*
+         * A title, then a filename, then the URL's last segment. A gallery file
+         * often has no title at all, and a blank row is worse than a filename.
+         */
+        if (title && *title) {
+            dst->title = mi_strdup(title);
+        } else if (fn && *fn) {
+            dst->title = mi_strdup(fn);
+        } else {
+            const char *slash = strrchr(url->string, '/');
+            dst->title = mi_strdup(slash && slash[1] ? slash + 1 : url->string);
+        }
+        dst->url = mi_strdup(url->string);
+        dst->uploader = dup_string(meta, "username");
+        if (!dst->uploader) dst->uploader = dup_string(meta, "owner");
+        if (!dst->uploader) dst->uploader = dup_string(meta, "artist");
+        dst->thumbnail = NULL;
+        /* An image has no duration; a queued post might. */
+        dst->duration_seconds = mi_json_get_number(meta, "duration", -1);
+        /* A queued external URL is not itself a file — it is somewhere to look. */
+        dst->is_playlist = (k == 6);
+        (void)cat;
+        (void)ext;
+        out->entry_count++;
+    }
+
+    /* A gallery has no single title of its own; the first file's category is the
+     * closest thing, and the console shows the site from the URL anyway. */
+    if (dir_meta) {
+        const char *cat = mi_json_get_string(dir_meta, "category", NULL);
+        if (cat && *cat) out->extractor = mi_strdup(cat);
+    }
+    return MI_OK;
 }
 
 int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result *out) {
@@ -371,11 +565,22 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
     char *query = query_for(cfg, url);
     if (!query) return MI_ERR_ARG;
 
+    /*
+     * Which tool to ask.
+     *
+     * A photo site and a video site are different questions, and the two tools
+     * answer one each: yt-dlp returns streams and formats, gallery-dl returns the
+     * images on a page. The choice is by host (or an explicit setting), and it
+     * decides both the command and the parser.
+     */
+    mi_extract_kind kind = mi_extract_pick(cfg, url);
+
     int code = -1;
-    char *json = run_extractor(cfg, query, 0, &code);
+    char *json = run_extractor_kind(cfg, kind, query, 0, &code);
     free(query);
     if (!json) {
-        mi_logf(MI_LOG_ERROR, "extract: the extractor produced no output (exit %d)", code);
+        mi_logf(MI_LOG_ERROR, "extract: %s produced no output (exit %d)",
+                kind == MI_EXTRACT_GALLERY ? "gallery-dl" : "yt-dlp", code);
         return MI_ERR_NET;
     }
     /*
@@ -398,6 +603,16 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
     mi_json *doc = mi_json_parse(json);
     free(json);
     if (!doc) return MI_ERR_ARG;
+
+    /*
+     * gallery-dl answers in its own shape — a flat list of tuples — so it gets
+     * its own parser and returns from here. Everything below is the yt-dlp shape.
+     */
+    if (kind == MI_EXTRACT_GALLERY) {
+        int rc = parse_gallery(doc, out);
+        mi_json_value_free(doc);
+        return rc;
+    }
 
     out->title = dup_string(doc, "title");
     out->extractor = dup_string(doc, "extractor");

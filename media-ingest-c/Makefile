@@ -34,6 +34,7 @@ TEST_IDENTIFY_SRC := tests/test_identify.c
 TEST_OUTBOX_SRC := tests/test_outbox.c
 TEST_RTC_SRC := tests/test_rtc.c
 TEST_CRAWL_SRC := tests/test_crawl.c
+TEST_EXTRACT_SRC := tests/test_extract.c
 
 .PHONY: all clean test
 
@@ -78,7 +79,10 @@ $(BUILD)/test_rtc: $(LIB_SRC) $(TEST_RTC_SRC) | $(BUILD)
 $(BUILD)/test_crawl: $(LIB_SRC) $(TEST_CRAWL_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_CRAWL_SRC) $(LDLIBS)
 
-test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl
+$(BUILD)/test_extract: $(LIB_SRC) $(TEST_EXTRACT_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_EXTRACT_SRC) $(LDLIBS)
+
+test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract
 	$(BUILD)/test_media_ingest
 	$(BUILD)/test_server
 	$(BUILD)/test_render
@@ -90,6 +94,7 @@ test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUI
 	$(BUILD)/test_outbox
 	$(BUILD)/test_rtc
 	$(BUILD)/test_crawl
+	$(BUILD)/test_extract
 
 clean:
 	rm -rf $(BUILD)
