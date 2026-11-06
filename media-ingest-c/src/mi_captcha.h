@@ -54,8 +54,14 @@ typedef struct {
      */
     const char *provider;
     const char *api_key;
-    /* Seconds to wait for a real provider. 0 uses a default. */
+    /* Seconds to wait for a real provider to answer. 0 uses a default. */
     int timeout_seconds;
+    /*
+     * Override the provider's endpoint host, e.g. a regional or self-hosted
+     * gateway. NULL uses the provider's own. Also what lets the solver be tested
+     * against a local server that speaks the same protocol.
+     */
+    const char *base_url;
 } mi_captcha_config;
 
 /*
@@ -69,5 +75,11 @@ char *mi_captcha_solve(const mi_captcha_config *cfg, const mi_captcha_challenge 
 
 /* Whether `provider` names a real (network) provider rather than the stub. */
 int mi_captcha_provider_is_remote(const char *provider);
+
+/* Whether `provider` names a provider this build can actually solve through. */
+int mi_captcha_provider_known(const char *provider);
+
+/* The provider names a caller may choose, as a NULL-terminated list. */
+const char *const *mi_captcha_providers(void);
 
 #endif

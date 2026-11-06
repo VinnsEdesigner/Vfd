@@ -18,6 +18,7 @@ import { useState } from 'react';
 import { Card } from '../primitives/Card';
 import { Button } from '../primitives/Button';
 import { Field, SecretField } from '../primitives/Field';
+import { Select } from '../primitives/Select';
 import { Note } from '../primitives/Note';
 
 export interface SiteAccessValue {
@@ -33,8 +34,12 @@ export interface SiteAccessValue {
   identityRetries: number;
   /** The captcha provider name, or '' for the built-in stub. */
   captchaProvider: string;
+  /** The providers a caller may choose. */
+  captchaProviders: readonly string[];
   /** Whether a captcha API key is set. The key itself is never returned. */
   captchaKeySet: boolean;
+  /** An endpoint override for the captcha provider. */
+  captchaBaseUrl: string;
   /** The shared crawl frontier's remote database URL, or ''. */
   frontierDbUrl: string;
   /** A local SQLite file for the crawl frontier, or ''. */
@@ -51,6 +56,7 @@ export interface SiteAccessSave {
   identityRetries?: number | null;
   captchaProvider?: string | null;
   captchaApiKey?: string | null;
+  captchaBaseUrl?: string | null;
   frontierDbUrl?: string | null;
   frontierDbPath?: string | null;
   frontierToken?: string | null;
@@ -75,6 +81,7 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
   const [retries, setRetries] = useState<string | null>(null);
   const [captchaProvider, setCaptchaProvider] = useState<string | null>(null);
   const [captchaKey, setCaptchaKey] = useState('');
+  const [captchaBaseUrl, setCaptchaBaseUrl] = useState<string | null>(null);
   const [frontierUrl, setFrontierUrl] = useState<string | null>(null);
   const [frontierPath, setFrontierPath] = useState<string | null>(null);
   const [frontierToken, setFrontierToken] = useState('');
@@ -82,6 +89,8 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
   const effectiveImpersonate = impersonate ?? value?.impersonate ?? '';
   const effectiveRetries = retries ?? String(value?.identityRetries ?? 0);
   const effectiveCaptchaProvider = captchaProvider ?? value?.captchaProvider ?? '';
+  const effectiveCaptchaBaseUrl = captchaBaseUrl ?? value?.captchaBaseUrl ?? '';
+  const captchaProviders = value?.captchaProviders ?? ['stub'];
   const effectiveFrontierUrl = frontierUrl ?? value?.frontierDbUrl ?? '';
   const effectiveFrontierPath = frontierPath ?? value?.frontierDbPath ?? '';
 
@@ -197,14 +206,31 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
       <Card title="Captcha">
         <div className="form">
           <div className="field field--full">
-            <Field
+            <Select
               label="Provider"
-              value={effectiveCaptchaProvider}
-              onChange={setCaptchaProvider}
-              placeholder="stub (default), 2captcha, capsolver…"
-              hint="Only the built-in stub is implemented; a real provider needs an account."
+              value={effectiveCaptchaProvider || 'stub'}
+              onChange={(v) => setCaptchaProvider(v)}
+              options={captchaProviders.map((p) => ({
+                value: p,
+                label: p === 'stub' ? 'Stub (contacts nothing)' : p,
+              }))}
             />
+            <span className="field__hint">
+              The stub solves nothing and sends nothing; a real provider needs an
+              account and a key.
+            </span>
           </div>
+          {effectiveCaptchaProvider && effectiveCaptchaProvider !== 'stub' && (
+            <div className="field field--full">
+              <Field
+                label="Endpoint override (optional)"
+                value={effectiveCaptchaBaseUrl}
+                onChange={setCaptchaBaseUrl}
+                placeholder="leave empty for the provider's own"
+                hint="A regional or self-hosted gateway."
+              />
+            </div>
+          )}
           <div className="field field--full">
             <SecretField
               label="API key"
@@ -225,6 +251,7 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
             onClick={() =>
               onSave({
                 captchaProvider: effectiveCaptchaProvider,
+                captchaBaseUrl: effectiveCaptchaBaseUrl,
                 ...(captchaKey ? { captchaApiKey: captchaKey } : {}),
               })
             }

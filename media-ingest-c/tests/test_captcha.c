@@ -84,14 +84,41 @@ static void test_stub_solver(void) {
     mi_captcha_challenge_free(&ch);
 }
 
-static void test_remote_provider_refuses(void) {
+/* A real provider needs a key; without one it refuses rather than pretending. */
+static void test_remote_provider_needs_a_key(void) {
     mi_captcha_challenge ch = {.kind = MI_CAPTCHA_RECAPTCHA_V2, .sitekey = strdup("KEY2")};
-    mi_captcha_config cfg = {.provider = "2captcha", .api_key = "x"};
+    mi_captcha_config cfg = {.provider = "2captcha"};
     char err[128];
     char *tok = mi_captcha_solve(&cfg, &ch, "https://site.example/", err, sizeof err);
-    CHECK(tok == NULL, "a real provider that is not implemented refuses");
-    CHECK(strstr(err, "not implemented") != NULL, "the refusal says why");
+    CHECK(tok == NULL, "a real provider without a key refuses");
+    CHECK(strstr(err, "API key") != NULL, "the refusal names the missing key");
     mi_captcha_challenge_free(&ch);
+}
+
+/* An unknown provider is refused, so a typo does not silently do nothing. */
+static void test_unknown_provider_refused(void) {
+    mi_captcha_challenge ch = {.kind = MI_CAPTCHA_RECAPTCHA_V2, .sitekey = strdup("KEY3")};
+    mi_captcha_config cfg = {.provider = "nope", .api_key = "x"};
+    char err[128];
+    char *tok = mi_captcha_solve(&cfg, &ch, "https://site.example/", err, sizeof err);
+    CHECK(tok == NULL, "an unknown provider refuses");
+    mi_captcha_challenge_free(&ch);
+}
+
+/* The provider list is what the UI offers, so it must name the real ones. */
+static void test_provider_list(void) {
+    const char *const *p = mi_captcha_providers();
+    int has_stub = 0, has_2c = 0, has_ac = 0, has_cap = 0;
+    for (size_t i = 0; p[i]; i++) {
+        if (!strcmp(p[i], "stub")) has_stub = 1;
+        if (!strcmp(p[i], "2captcha")) has_2c = 1;
+        if (!strcmp(p[i], "anti-captcha")) has_ac = 1;
+        if (!strcmp(p[i], "capsolver")) has_cap = 1;
+    }
+    CHECK(has_stub && has_2c && has_ac && has_cap, "the provider list names them all");
+    CHECK(mi_captcha_provider_known("capsolver") == 1, "capsolver is known");
+    CHECK(mi_captcha_provider_known("nope") == 0, "an unknown name is not known");
+    CHECK(mi_captcha_provider_known("") == 1, "an empty name means the stub, which is known");
 }
 
 int main(void) {
@@ -101,7 +128,9 @@ int main(void) {
     test_detect_hcaptcha();
     test_plain_page_is_not_a_challenge();
     test_stub_solver();
-    test_remote_provider_refuses();
+    test_remote_provider_needs_a_key();
+    test_unknown_provider_refused();
+    test_provider_list();
 
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

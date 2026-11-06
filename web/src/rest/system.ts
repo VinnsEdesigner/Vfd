@@ -110,6 +110,7 @@ export function createSystemResource(client: ApiClient): SystemResource {
       if (next.identityRetries !== undefined) body.identity_retries = next.identityRetries;
       if (next.captchaProvider !== undefined) body.captcha_provider = next.captchaProvider;
       if (next.captchaApiKey !== undefined) body.captcha_api_key = next.captchaApiKey;
+      if (next.captchaBaseUrl !== undefined) body.captcha_base_url = next.captchaBaseUrl;
       if (next.frontierDbUrl !== undefined) body.frontier_db_url = next.frontierDbUrl;
       if (next.frontierDbPath !== undefined) body.frontier_db_path = next.frontierDbPath;
       if (next.frontierToken !== undefined) body.frontier_token = next.frontierToken;

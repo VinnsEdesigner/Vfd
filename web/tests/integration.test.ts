@@ -125,11 +125,16 @@ describe('egress settings', () => {
   });
 
   it('sets and reports the identity, captcha and frontier settings', async () => {
+    // The provider list is offered, so the UI can present a choice.
+    const before = await api.system.egressSettings();
+    expect(before.captchaProviders).toContain('2captcha');
+
     await api.system.setEgress({
       impersonate: 'chrome',
       identityRetries: 3,
       captchaProvider: 'stub',
       captchaApiKey: 'CAPTCHA_SECRET',
+      captchaBaseUrl: 'https://gateway.example/captcha',
       frontierDbUrl: 'libsql://example.turso.io',
       frontierDbPath: '/tmp/vyzor-frontier.db',
       frontierToken: 'FRONTIER_SECRET',
@@ -139,6 +144,7 @@ describe('egress settings', () => {
     expect(s.identityRetries).toBe(3);
     expect(s.captchaProvider).toBe('stub');
     expect(s.captchaKeySet).toBe(true);
+    expect(s.captchaBaseUrl).toBe('https://gateway.example/captcha');
     expect(s.frontierDbUrl).toBe('libsql://example.turso.io');
     expect(s.frontierDbPath).toBe('/tmp/vyzor-frontier.db');
     expect(s.frontierTokenSet).toBe(true);
@@ -157,6 +163,7 @@ describe('egress settings', () => {
       identityRetries: 0,
       captchaProvider: '',
       captchaApiKey: '',
+      captchaBaseUrl: '',
       frontierDbUrl: '',
       frontierDbPath: '',
       frontierToken: '',

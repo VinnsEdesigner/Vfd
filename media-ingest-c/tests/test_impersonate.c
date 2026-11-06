@@ -54,7 +54,10 @@ int main(void) {
 
     /* A fetch with no helper fails cleanly with a reason, not a crash. */
     char err[160];
-    char *body = mi_impersonate_fetch(&cfg, "http://example.com/", 0, err, sizeof err);
+    char *meta = NULL;
+    char *body = mi_impersonate_fetch(&cfg, "http://example.com/", 0, &meta, err,
+                                      sizeof err);
+    CHECK(meta == NULL, "no metadata comes back when there is no helper");
     CHECK(body == NULL, "a fetch with no helper returns NULL");
     CHECK(strstr(err, "helper") != NULL, "the failure names the missing helper");
 

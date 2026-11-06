@@ -245,7 +245,9 @@ export interface EgressSettings {
   impersonate: string;
   identityRetries: number;
   captchaProvider: string;
+  captchaProviders: readonly string[];
   captchaKeySet: boolean;
+  captchaBaseUrl: string;
   frontierDbUrl: string;
   frontierDbPath: string;
   frontierTokenSet: boolean;
@@ -259,6 +261,7 @@ export interface EgressUpdate {
   identityRetries?: number;
   captchaProvider?: string;
   captchaApiKey?: string;
+  captchaBaseUrl?: string;
   frontierDbUrl?: string;
   frontierDbPath?: string;
   frontierToken?: string;

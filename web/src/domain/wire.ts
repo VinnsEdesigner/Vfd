@@ -497,6 +497,10 @@ export interface WireEgressSettings {
   identity_retries?: number;
   /** The captcha provider name, or null for the built-in stub. */
   captcha_provider?: string | null;
+  /** The providers a caller may choose. */
+  captcha_providers?: string[];
+  /** An endpoint override for the captcha provider. */
+  captcha_base_url?: string | null;
   /** Whether a captcha API key is set. The key itself is never returned. */
   captcha_key_set?: boolean;
   /** The shared crawl frontier's remote database URL. */
@@ -515,6 +519,7 @@ export interface WireEgressUpdate {
   identity_retries?: number;
   captcha_provider?: string;
   captcha_api_key?: string;
+  captcha_base_url?: string;
   frontier_db_url?: string;
   frontier_db_path?: string;
   frontier_token?: string;

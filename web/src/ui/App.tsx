@@ -1955,7 +1955,9 @@ export function App({ initialView = 'overview' }: AppProps) {
                     impersonate: egressQuery.data.impersonate,
                     identityRetries: egressQuery.data.identityRetries,
                     captchaProvider: egressQuery.data.captchaProvider,
+                    captchaProviders: egressQuery.data.captchaProviders,
                     captchaKeySet: egressQuery.data.captchaKeySet,
+                    captchaBaseUrl: egressQuery.data.captchaBaseUrl,
                     frontierDbUrl: egressQuery.data.frontierDbUrl,
                     frontierDbPath: egressQuery.data.frontierDbPath,
                     frontierTokenSet: egressQuery.data.frontierTokenSet,
@@ -1973,6 +1975,7 @@ export function App({ initialView = 'overview' }: AppProps) {
               if (next.identityRetries != null) body.identityRetries = next.identityRetries;
               if (next.captchaProvider != null) body.captchaProvider = next.captchaProvider;
               if (next.captchaApiKey != null) body.captchaApiKey = next.captchaApiKey;
+              if (next.captchaBaseUrl != null) body.captchaBaseUrl = next.captchaBaseUrl;
               if (next.frontierDbUrl != null) body.frontierDbUrl = next.frontierDbUrl;
               if (next.frontierDbPath != null) body.frontierDbPath = next.frontierDbPath;
               if (next.frontierToken != null) body.frontierToken = next.frontierToken;

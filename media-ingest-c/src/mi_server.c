@@ -302,11 +302,14 @@ void mi_server_config_init(mi_server_config *cfg) {
     }
     cfg->captcha_provider = NULL;
     cfg->captcha_api_key = NULL;
+    cfg->captcha_base_url = NULL;
     {
         const char *cp = getenv("MI_CAPTCHA_PROVIDER");
         if (cp && *cp) cfg->captcha_provider = mi_strdup(cp);
         const char *ck = getenv("MI_CAPTCHA_KEY");
         if (ck && *ck) cfg->captcha_api_key = mi_strdup(ck);
+        const char *cu = getenv("MI_CAPTCHA_BASE_URL");
+        if (cu && *cu) cfg->captcha_base_url = mi_strdup(cu);
     }
     cfg->frontier_db_url = NULL;
     cfg->frontier_token = NULL;
@@ -4366,6 +4369,20 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_key(&b, "captcha_key_set");
         mi_json_bool(&b, srv->cfg.captcha_api_key && *srv->cfg.captcha_api_key);
         mi_json_raw(&b, ",");
+        mi_json_key(&b, "captcha_base_url");
+        mi_json_string(&b, srv->cfg.captcha_base_url);
+        mi_json_raw(&b, ",");
+        /* The providers a caller may choose, so the UI offers a list rather
+         * than asking a user to type a name and guess. */
+        mi_json_key(&b, "captcha_providers");
+        mi_json_raw(&b, "[");
+        const char *const *provs = mi_captcha_providers();
+        for (size_t i = 0; provs[i]; i++) {
+            if (i) mi_json_raw(&b, ",");
+            mi_json_string(&b, provs[i]);
+        }
+        mi_json_raw(&b, "]");
+        mi_json_raw(&b, ",");
         mi_json_key(&b, "frontier_db_url");
         mi_json_string(&b, srv->cfg.frontier_db_url);
         mi_json_raw(&b, ",");
@@ -4393,17 +4410,18 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         const mi_json *retries_v = mi_json_get(in, "identity_retries");
         const mi_json *cprov_v = mi_json_get(in, "captcha_provider");
         const mi_json *ckey_v = mi_json_get(in, "captcha_api_key");
+        const mi_json *cbase_v = mi_json_get(in, "captcha_base_url");
         const mi_json *furl_v = mi_json_get(in, "frontier_db_url");
         const mi_json *ftok_v = mi_json_get(in, "frontier_token");
         const mi_json *fpath_v = mi_json_get(in, "frontier_db_path");
         if (!cookies_v && !proxy_v && !impersonate_v && !retries_v && !cprov_v &&
-            !ckey_v && !furl_v && !ftok_v && !fpath_v) {
+            !ckey_v && !cbase_v && !furl_v && !ftok_v && !fpath_v) {
             send_error(fd, 400, "Bad Request", "nothing to set", cors);
             mi_json_value_free(in);
             return;
         }
         const char *cookies = NULL, *proxy = NULL, *impersonate = NULL;
-        const char *cprov = NULL, *ckey = NULL;
+        const char *cprov = NULL, *ckey = NULL, *cbase = NULL;
         const char *furl = NULL, *ftok = NULL, *fpath = NULL;
         int retries = -1;
         if (cookies_v) {
@@ -4455,6 +4473,11 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                 return;
             }
             cprov = cprov_v->string;
+            if (cprov && *cprov && !mi_captcha_provider_known(cprov)) {
+                send_error(fd, 422, "Unprocessable Entity", "unknown captcha provider", cors);
+                mi_json_value_free(in);
+                return;
+            }
         }
         if (ckey_v) {
             if (ckey_v->type != MI_JSON_STRING && ckey_v->type != MI_JSON_NULL) {
@@ -4463,6 +4486,14 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                 return;
             }
             ckey = ckey_v->string;
+        }
+        if (cbase_v) {
+            if (cbase_v->type != MI_JSON_STRING && cbase_v->type != MI_JSON_NULL) {
+                send_error(fd, 400, "Bad Request", "captcha_base_url must be a string", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            cbase = cbase_v->string;
         }
         if (furl_v) {
             if (furl_v->type != MI_JSON_STRING && furl_v->type != MI_JSON_NULL) {
@@ -4510,6 +4541,10 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         if (ckey_v) {
             free((char *)srv->cfg.captcha_api_key);
             srv->cfg.captcha_api_key = (ckey && *ckey) ? mi_strdup(ckey) : NULL;
+        }
+        if (cbase_v) {
+            free((char *)srv->cfg.captcha_base_url);
+            srv->cfg.captcha_base_url = (cbase && *cbase) ? mi_strdup(cbase) : NULL;
         }
         if (furl_v) {
             free((char *)srv->cfg.frontier_db_url);
@@ -4575,13 +4610,15 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_string(&b, srv->cfg.captcha_provider ? srv->cfg.captcha_provider : "stub");
         mi_json_raw(&b, ",");
         mi_json_key(&b, "token");
+        const char *page_url = mi_json_get_string(in, "page_url", NULL);
         char *token = NULL, err[160] = {0};
         if (detected) {
             mi_captcha_config ccfg2;
             memset(&ccfg2, 0, sizeof ccfg2);
             ccfg2.provider = srv->cfg.captcha_provider;
             ccfg2.api_key = srv->cfg.captcha_api_key;
-            token = mi_captcha_solve(&ccfg2, &ch, NULL, err, sizeof err);
+            ccfg2.base_url = srv->cfg.captcha_base_url;
+            token = mi_captcha_solve(&ccfg2, &ch, page_url, err, sizeof err);
         }
         mi_json_string(&b, token);
         if (!token && err[0]) {
@@ -4664,6 +4701,8 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
                                     ? mi_strdup(cfg->captcha_provider) : NULL;
     srv->cfg.captcha_api_key = (cfg->captcha_api_key && *cfg->captcha_api_key)
                                    ? mi_strdup(cfg->captcha_api_key) : NULL;
+    srv->cfg.captcha_base_url = (cfg->captcha_base_url && *cfg->captcha_base_url)
+                                    ? mi_strdup(cfg->captcha_base_url) : NULL;
     srv->cfg.frontier_db_url = (cfg->frontier_db_url && *cfg->frontier_db_url)
                                    ? mi_strdup(cfg->frontier_db_url) : NULL;
     srv->cfg.frontier_token = (cfg->frontier_token && *cfg->frontier_token)
@@ -4773,6 +4812,7 @@ void mi_server_free(mi_server *srv) {
     free((char *)srv->cfg.impersonate);
     free((char *)srv->cfg.captcha_provider);
     free((char *)srv->cfg.captcha_api_key);
+    free((char *)srv->cfg.captcha_base_url);
     free((char *)srv->cfg.frontier_db_url);
     free((char *)srv->cfg.frontier_token);
     free((char *)srv->cfg.frontier_db_path);

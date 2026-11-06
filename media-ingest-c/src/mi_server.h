@@ -184,6 +184,9 @@ typedef struct {
      */
     const char *captcha_provider;
     const char *captcha_api_key;
+    /* An endpoint override for the captcha provider (a gateway or a test
+     * server). NULL uses the provider's own. */
+    const char *captcha_base_url;
     /*
      * A shared crawl frontier, so several Vyzors walk one site once rather than
      * once each. When both are set, a crawl request's `run_id` puts its queue in
