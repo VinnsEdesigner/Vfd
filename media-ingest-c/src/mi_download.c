@@ -14,6 +14,7 @@
 
 #include "mi_extract.h"
 #include "mi_identity.h"
+#include "mi_impersonate.h"
 #include "mi_util.h"
 
 #define MI_HEADER_SNIFF 8192
@@ -823,6 +824,32 @@ static int csp_forbids_framing(const char *csp) {
 char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
                                  size_t max_bytes, mi_fetch_info *info) {
     if (info) memset(info, 0, sizeof *info);
+
+    /*
+     * A site that fingerprints the TLS handshake refuses libcurl however it is
+     * dressed, and no header can pass that check. When the caller named a browser
+     * to imitate, the fetch goes through the helper that can wear its handshake.
+     *
+     * This is the plain page fetch (`info == NULL`, the crawler's path). The page
+     * endpoint keeps libcurl because it also reads the framing headers, which the
+     * helper does not return. A helper that is missing or fails falls through to
+     * libcurl, so a plain fetch is still better than none.
+     */
+    if (cfg->impersonate && *cfg->impersonate && !info) {
+        mi_impersonate_config icfg;
+        memset(&icfg, 0, sizeof icfg);
+        icfg.impersonate = cfg->impersonate;
+        icfg.proxy = cfg->proxy;
+        icfg.user_agent = cfg->user_agent;
+        icfg.cookies_text = cfg->cookies_text;
+        icfg.timeout_seconds = (int)cfg->timeout_seconds;
+        char ierr[200] = {0};
+        char *body = mi_impersonate_fetch(&icfg, url, max_bytes, ierr, sizeof ierr);
+        if (body) return body;
+        mi_logf(MI_LOG_INFO, "impersonated fetch failed (%s); falling back to libcurl",
+                ierr);
+    }
+
     if (ensure_curl() != 0 || !url) return NULL;
     CURL *curl = curl_easy_init();
     if (!curl) return NULL;

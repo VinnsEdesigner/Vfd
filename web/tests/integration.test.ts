@@ -131,6 +131,7 @@ describe('egress settings', () => {
       captchaProvider: 'stub',
       captchaApiKey: 'CAPTCHA_SECRET',
       frontierDbUrl: 'libsql://example.turso.io',
+      frontierDbPath: '/tmp/vyzor-frontier.db',
       frontierToken: 'FRONTIER_SECRET',
     });
     const s = await api.system.egressSettings();
@@ -139,6 +140,7 @@ describe('egress settings', () => {
     expect(s.captchaProvider).toBe('stub');
     expect(s.captchaKeySet).toBe(true);
     expect(s.frontierDbUrl).toBe('libsql://example.turso.io');
+    expect(s.frontierDbPath).toBe('/tmp/vyzor-frontier.db');
     expect(s.frontierTokenSet).toBe(true);
     // Neither secret is ever returned over the API.
     expect(JSON.stringify(s)).not.toContain('CAPTCHA_SECRET');
@@ -156,6 +158,7 @@ describe('egress settings', () => {
       captchaProvider: '',
       captchaApiKey: '',
       frontierDbUrl: '',
+      frontierDbPath: '',
       frontierToken: '',
     });
   });

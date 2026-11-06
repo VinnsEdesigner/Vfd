@@ -10,7 +10,7 @@ GST_LIBS   := $(shell pkg-config --libs gstreamer-1.0 gstreamer-webrtc-1.0 gstre
 CFLAGS  ?= -O2 -g -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes \
            -Wmissing-prototypes -std=c11 -DGST_USE_UNSTABLE_API -Isrc $(GST_CFLAGS)
 LDFLAGS ?=
-LDLIBS  := -lcurl -lpthread $(GST_LIBS)
+LDLIBS  := -lcurl -lpthread -lsqlite3 $(GST_LIBS)
 
 SRC_DIR := src
 BUILD   := build
@@ -22,6 +22,7 @@ LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_sanitize.c $(SRC_DIR)/mi_identify.c $(SRC_DIR)/mi_outbox.c $(SRC_DIR)/mi_rtc.c $(SRC_DIR)/mi_ws.c $(SRC_DIR)/mi_interactive.c $(SRC_DIR)/mi_mediawatch.c \
            $(SRC_DIR)/mi_crawl.c $(SRC_DIR)/mi_extract.c \
            $(SRC_DIR)/mi_identity.c $(SRC_DIR)/mi_captcha.c $(SRC_DIR)/mi_turso.c \
+           $(SRC_DIR)/mi_impersonate.c \
            $(SRC_DIR)/mi_frontier.c \
            $(SRC_DIR)/mi_server.c
 CLI_SRC := $(SRC_DIR)/mi_cli.c
@@ -40,6 +41,7 @@ TEST_EXTRACT_SRC := tests/test_extract.c
 TEST_IDENTITY_SRC := tests/test_identity.c
 TEST_CAPTCHA_SRC := tests/test_captcha.c
 TEST_FRONTIER_SRC := tests/test_frontier.c
+TEST_IMPERSONATE_SRC := tests/test_impersonate.c
 
 .PHONY: all clean test
 
@@ -96,7 +98,10 @@ $(BUILD)/test_captcha: $(LIB_SRC) $(TEST_CAPTCHA_SRC) | $(BUILD)
 $(BUILD)/test_frontier: $(LIB_SRC) $(TEST_FRONTIER_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_FRONTIER_SRC) $(LDLIBS)
 
-test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier
+$(BUILD)/test_impersonate: $(LIB_SRC) $(TEST_IMPERSONATE_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_IMPERSONATE_SRC) $(LDLIBS)
+
+test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate
 	$(BUILD)/test_media_ingest
 	$(BUILD)/test_server
 	$(BUILD)/test_render
@@ -112,6 +117,7 @@ test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUI
 	$(BUILD)/test_identity
 	$(BUILD)/test_captcha
 	$(BUILD)/test_frontier
+	$(BUILD)/test_impersonate
 
 clean:
 	rm -rf $(BUILD)

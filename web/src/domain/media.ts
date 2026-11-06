@@ -247,6 +247,7 @@ export interface EgressSettings {
   captchaProvider: string;
   captchaKeySet: boolean;
   frontierDbUrl: string;
+  frontierDbPath: string;
   frontierTokenSet: boolean;
 }
 
@@ -259,6 +260,7 @@ export interface EgressUpdate {
   captchaProvider?: string;
   captchaApiKey?: string;
   frontierDbUrl?: string;
+  frontierDbPath?: string;
   frontierToken?: string;
 }
 

@@ -215,6 +215,15 @@ typedef struct {
     const char *frontier_token;
     const char *frontier_run_id;
     /*
+     * A local SQLite file to hold the frontier instead.
+     *
+     * The self-contained option: no account, no network. Used when a run id is
+     * given and `frontier_db_path` is set, unless a remote url is set too (the
+     * remote wins, since the operator named one). A crawl interrupted by a
+     * restart resumes from this file.
+     */
+    const char *frontier_db_path;
+    /*
      * The browser pool to render with, or NULL to never render.
      *
      * Passed in rather than owned: the pool is Vyzor's single browser gate, and

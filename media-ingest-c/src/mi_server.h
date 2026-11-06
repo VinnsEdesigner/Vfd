@@ -192,6 +192,12 @@ typedef struct {
     const char *frontier_db_url;
     const char *frontier_token;
     /*
+     * A local SQLite file for the crawl frontier, so a single server is durable
+     * and resumable with no external database. Used when a run id is given and
+     * no remote url is set. Set from the settings endpoint or MI_FRONTIER_DB.
+     */
+    const char *frontier_db_path;
+    /*
      * The ffmpeg binary.
      *
      * Used to read a manifest (an HLS or DASH URL is a playlist, not a file) and

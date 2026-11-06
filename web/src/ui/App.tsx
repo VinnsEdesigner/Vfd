@@ -1957,6 +1957,7 @@ export function App({ initialView = 'overview' }: AppProps) {
                     captchaProvider: egressQuery.data.captchaProvider,
                     captchaKeySet: egressQuery.data.captchaKeySet,
                     frontierDbUrl: egressQuery.data.frontierDbUrl,
+                    frontierDbPath: egressQuery.data.frontierDbPath,
                     frontierTokenSet: egressQuery.data.frontierTokenSet,
                   }
                 : null
@@ -1973,6 +1974,7 @@ export function App({ initialView = 'overview' }: AppProps) {
               if (next.captchaProvider != null) body.captchaProvider = next.captchaProvider;
               if (next.captchaApiKey != null) body.captchaApiKey = next.captchaApiKey;
               if (next.frontierDbUrl != null) body.frontierDbUrl = next.frontierDbUrl;
+              if (next.frontierDbPath != null) body.frontierDbPath = next.frontierDbPath;
               if (next.frontierToken != null) body.frontierToken = next.frontierToken;
               void runAction(
                 'save-egress',

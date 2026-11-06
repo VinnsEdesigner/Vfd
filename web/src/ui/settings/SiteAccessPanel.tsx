@@ -35,8 +35,10 @@ export interface SiteAccessValue {
   captchaProvider: string;
   /** Whether a captcha API key is set. The key itself is never returned. */
   captchaKeySet: boolean;
-  /** The shared crawl frontier's database URL, or ''. */
+  /** The shared crawl frontier's remote database URL, or ''. */
   frontierDbUrl: string;
+  /** A local SQLite file for the crawl frontier, or ''. */
+  frontierDbPath: string;
   /** Whether a frontier token is set. The token itself is never returned. */
   frontierTokenSet: boolean;
 }
@@ -50,6 +52,7 @@ export interface SiteAccessSave {
   captchaProvider?: string | null;
   captchaApiKey?: string | null;
   frontierDbUrl?: string | null;
+  frontierDbPath?: string | null;
   frontierToken?: string | null;
 }
 
@@ -73,12 +76,14 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
   const [captchaProvider, setCaptchaProvider] = useState<string | null>(null);
   const [captchaKey, setCaptchaKey] = useState('');
   const [frontierUrl, setFrontierUrl] = useState<string | null>(null);
+  const [frontierPath, setFrontierPath] = useState<string | null>(null);
   const [frontierToken, setFrontierToken] = useState('');
   const effectiveProxy = proxy ?? value?.proxy ?? '';
   const effectiveImpersonate = impersonate ?? value?.impersonate ?? '';
   const effectiveRetries = retries ?? String(value?.identityRetries ?? 0);
   const effectiveCaptchaProvider = captchaProvider ?? value?.captchaProvider ?? '';
   const effectiveFrontierUrl = frontierUrl ?? value?.frontierDbUrl ?? '';
+  const effectiveFrontierPath = frontierPath ?? value?.frontierDbPath ?? '';
 
   const names = value?.cookieNames ?? [];
   const status = value?.cookieConfigured
@@ -233,11 +238,20 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
         <div className="form">
           <div className="field field--full">
             <Field
-              label="Turso database URL"
+              label="Local database file"
+              value={effectiveFrontierPath}
+              onChange={setFrontierPath}
+              placeholder="/var/lib/vyzor/frontier.db"
+              hint="A SQLite file on this machine: durable and resumable with no account. Used when no remote URL is set."
+            />
+          </div>
+          <div className="field field--full">
+            <Field
+              label="Remote database URL (optional)"
               value={effectiveFrontierUrl}
               onChange={setFrontierUrl}
               placeholder="libsql://…"
-              hint="With a token, a crawl given a run id shares its queue across workers."
+              hint="Takes precedence over the local file. With a token, a crawl given a run id shares its queue across workers."
             />
           </div>
           <div className="field field--full">
@@ -260,6 +274,7 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
             onClick={() =>
               onSave({
                 frontierDbUrl: effectiveFrontierUrl,
+                frontierDbPath: effectiveFrontierPath,
                 ...(frontierToken ? { frontierToken } : {}),
               })
             }

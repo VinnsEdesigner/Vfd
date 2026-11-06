@@ -499,8 +499,10 @@ export interface WireEgressSettings {
   captcha_provider?: string | null;
   /** Whether a captcha API key is set. The key itself is never returned. */
   captcha_key_set?: boolean;
-  /** The shared crawl frontier's database URL. */
+  /** The shared crawl frontier's remote database URL. */
   frontier_db_url?: string | null;
+  /** A local SQLite file for the crawl frontier. */
+  frontier_db_path?: string | null;
   /** Whether a frontier token is set. The token itself is never returned. */
   frontier_token_set?: boolean;
 }
@@ -514,5 +516,6 @@ export interface WireEgressUpdate {
   captcha_provider?: string;
   captcha_api_key?: string;
   frontier_db_url?: string;
+  frontier_db_path?: string;
   frontier_token?: string;
 }

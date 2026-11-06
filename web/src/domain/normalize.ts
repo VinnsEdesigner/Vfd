@@ -427,6 +427,7 @@ export function normalizeEgressSettings(w: WireEgressSettings): EgressSettings {
     captchaProvider: w.captcha_provider ?? '',
     captchaKeySet: Boolean(w.captcha_key_set),
     frontierDbUrl: w.frontier_db_url ?? '',
+    frontierDbPath: w.frontier_db_path ?? '',
     frontierTokenSet: Boolean(w.frontier_token_set),
   };
 }

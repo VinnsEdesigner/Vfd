@@ -485,7 +485,8 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
                      int interactive_idle, int interactive_keepalive,
                      int interactive_silence, int rtc, int rtc_concurrent, int rtc_fps,
                      int rtc_bitrate, const char *rtc_stun, const char *proxy,
-                     const char *impersonate, int identity_retries) {
+                     const char *impersonate, int identity_retries,
+                     const char *frontier_db) {
     mi_server_config cfg;
     mi_server_config_init(&cfg);
     if (host) cfg.host = host;
@@ -497,6 +498,7 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
     cfg.proxy = (proxy && *proxy) ? proxy : NULL;
     cfg.impersonate = (impersonate && *impersonate) ? impersonate : NULL;
     if (identity_retries > 0) cfg.identity_retries = identity_retries;
+    cfg.frontier_db_path = (frontier_db && *frontier_db) ? frontier_db : NULL;
     cfg.render_enabled = render;
     if (render_timeout > 0) cfg.render_timeout_seconds = render_timeout;
     if (render_concurrent > 0) cfg.render_max_concurrent = render_concurrent;
@@ -582,7 +584,7 @@ static void usage(void) {
             "  vyzor hls <input> -o <dir> [--renditions 1080,720,480] [--segment-seconds N]\n"
             "  vyzor ingest <url> -o <dir> [--hls <dir>] [--upload] [-c N] [-q] [-H 'K: V']...\n"
             "  vyzor serve [--host H] [--port N] [--work-dir D] [--auth-token T]\n"
-            "                      [--allow-origin ORIGINS] [--user-agent UA] [--proxy URL] [--impersonate CLIENT] [--identity-retries N]\n"
+            "                      [--allow-origin ORIGINS] [--user-agent UA] [--proxy URL] [--impersonate CLIENT] [--identity-retries N] [--frontier-db PATH]\n"
             "                      [--render] [--render-timeout SECONDS] [--render-concurrent N]\n"
             "                      [--render-cache DIR] [--render-cache-ttl SECONDS] [--no-render-cache]\n"
             "                      [--interactive] [--interactive-concurrent N] [--interactive-idle SECONDS]\n"
@@ -674,6 +676,7 @@ int main(int argc, char **argv) {
     const char *serve_proxy = getenv("MI_PROXY");
     const char *serve_impersonate = getenv("MI_IMPERSONATE");
     int serve_identity_retries = 0;
+    const char *serve_frontier_db = getenv("MI_FRONTIER_DB");
     /* Rendering is opt-in: it costs about half a gigabyte per render and needs
      * a browser on the host. MI_RENDER=1 turns it on without a flag. */
     int serve_render = getenv("MI_RENDER") != NULL;
@@ -716,7 +719,7 @@ int main(int argc, char **argv) {
         OPT_SECRET, OPT_SESSION, OPT_PREFIX, OPT_CONTENTTYPE, OPT_VHOST, OPT_PATHSTYLE,
         OPT_CDN_BASE, OPT_PURGE, OPT_CF_TOKEN, OPT_CF_ZONE,
         OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN, OPT_USERAGENT,
-        OPT_PROXY, OPT_IMPERSONATE, OPT_IDENTITY_RETRIES,
+        OPT_PROXY, OPT_IMPERSONATE, OPT_IDENTITY_RETRIES, OPT_FRONTIER_DB,
         OPT_RENDER, OPT_RENDER_TIMEOUT, OPT_RENDER_CONCURRENT,
         OPT_RENDER_CACHE, OPT_RENDER_CACHE_TTL, OPT_NO_RENDER_CACHE,
         OPT_INTERACTIVE, OPT_INTERACTIVE_CONCURRENT, OPT_INTERACTIVE_IDLE,
@@ -757,6 +760,7 @@ int main(int argc, char **argv) {
         {"proxy", required_argument, 0, OPT_PROXY},
         {"impersonate", required_argument, 0, OPT_IMPERSONATE},
         {"identity-retries", required_argument, 0, OPT_IDENTITY_RETRIES},
+        {"frontier-db", required_argument, 0, OPT_FRONTIER_DB},
         {"render", no_argument, 0, OPT_RENDER},
         {"render-timeout", required_argument, 0, OPT_RENDER_TIMEOUT},
         {"render-concurrent", required_argument, 0, OPT_RENDER_CONCURRENT},
@@ -820,6 +824,7 @@ int main(int argc, char **argv) {
             case OPT_PROXY: serve_proxy = optarg; break;
             case OPT_IMPERSONATE: serve_impersonate = optarg; break;
             case OPT_IDENTITY_RETRIES: serve_identity_retries = atoi(optarg); break;
+            case OPT_FRONTIER_DB: serve_frontier_db = optarg; break;
             case OPT_RENDER: serve_render = 1; break;
             case OPT_RENDER_TIMEOUT: serve_render_timeout = atoi(optarg); break;
             case OPT_RENDER_CONCURRENT: serve_render_concurrent = atoi(optarg); break;
@@ -904,7 +909,8 @@ int main(int argc, char **argv) {
                            serve_interactive_idle, serve_interactive_keepalive,
                            serve_interactive_silence, serve_rtc, serve_rtc_concurrent,
                            serve_rtc_fps, serve_rtc_bitrate, serve_rtc_stun,
-                           serve_proxy, serve_impersonate, serve_identity_retries);
+                           serve_proxy, serve_impersonate, serve_identity_retries,
+                           serve_frontier_db);
             break;
         default: rc = 2;
     }

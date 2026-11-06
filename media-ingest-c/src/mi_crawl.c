@@ -61,6 +61,7 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->frontier_db_url = NULL;
     cfg->frontier_token = NULL;
     cfg->frontier_run_id = NULL;
+    cfg->frontier_db_path = NULL;
     cfg->render_pool = NULL;
     cfg->interactive_pool = NULL;
     cfg->click_selectors = NULL;
@@ -514,6 +515,12 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
     dcfg.require_media = 0;
     dcfg.user_agent = cfg->user_agent;
     dcfg.proxy = cfg->proxy;
+    /* The page fetch goes through the impersonation helper when a browser was
+     * named: a site that fingerprints TLS refuses the plain fetch however it is
+     * dressed, and the helper is the only path that wears a real handshake. It
+     * falls back to libcurl on its own if the helper is missing. */
+    dcfg.impersonate = cfg->impersonate;
+    dcfg.cookies_text = cfg->cookies_text;
     /* A crawl fetches many pages; a single slow one must not consume the whole
      * budget, so each fetch gets a fraction of it. */
     dcfg.timeout_seconds = 15;
@@ -868,12 +875,17 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
      * crawlers walk one site once rather than once each.
      */
     frontier *f = NULL;
-    if (cfg->frontier_db_url && *cfg->frontier_db_url && cfg->frontier_run_id &&
-        *cfg->frontier_run_id) {
+    if (cfg->frontier_run_id && *cfg->frontier_run_id) {
         char ferr[256];
-        f = mi_frontier_new_turso(cfg->frontier_db_url, cfg->frontier_token,
-                                  cfg->frontier_run_id, ferr, sizeof ferr);
-        if (!f) {
+        if (cfg->frontier_db_url && *cfg->frontier_db_url) {
+            /* A remote database the operator named wins over a local file. */
+            f = mi_frontier_new_turso(cfg->frontier_db_url, cfg->frontier_token,
+                                      cfg->frontier_run_id, ferr, sizeof ferr);
+        } else if (cfg->frontier_db_path && *cfg->frontier_db_path) {
+            f = mi_frontier_new_sqlite(cfg->frontier_db_path, cfg->frontier_run_id,
+                                       ferr, sizeof ferr);
+        }
+        if (!f && (cfg->frontier_db_url || cfg->frontier_db_path)) {
             mi_logf(MI_LOG_ERROR, "crawl: shared frontier unavailable (%s); "
                                   "falling back to an in-process queue", ferr);
         }
