@@ -195,18 +195,37 @@ pkg_available() { apt-cache show "$1" >/dev/null 2>&1; }
 
 pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
 
-# Fill the workspace cache with the .debs for a package set, and its
+# Fill the workspace cache with the .debs for a package set and its
 # dependencies, so a later restart can install without the network.
+#
+# The closure comes from `apt-cache depends --recurse`, NOT from
+# `apt-get install --print-uris`. The difference matters and cost a debugging
+# round: `--print-uris` lists only what apt has yet to install, so on a host where
+# everything is already present it lists nothing — which is the state the script
+# runs in most of the time, and exactly when the cache should be being filled.
+# `apt-cache depends` reads the package index, so it gives the same closure
+# whatever is installed.
+#
+# Only the download URLs are taken from apt, so the two agree on where a package
+# comes from.
 cache_debs() {
     [ "$DRY_RUN" -eq 1 ] && return 0
     [ "$CACHE_DEBS" -eq 1 ] || return 0
-    local p
-    # `--print-uris` lists the dependency closure; downloading that is what makes
-    # an offline reinstall possible.
+
+    # The dependency closure, whatever is already installed.
+    local pkgs
+    pkgs=$(apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts \
+               --no-breaks --no-replaces --no-enhances --no-pre-depends $1 2>/dev/null \
+           | grep -E '^[A-Za-z0-9]' | sort -u)
+    [ -z "$pkgs" ] && pkgs="$1"
+
+    # Their download URLs. `--print-uris --reinstall` lists a URI even for a
+    # package already present, which is what makes the cache fillable at any time.
     local uris
-    uris=$($SUDO apt-get install -y --print-uris --no-install-recommends $1 2>/dev/null \
+    uris=$($SUDO apt-get install -y --print-uris --reinstall --no-install-recommends $pkgs 2>/dev/null \
            | grep -oE "'https?://[^']+'" | tr -d "'" | sort -u)
     [ -z "$uris" ] && return 0
+
     local n=0
     for u in $uris; do
         local f="$DEB_CACHE/$(basename "$u")"
@@ -236,8 +255,11 @@ install_pkgs() {
     note "installing:$to_install"
     if [ "$DRY_RUN" -eq 1 ]; then return 0; fi
 
-    # Keep the cache current, so the next restart can install from it.
-    cache_debs "$to_install"
+    # Keep the cache current, from the WHOLE wanted set rather than the missing
+    # part: apt lists a closure only for what it has yet to install, so caching
+    # `$to_install` alone means the second run — the one that needs the cache —
+    # caches nothing.
+    cache_debs "$1"
 
     # A mirror can serve a transient 5xx for one archive (Debian's snapshot
     # mirror does this often), and `apt-get install` then fails as a whole —
@@ -284,23 +306,36 @@ install_pkgs() {
 
 # Install from the workspace .deb cache, with no network.
 #
-# `apt-get install` is used rather than `dpkg -i` because only apt resolves the
-# dependency closure: dpkg -i on a single .deb leaves it unconfigured with
-# "dependency problems". apt is pointed at the cache as its archive directory,
-# so it satisfies the closure from what is already on disk.
+# `dpkg -i` over the WHOLE cached closure, not `apt-get`.
+#
+# This took two attempts to get right, and both failures are worth recording:
+#
+#   dpkg -i one.deb            fails. dpkg does not resolve dependencies, so a
+#                              lone .deb is left "dependency problems",
+#                              unconfigured.
+#   apt-get --no-download      fails. Pointing apt's archive cache at a flat
+#     -o Dir::Cache::archives=   directory does not work — it expects the
+#                              partial-archive layout it writes itself, and
+#                              reports "Unable to fetch some archives".
+#
+# `dpkg -i` over every cached .deb at once is what works: the closure is present
+# in the directory, so dpkg can satisfy every dependency from the files in front
+# of it. Verified by installing Xvfb with no network.
 install_from_cache() {
     [ "$DRY_RUN" -eq 1 ] && return 1
     [ -d "$DEB_CACHE" ] || return 1
-    local have
-    have=$(ls "$DEB_CACHE"/*.deb 2>/dev/null | wc -l)
-    [ "$have" -gt 0 ] || return 1
+    local debs
+    debs=$(ls "$DEB_CACHE"/*.deb 2>/dev/null)
+    [ -n "$debs" ] || return 1
 
-    # -o Dir::Cache::archives makes apt look in the cache for the .debs it needs,
-    # and `--no-download` stops it going to the network when one is missing.
-    if $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-download \
-        -o "Dir::Cache::archives=$DEB_CACHE" --no-install-recommends $1 2>/dev/null; then
+    # One invocation with all of them, so dpkg can resolve across the set.
+    if $SUDO env DEBIAN_FRONTEND=noninteractive dpkg -i $debs >/dev/null 2>&1; then
+        # dpkg leaves packages unpacked-but-unconfigured when the order is
+        # unlucky; `--configure -a` settles it.
+        $SUDO dpkg --configure -a >/dev/null 2>&1 || true
         return 0
     fi
+    $SUDO dpkg --configure -a >/dev/null 2>&1 || true
     return 1
 }
 
