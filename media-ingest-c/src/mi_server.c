@@ -24,6 +24,7 @@
 #include "mi_crawl.h"
 #include "mi_detect.h"
 #include "mi_extract.h"
+#include "mi_captcha.h"
 #include "mi_download.h"
 #include "mi_hls.h"
 #include "mi_identify.h"
@@ -298,6 +299,14 @@ void mi_server_config_init(mi_server_config *cfg) {
         if (im && *im) cfg->impersonate = mi_strdup(im);
         const char *ir = getenv("MI_IDENTITY_RETRIES");
         if (ir && *ir) cfg->identity_retries = atoi(ir);
+    }
+    cfg->captcha_provider = NULL;
+    cfg->captcha_api_key = NULL;
+    {
+        const char *cp = getenv("MI_CAPTCHA_PROVIDER");
+        if (cp && *cp) cfg->captcha_provider = mi_strdup(cp);
+        const char *ck = getenv("MI_CAPTCHA_KEY");
+        if (ck && *ck) cfg->captcha_api_key = mi_strdup(ck);
     }
     {
         const char *ck = getenv("MI_COOKIES_FILE");
@@ -3376,6 +3385,9 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_key(&b, "skipped_offsite");
         mi_json_int(&b, (int64_t)cr.skipped_offsite);
         mi_json_raw(&b, ",");
+        mi_json_key(&b, "challenges_seen");
+        mi_json_int(&b, cr.challenges_seen);
+        mi_json_raw(&b, ",");
         mi_json_key(&b, "items");
         mi_json_raw(&b, "[");
         for (size_t i = 0; i < cr.hit_count; i++) {
@@ -4311,6 +4323,12 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, ",");
         mi_json_key(&b, "identity_retries");
         mi_json_int(&b, srv->cfg.identity_retries);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "captcha_provider");
+        mi_json_string(&b, srv->cfg.captcha_provider);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "captcha_key_set");
+        mi_json_bool(&b, srv->cfg.captcha_api_key && *srv->cfg.captcha_api_key);
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
@@ -4328,12 +4346,16 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         const mi_json *proxy_v = mi_json_get(in, "proxy");
         const mi_json *impersonate_v = mi_json_get(in, "impersonate");
         const mi_json *retries_v = mi_json_get(in, "identity_retries");
-        if (!cookies_v && !proxy_v && !impersonate_v && !retries_v) {
+        const mi_json *cprov_v = mi_json_get(in, "captcha_provider");
+        const mi_json *ckey_v = mi_json_get(in, "captcha_api_key");
+        if (!cookies_v && !proxy_v && !impersonate_v && !retries_v && !cprov_v &&
+            !ckey_v) {
             send_error(fd, 400, "Bad Request", "nothing to set", cors);
             mi_json_value_free(in);
             return;
         }
         const char *cookies = NULL, *proxy = NULL, *impersonate = NULL;
+        const char *cprov = NULL, *ckey = NULL;
         int retries = -1;
         if (cookies_v) {
             if (cookies_v->type != MI_JSON_STRING && cookies_v->type != MI_JSON_NULL) {
@@ -4377,6 +4399,22 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             if (retries < 0) retries = 0;
             if (retries > 10) retries = 10;
         }
+        if (cprov_v) {
+            if (cprov_v->type != MI_JSON_STRING && cprov_v->type != MI_JSON_NULL) {
+                send_error(fd, 400, "Bad Request", "captcha_provider must be a string", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            cprov = cprov_v->string;
+        }
+        if (ckey_v) {
+            if (ckey_v->type != MI_JSON_STRING && ckey_v->type != MI_JSON_NULL) {
+                send_error(fd, 400, "Bad Request", "captcha_api_key must be a string", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            ckey = ckey_v->string;
+        }
         pthread_mutex_lock(&srv->lock);
         if (cookies_v) {
             free((char *)srv->cfg.cookies_text);
@@ -4392,6 +4430,14 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                                        ? mi_strdup(impersonate) : NULL;
         }
         if (retries >= 0) srv->cfg.identity_retries = retries;
+        if (cprov_v) {
+            free((char *)srv->cfg.captcha_provider);
+            srv->cfg.captcha_provider = (cprov && *cprov) ? mi_strdup(cprov) : NULL;
+        }
+        if (ckey_v) {
+            free((char *)srv->cfg.captcha_api_key);
+            srv->cfg.captcha_api_key = (ckey && *ckey) ? mi_strdup(ckey) : NULL;
+        }
         int cookie_set = srv->cfg.cookies_text && *srv->cfg.cookies_text;
         int proxy_set = srv->cfg.proxy && *srv->cfg.proxy;
         pthread_mutex_unlock(&srv->lock);
@@ -4407,6 +4453,62 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
+        mi_json_value_free(in);
+        return;
+    }
+
+    /*
+     * POST /api/v1/captcha/solve  {"html": "..."} — detect a challenge in a page
+     * the caller already holds, and ask the configured provider for a token.
+     *
+     * The page is passed in rather than fetched, so this adds no new way to make
+     * the server reach a URL. Detection is reported even when no solver is
+     * configured, because "this is a captcha wall" is useful on its own.
+     */
+    if (!strcmp(req->path, "/api/v1/captcha/solve") && !strcmp(req->method, "POST")) {
+        mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+        const char *html = mi_json_get_string(in, "html", NULL);
+        if (!html || !*html) {
+            send_error(fd, 400, "Bad Request", "missing or empty 'html'", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        mi_captcha_challenge ch;
+        int detected = mi_captcha_detect(html, strlen(html), &ch);
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"detected\":");
+        mi_json_bool(&b, detected);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "kind");
+        mi_json_string(&b, mi_captcha_kind_name(ch.kind));
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "sitekey");
+        mi_json_string(&b, ch.sitekey);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "provider");
+        mi_json_string(&b, srv->cfg.captcha_provider ? srv->cfg.captcha_provider : "stub");
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "token");
+        char *token = NULL, err[160] = {0};
+        if (detected) {
+            mi_captcha_config ccfg2;
+            memset(&ccfg2, 0, sizeof ccfg2);
+            ccfg2.provider = srv->cfg.captcha_provider;
+            ccfg2.api_key = srv->cfg.captcha_api_key;
+            token = mi_captcha_solve(&ccfg2, &ch, NULL, err, sizeof err);
+        }
+        mi_json_string(&b, token);
+        if (!token && err[0]) {
+            mi_json_raw(&b, ",");
+            mi_json_key(&b, "error");
+            mi_json_string(&b, err);
+        }
+        mi_json_raw(&b, "}");
+        send_json(fd, 200, "OK", &b, cors);
+        free(token);
+        mi_json_free(&b);
+        mi_captcha_challenge_free(&ch);
         mi_json_value_free(in);
         return;
     }
@@ -4473,6 +4575,10 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
     srv->cfg.proxy = (cfg->proxy && *cfg->proxy) ? mi_strdup(cfg->proxy) : NULL;
     srv->cfg.impersonate = (cfg->impersonate && *cfg->impersonate)
                                ? mi_strdup(cfg->impersonate) : NULL;
+    srv->cfg.captcha_provider = (cfg->captcha_provider && *cfg->captcha_provider)
+                                    ? mi_strdup(cfg->captcha_provider) : NULL;
+    srv->cfg.captcha_api_key = (cfg->captcha_api_key && *cfg->captcha_api_key)
+                                   ? mi_strdup(cfg->captcha_api_key) : NULL;
     srv->download_dir = mi_strdup(cfg->work_dir ? cfg->work_dir : "./downloads");
     srv->listen_fd = -1;
     srv->stop = 0;
@@ -4574,6 +4680,8 @@ void mi_server_free(mi_server *srv) {
     free((char *)srv->cfg.cookies_text);
     free((char *)srv->cfg.proxy);
     free((char *)srv->cfg.impersonate);
+    free((char *)srv->cfg.captcha_provider);
+    free((char *)srv->cfg.captcha_api_key);
     mi_render_pool_free(srv->renderer);
     mi_interactive_pool_free(srv->driver);
     mi_rtc_pool_free(srv->rtc);

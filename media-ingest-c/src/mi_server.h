@@ -174,6 +174,17 @@ typedef struct {
      */
     int rotate_identity;
     /*
+     * The captcha solver, for a page behind a challenge.
+     *
+     * There is no library that solves a captcha, so this is a seam: the provider
+     * is named and a key supplied, and the solver is asked through it. NULL or
+     * "stub" uses the built-in stub, which contacts nothing. Set from the
+     * settings endpoint or MI_CAPTCHA_PROVIDER / MI_CAPTCHA_KEY. The key is
+     * never returned by the API.
+     */
+    const char *captcha_provider;
+    const char *captcha_api_key;
+    /*
      * The ffmpeg binary.
      *
      * Used to read a manifest (an HLS or DASH URL is a playlist, not a file) and

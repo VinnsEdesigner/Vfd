@@ -110,6 +110,13 @@ typedef struct {
     int failed;
     int rendered;
     int skipped_offsite;
+    /*
+     * Pages that answered with a captcha challenge instead of content.
+     *
+     * Reported so the caller can say "the site put up a wall" rather than "no
+     * file matched", which are very different answers to the same empty result.
+     */
+    int challenges_seen;
 } mi_crawl_result;
 
 void mi_crawl_result_free(mi_crawl_result *res);

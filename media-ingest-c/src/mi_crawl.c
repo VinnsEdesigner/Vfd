@@ -21,6 +21,7 @@
 #include <time.h>
 
 #include "mi_browse.h"
+#include "mi_captcha.h"
 #include "mi_download.h"
 #include "mi_extract.h"
 #include "mi_interactive.h"
@@ -576,6 +577,23 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
 
     char *body = mi_download_fetch_text(&dcfg, url, CRAWL_MAX_BODY);
     res->fetched++;
+
+    /*
+     * A challenge is not content. Recognising it here means the walk reports
+     * "the site put up a wall" rather than reading the challenge markup for
+     * links that are not there and concluding "no file matched".
+     */
+    if (body) {
+        mi_captcha_challenge ch;
+        if (mi_captcha_detect(body, strlen(body), &ch)) {
+            res->challenges_seen++;
+            mi_logf(MI_LOG_INFO, "crawl: %s answered with a %s challenge", url,
+                    mi_captcha_kind_name(ch.kind));
+            mi_captcha_challenge_free(&ch);
+            free(body);
+            return 0;
+        }
+    }
 
     int links = 0, hits = 0, rendered = 0;
     if (body) {
