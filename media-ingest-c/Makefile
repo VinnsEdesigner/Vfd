@@ -28,6 +28,7 @@ LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_charset.c $(SRC_DIR)/mi_structured.c $(SRC_DIR)/mi_sitemap.c \
            $(SRC_DIR)/mi_fingerprint.c $(SRC_DIR)/mi_cookiejar.c $(SRC_DIR)/mi_form.c \
            $(SRC_DIR)/mi_session.c $(SRC_DIR)/mi_linkcheck.c $(SRC_DIR)/mi_search.c \
+           $(SRC_DIR)/mi_lang.c \
            $(SRC_DIR)/mi_extract_rows.c \
            $(SRC_DIR)/mi_frontier.c \
            $(SRC_DIR)/mi_server.c
@@ -62,6 +63,7 @@ TEST_FORM_SRC := tests/test_form.c
 TEST_SESSION_SRC := tests/test_session.c
 TEST_LINKCHECK_SRC := tests/test_linkcheck.c
 TEST_SEARCH_SRC := tests/test_search.c
+TEST_LANG_SRC := tests/test_lang.c
 TEST_HTML5_SRC := tests/test_html5.c
 TEST_CSS_SRC := tests/test_css.c
 TEST_XPATH_SRC := tests/test_xpath.c
@@ -167,6 +169,9 @@ $(BUILD)/test_linkcheck: $(LIB_SRC) $(TEST_LINKCHECK_SRC) | $(BUILD)
 $(BUILD)/test_search: $(LIB_SRC) $(TEST_SEARCH_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_SEARCH_SRC) $(LDLIBS)
 
+$(BUILD)/test_lang: $(LIB_SRC) $(TEST_LANG_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_LANG_SRC) $(LDLIBS)
+
 $(BUILD)/test_html5: $(LIB_SRC) $(TEST_HTML5_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_HTML5_SRC) $(LDLIBS)
 
@@ -179,7 +184,7 @@ $(BUILD)/test_xpath: $(LIB_SRC) $(TEST_XPATH_SRC) | $(BUILD)
 $(BUILD)/test_extract_rows: $(LIB_SRC) $(TEST_EXTRACT_ROWS_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_EXTRACT_ROWS_SRC) $(LDLIBS)
 
-test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate $(BUILD)/test_antibot $(BUILD)/test_browser_headers $(BUILD)/test_politeness $(BUILD)/test_condget $(BUILD)/test_html $(BUILD)/test_charset $(BUILD)/test_structured $(BUILD)/test_sitemap $(BUILD)/test_fingerprint $(BUILD)/test_cookiejar $(BUILD)/test_form $(BUILD)/test_session $(BUILD)/test_linkcheck $(BUILD)/test_search $(BUILD)/test_html5 $(BUILD)/test_css $(BUILD)/test_xpath $(BUILD)/test_extract_rows
+test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate $(BUILD)/test_antibot $(BUILD)/test_browser_headers $(BUILD)/test_politeness $(BUILD)/test_condget $(BUILD)/test_html $(BUILD)/test_charset $(BUILD)/test_structured $(BUILD)/test_sitemap $(BUILD)/test_fingerprint $(BUILD)/test_cookiejar $(BUILD)/test_form $(BUILD)/test_session $(BUILD)/test_linkcheck $(BUILD)/test_search $(BUILD)/test_lang $(BUILD)/test_html5 $(BUILD)/test_css $(BUILD)/test_xpath $(BUILD)/test_extract_rows
 	$(BUILD)/test_media_ingest
 	$(BUILD)/test_server
 	$(BUILD)/test_render
@@ -210,6 +215,7 @@ test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUI
 	$(BUILD)/test_session
 	$(BUILD)/test_linkcheck
 	$(BUILD)/test_search
+	$(BUILD)/test_lang
 	$(BUILD)/test_html5
 	$(BUILD)/test_css
 	$(BUILD)/test_xpath

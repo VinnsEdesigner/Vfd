@@ -14,6 +14,7 @@
 
 #include "mi_charset.h"
 #include "mi_cookiejar.h"
+#include "mi_browser_headers.h"
 #include "mi_extract.h"
 #include "mi_identity.h"
 #include "mi_impersonate.h"
@@ -160,6 +161,12 @@ static struct curl_slist *build_headers(const mi_download_config *cfg,
         mi_browser_headers_free(bh, bn);
     } else {
         list = curl_slist_append(list, "Accept: */*");
+    }
+
+    /* The caller's language preference, so a negotiating site serves it. */
+    if (cfg->accept_language && *cfg->accept_language) {
+        char *h = mi_asprintf("Accept-Language: %s", cfg->accept_language);
+        if (h) { list = curl_slist_append(list, h); free(h); }
     }
 
     /*
@@ -1261,6 +1268,7 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->headers = NULL;
     cfg->header_count = 0;
     cfg->user_agent = NULL;
+    cfg->accept_language = NULL;
     cfg->control = NULL;
     cfg->ffmpeg_path = NULL;
     cfg->extract_pages = 0;

@@ -62,6 +62,13 @@ typedef struct {
      * in the same list the extra headers do.
      */
     const char *user_agent;
+    /*
+     * The `Accept-Language` header value, e.g. "en,fr;q=0.9". NULL sends none.
+     *
+     * A site that negotiates serves the language the caller asks for; without
+     * this it serves its default, which may be one the crawl would then drop.
+     */
+    const char *accept_language;
     /* Optional: lets a caller stop a running download (pause/cancel). */
     const mi_download_control *control;
     /*
