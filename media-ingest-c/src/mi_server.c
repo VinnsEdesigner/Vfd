@@ -277,6 +277,7 @@ void mi_server_config_init(mi_server_config *cfg) {
      * keep up with them.
      */
     cfg->extractor_path = NULL;
+    cfg->gallery_extractor_path = NULL;
     /* NULL means "ffmpeg" from PATH. Named so an operator can point at a build
      * of their own; a distribution's copy can lag. */
     cfg->ffmpeg_path = NULL;
@@ -1511,6 +1512,7 @@ static void *download_worker(void *arg) {
      */
     dcfg.extract_pages = 1;
     dcfg.extractor_path = srv->cfg.extractor_path;
+    dcfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
     /*
      * The viewer's quality choice, when they made one.
      *
@@ -2948,13 +2950,24 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_extract_config ecfg;
         mi_extract_config_init(&ecfg);
         ecfg.binary = srv->cfg.extractor_path;
+        ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
         mi_json_raw(&b, ",\"extract\":");
         mi_json_raw(&b, "{");
         mi_json_key(&b, "enabled");
         mi_json_bool(&b, 1);
         mi_json_raw(&b, ",");
+        /*
+         * The two extractors are reported separately.
+         *
+         * They are independent — a host may have yt-dlp and not gallery-dl — and
+         * the console offers a different mode for each, so one flag would make it
+         * offer a control that cannot work.
+         */
         mi_json_key(&b, "available");
-        mi_json_bool(&b, mi_extract_available(&ecfg));
+        mi_json_bool(&b, mi_extract_available_kind(&ecfg, MI_EXTRACT_VIDEO));
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "gallery_available");
+        mi_json_bool(&b, mi_extract_available_kind(&ecfg, MI_EXTRACT_GALLERY));
         mi_json_raw(&b, "}");
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
@@ -3061,6 +3074,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_extract_config ecfg;
         mi_extract_config_init(&ecfg);
         ecfg.binary = srv->cfg.extractor_path;
+        ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
         double timeout = mi_json_get_number(in, "timeout_seconds", 0);
         if (timeout > 0) ecfg.timeout_seconds = timeout;
         if (searching) {
@@ -3236,6 +3250,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
          */
         ccfg.extract_enabled = mi_json_get_bool(in, "use_extractor", 1);
         ccfg.extractor_path = srv->cfg.extractor_path;
+        ccfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
         int depth = (int)mi_json_get_number(in, "depth", 0);
         int pages = (int)mi_json_get_number(in, "max_pages", 0);
         int budget = (int)mi_json_get_number(in, "budget_seconds", 0);

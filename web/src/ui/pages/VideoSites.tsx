@@ -32,6 +32,7 @@ import { Spinner } from '../primitives/Spinner';
 import { QualityPicker } from '../downloads/QualityPicker';
 import { IconSearch, IconDownload, IconPlay, IconRefresh } from '../primitives/Icons';
 import { formatBytes, type QualityOption } from '../../hooks/view-models';
+import { KNOWN_SITES, accessLabel } from '../../domain/sites';
 import type { ExtractEntry, ExtractResult } from '../../hooks';
 
 export type VideoMode = 'search' | 'channel';
@@ -203,6 +204,45 @@ export function VideoSites(props: VideoSitesProps) {
             takes a few seconds.
           </Note>
         )}
+
+        {/*
+          What this can actually read.
+          
+          Shown as a short list rather than a count of the extractors' sites:
+          "6,000+ sites" answers no question anyone has, while "YouTube: search by
+          name" and "Instagram: by URL, may need sign-in" do. The distinction
+          matters because search genuinely does not exist for most sites.
+        */}
+        <details className="sites">
+          <summary>
+            Which sites work, and how — {KNOWN_SITES.length} of the common ones
+          </summary>
+          <div className="sites__grid">
+            {KNOWN_SITES.map((site) => (
+              <div key={site.name} className="sites__row">
+                <span className="sites__name">{site.name}</span>
+                <span
+                  className={
+                    site.access === 'search'
+                      ? 'sites__access sites__access--ok'
+                      : site.access === 'signin'
+                        ? 'sites__access sites__access--warn'
+                        : 'sites__access'
+                  }
+                >
+                  {accessLabel(site.access)}
+                </span>
+              </div>
+            ))}
+          </div>
+          <Note className="note">
+            Only YouTube, SoundCloud and Bilibili can be searched by name — the
+            others expose no search the extractor can use, so they need a URL.
+            A site that asks you to sign in refuses an anonymous request; that is
+            its own access control, and it needs cookies rather than code.
+            Thousands more sites work by URL than are listed here.
+          </Note>
+        </details>
       </Card>
 
       <Card

@@ -150,6 +150,14 @@ typedef struct {
     int extract_enabled;
     /* The extractor binary; NULL uses "yt-dlp" from PATH. */
     const char *extractor_path;
+    /*
+     * The gallery extractor's binary; NULL uses "gallery-dl" from PATH.
+     *
+     * A second tool for a second question — yt-dlp resolves video, gallery-dl
+     * lists the images on a page — so a walk that finds a gallery URL can ask
+     * the right one.
+     */
+    const char *gallery_extractor_path;
     /* The User-Agent to send. NULL uses the built-in default. */
     const char *user_agent;
     /*

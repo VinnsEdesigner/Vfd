@@ -121,6 +121,15 @@ typedef struct {
      */
     const char *extractor_path;
     /*
+     * The gallery extractor's binary (gallery-dl).
+     *
+     * A second tool for a second question: yt-dlp resolves video streams,
+     * gallery-dl lists the images on a page. NULL means "gallery-dl" from PATH;
+     * when it is absent the console offers no gallery mode rather than one that
+     * cannot work.
+     */
+    const char *gallery_extractor_path;
+    /*
      * The ffmpeg binary.
      *
      * Used to read a manifest (an HLS or DASH URL is a playlist, not a file) and

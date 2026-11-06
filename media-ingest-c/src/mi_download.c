@@ -893,6 +893,7 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->ffmpeg_path = NULL;
     cfg->extract_pages = 0;
     cfg->extractor_path = NULL;
+    cfg->gallery_extractor_path = NULL;
     cfg->preferred_height = 0;
 }
 

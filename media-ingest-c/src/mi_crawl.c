@@ -51,6 +51,7 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->max_browser_pages = 3;
     cfg->extract_enabled = 1;
     cfg->extractor_path = NULL;
+    cfg->gallery_extractor_path = NULL;
     cfg->user_agent = NULL;
     cfg->render_pool = NULL;
     cfg->interactive_pool = NULL;
@@ -661,6 +662,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         mi_extract_config ecfg;
         mi_extract_config_init(&ecfg);
         ecfg.binary = cfg->extractor_path;
+        ecfg.gallery_binary = cfg->gallery_extractor_path;
         if (mi_extract_available(&ecfg)) {
             mi_extract_result er;
             if (mi_extract(&ecfg, url, &er) == MI_OK && er.format_count > 0) {

@@ -78,6 +78,8 @@ typedef struct {
     int extract_pages;
     /* The extractor binary; NULL uses "yt-dlp" from PATH. */
     const char *extractor_path;
+    /* The gallery extractor's binary; NULL uses "gallery-dl" from PATH. */
+    const char *gallery_extractor_path;
     /*
      * The height to prefer when resolving a page, e.g. 720.
      *

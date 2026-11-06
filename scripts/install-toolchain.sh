@@ -17,6 +17,7 @@
 #   gstreamer1.0-nice                  gives webrtcbin ICE; without it live
 #                                      video fails at runtime with a null pad
 #   ffmpeg                             HLS transcoding and conversion
+#   yt-dlp, gallery-dl (pip)           resolve video and gallery sites
 #   nodejs, npm                        build and test the console
 #
 # GStreamer is only needed for live video, and Chromium/Xvfb only for the
@@ -141,6 +142,45 @@ WANT=$(printf '%s' "$WANT" | tr -s ' ' | sed 's/^ //; s/ $//')
 # apt helpers                                                        #
 # ------------------------------------------------------------------ #
 APT_UPDATED=0
+# ------------------------------------------------------------------ #
+# The package cache, inside the workspace                            #
+#                                                                    #
+# Everything this script installs that CAN live in the workspace     #
+# does, because the sandbox wipes everything outside /workspace on   #
+# every restart: JDK, SDK, Go, the emulator, the extractors and the  #
+# deb cache all have to be rebuilt otherwise. Reinstalling is        #
+# routine here, and it is slow.                                      #
+#                                                                    #
+# What can be relocated, and what cannot:                            #
+#                                                                    #
+#   pip packages   yes, into a virtualenv at $TOOLCHAIN/venv         #
+#   .deb files     yes, into $TOOLCHAIN/deb — apt installs from them #
+#   installed debs no. dpkg owns /usr, so the packages themselves    #
+#                     must be installed each restart, but from the   #
+#                     cache, which needs no network and is far       #
+#                     faster than downloading.                       #
+#                                                                    #
+# So a restart costs one local `apt-get install` per package set     #
+# rather than a full download of everything.                         #
+# ------------------------------------------------------------------ #
+TOOLCHAIN="${TOOLCHAIN_DIR:-$ROOT/.toolchain}"
+DEB_CACHE="$TOOLCHAIN/deb"
+VENV="$TOOLCHAIN/venv"
+mkdir -p "$DEB_CACHE" 2>/dev/null || true
+
+# The pip binaries, preferring the workspace venv so a restart keeps them.
+venv_bin() { printf '%s' "$VENV/bin"; }
+ensure_venv() {
+    [ -x "$VENV/bin/python3" ] && return 0
+    if ! command -v python3 >/dev/null 2>&1; then return 1; fi
+    if [ "$DRY_RUN" -eq 1 ]; then note "would create $VENV"; return 0; fi
+    python3 -m venv "$VENV" >/dev/null 2>&1 || return 1
+    return 0
+}
+
+# Is a pip package present in the venv?
+venv_has() { [ -x "$VENV/bin/$1" ] || "$VENV/bin/python3" -c "import $2" 2>/dev/null; }
+
 apt_update() {
     [ "$APT_UPDATED" -eq 1 ] && return 0
     step "Updating package lists"
@@ -154,6 +194,28 @@ apt_update() {
 pkg_available() { apt-cache show "$1" >/dev/null 2>&1; }
 
 pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
+
+# Fill the workspace cache with the .debs for a package set, and its
+# dependencies, so a later restart can install without the network.
+cache_debs() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    [ "$CACHE_DEBS" -eq 1 ] || return 0
+    local p
+    # `--print-uris` lists the dependency closure; downloading that is what makes
+    # an offline reinstall possible.
+    local uris
+    uris=$($SUDO apt-get install -y --print-uris --no-install-recommends $1 2>/dev/null \
+           | grep -oE "'https?://[^']+'" | tr -d "'" | sort -u)
+    [ -z "$uris" ] && return 0
+    local n=0
+    for u in $uris; do
+        local f="$DEB_CACHE/$(basename "$u")"
+        [ -f "$f" ] && continue
+        if $SUDO curl -fsSL -o "$f" "$u" 2>/dev/null; then n=$((n + 1)); else rm -f "$f"; fi
+    done
+    [ "$n" -gt 0 ] && note "cached $n package(s) in $DEB_CACHE"
+    return 0
+}
 
 install_pkgs() {
     # Split the list into what is missing and what apt actually offers.
@@ -174,6 +236,9 @@ install_pkgs() {
     note "installing:$to_install"
     if [ "$DRY_RUN" -eq 1 ]; then return 0; fi
 
+    # Keep the cache current, so the next restart can install from it.
+    cache_debs "$to_install"
+
     # A mirror can serve a transient 5xx for one archive (Debian's snapshot
     # mirror does this often), and `apt-get install` then fails as a whole —
     # losing every package that would have installed fine. So: retry once as a
@@ -193,6 +258,13 @@ install_pkgs() {
         fi
     done
 
+    # Then the cache, which needs no network at all. This is the path a restart
+    # takes: the packages were wiped but their .debs are still in the workspace.
+    if install_from_cache "$to_install"; then
+        ok "installed from the workspace cache"
+        return 0
+    fi
+
     warn "batch install still failing; trying each package on its own"
     local failed="" one
     for one in $to_install; do
@@ -208,6 +280,28 @@ install_pkgs() {
         return 1
     fi
     return 0
+}
+
+# Install from the workspace .deb cache, with no network.
+#
+# `apt-get install` is used rather than `dpkg -i` because only apt resolves the
+# dependency closure: dpkg -i on a single .deb leaves it unconfigured with
+# "dependency problems". apt is pointed at the cache as its archive directory,
+# so it satisfies the closure from what is already on disk.
+install_from_cache() {
+    [ "$DRY_RUN" -eq 1 ] && return 1
+    [ -d "$DEB_CACHE" ] || return 1
+    local have
+    have=$(ls "$DEB_CACHE"/*.deb 2>/dev/null | wc -l)
+    [ "$have" -gt 0 ] || return 1
+
+    # -o Dir::Cache::archives makes apt look in the cache for the .debs it needs,
+    # and `--no-download` stops it going to the network when one is missing.
+    if $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-download \
+        -o "Dir::Cache::archives=$DEB_CACHE" --no-install-recommends $1 2>/dev/null; then
+        return 0
+    fi
+    return 1
 }
 
 # ------------------------------------------------------------------ #
@@ -276,31 +370,53 @@ else
 fi
 
 # ------------------------------------------------------------------ #
-# 3b. A current yt-dlp                                               #
+# 3b. The media extractors                                           #
 #                                                                    #
-# The distribution's copy is the one that matters here, and it can be  #
-# badly stale: Debian trixie ships 2025.04.30, which is eighteen       #
-# months behind and could not see YouTube's audio formats at all — it  #
-# reported 21 formats, none of them audio, where the current release   #
-# reports 48 including five. The tool's whole job is keeping up with   #
-# sites that change, so a stale one is worse than none.                #
+# Two tools, and they answer different questions:                     #
+#                                                                    #
+#   yt-dlp      video streams, formats, renditions                    #
+#   gallery-dl  the images and posts on a page (4,927 sites, most of  #
+#               them image hosts yt-dlp does not touch)               #
+#                                                                    #
+# Both come from pip rather than apt, and the difference matters:     #
+# Debian trixie ships yt-dlp 2025.04.30, eighteen months behind, which #
+# could not see YouTube's audio formats at all — 21 formats and none   #
+# of them audio, where the current release reports 48 including five.  #
+# These tools' whole job is keeping up with sites that change, so a    #
+# stale one is worse than none.                                        #
+#                                                                    #
+# `curl_cffi` is what enables impersonation — the `--impersonate` flag #
+# and the browsers it can pretend to be. Without it some sites refuse  #
+# the request outright; dailymotion was one, measured.                 #
 # ------------------------------------------------------------------ #
-if [ "$NO_MEDIA" -eq 0 ] && command -v yt-dlp >/dev/null 2>&1; then
-    step "Updating yt-dlp"
-    if [ "$DRY_RUN" -eq 1 ]; then
-        note "would run: pip install --upgrade yt-dlp"
-    elif command -v pip >/dev/null 2>&1 || command -v pip3 >/dev/null 2>&1; then
-        PIP=$(command -v pip3 || command -v pip)
-        # Not fatal: the distribution's copy still works for many sites, and a
-        # failure here should not fail the whole install.
-        if $SUDO $PIP install --quiet --upgrade --break-system-packages yt-dlp 2>/dev/null \
-           || $PIP install --quiet --upgrade --break-system-packages yt-dlp 2>/dev/null; then
-            ok "yt-dlp $(yt-dlp --version 2>/dev/null)"
+if [ "$NO_MEDIA" -eq 0 ]; then
+    step "Media extractors"
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "no python3, so yt-dlp and gallery-dl cannot be installed"
+    elif [ "$DRY_RUN" -eq 1 ]; then
+        note "would install into $VENV: yt-dlp gallery-dl curl_cffi"
+    elif ensure_venv; then
+        # A virtualenv INSIDE THE WORKSPACE, because the sandbox wipes
+        # everything outside /workspace. Installing to ~/.local/bin works until
+        # the next restart and then silently disappears, which is exactly the
+        # failure this avoids.
+        if "$VENV/bin/pip" install --quiet --upgrade yt-dlp gallery-dl curl_cffi 2>/dev/null; then
+            ok "yt-dlp $("$VENV/bin/yt-dlp" --version 2>/dev/null || echo '?')"
+            ok "gallery-dl $("$VENV/bin/gallery-dl" --version 2>/dev/null || echo '?')"
+            ok "in $VENV (survives a restart)"
+            # A binary in the venv is not on PATH for a service started by
+            # systemd or a container entrypoint, which is how Vyzor runs.
+            note "Vyzor finds them via this on PATH:"
+            note "  export PATH=\"$VENV/bin:\$PATH\""
+            if ! "$VENV/bin/yt-dlp" --version >/dev/null 2>&1; then
+                warn "the extractors did not install cleanly"
+            fi
         else
-            warn "could not update yt-dlp; the packaged version may be stale"
+            warn "could not install the extractors"
+            note "the console will offer no video or gallery mode"
         fi
     else
-        warn "no pip, so yt-dlp stays at its packaged version"
+        warn "could not create $VENV"
     fi
 fi
 
@@ -341,7 +457,8 @@ check "node" node
 check "npm" npm
 check "ffmpeg" ffmpeg
 check "chromium" chromium
-check "yt-dlp" yt-dlp
+check "yt-dlp" "$VENV/bin/yt-dlp"
+check "gallery-dl" "$VENV/bin/gallery-dl"
 
 if command -v pkg-config >/dev/null 2>&1; then
     if pkg-config --exists gstreamer-webrtc-1.0 2>/dev/null; then
@@ -353,6 +470,16 @@ fi
 
 if [ -x "$ROOT/media-ingest-c/build/vyzor" ]; then
     ok "Vyzor binary: media-ingest-c/build/vyzor"
+fi
+
+# What survives a restart, so the next one is fast.
+DEB_N=$(ls "$DEB_CACHE"/*.deb 2>/dev/null | wc -l)
+if [ "$DEB_N" -gt 0 ]; then
+    ok "package cache: $DEB_N deb(s) in $DEB_CACHE"
+    note "a restart reinstalls from these with no network"
+fi
+if [ -x "$VENV/bin/python3" ]; then
+    ok "extractor venv: $VENV"
 fi
 
 printf '\n'

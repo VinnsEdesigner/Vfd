@@ -129,6 +129,17 @@ ROOT=$(dirname -- "$SCRIPT_DIR")
 [ -d "$ROOT/web" ] || die "no web/ under $ROOT — run this from the repository"
 
 VYZOR_BIN="$ROOT/media-ingest-c/build/vyzor"
+
+# The extractors live in a virtualenv inside the workspace, because the sandbox
+# wipes everything outside /workspace on a restart. That venv is not on PATH for
+# a process started from here, and Vyzor finds the extractors by name — so it is
+# put in front of PATH for the child. Without this the console offers no video or
+# gallery mode even though the tools are installed.
+TOOLCHAIN="${TOOLCHAIN_DIR:-$ROOT/.toolchain}"
+if [ -x "$TOOLCHAIN/venv/bin/yt-dlp" ]; then
+    PATH="$TOOLCHAIN/venv/bin:$PATH"
+    export PATH
+fi
 [ -z "$WORK_DIR" ] && WORK_DIR="$ROOT/downloads"
 
 # ------------------------------------------------------------------ #
