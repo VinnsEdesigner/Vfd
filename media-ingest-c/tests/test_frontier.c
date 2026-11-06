@@ -191,8 +191,44 @@ static void test_sqlite_reclaim(void) {
     snprintf(side, sizeof side, "%s-shm", path); unlink(side);
 }
 
+/* Validators round-trip: what a page returned is what a re-crawl sends back. */
+static void test_sqlite_validators(void) {
+    char path[128];
+    snprintf(path, sizeof path, "/tmp/mi-frontier-val-%d.db", (int)getpid());
+    unlink(path);
+    char err[256];
+    char run_id[64];
+    snprintf(run_id, sizeof run_id, "val-%d", (int)getpid());
+
+    mi_frontier *f = mi_frontier_new_sqlite(path, run_id, err, sizeof err);
+    CHECK(f != NULL, "sqlite frontier builds for validators");
+    if (!f) return;
+    mi_frontier_push(f, "http://a/", 0);
+    mi_frontier_mark_seen(f, "http://a/");
+
+    /* No validators before a fetch. */
+    char *etag = NULL, *lm = NULL;
+    CHECK(mi_frontier_get_validators(f, "http://a/", &etag, &lm) == 0,
+          "no validators are known before one is stored");
+
+    mi_frontier_set_validators(f, "http://a/", "\"v1\"",
+                               "Wed, 21 Oct 2015 07:28:00 GMT");
+    CHECK(mi_frontier_get_validators(f, "http://a/", &etag, &lm) == 1,
+          "the stored validators are recalled");
+    CHECK(etag && !strcmp(etag, "\"v1\""), "the etag round-trips");
+    CHECK(lm && strstr(lm, "2015") != NULL, "the last-modified round-trips");
+    free(etag); free(lm);
+
+    mi_frontier_free(f);
+    unlink(path);
+    char side[160];
+    snprintf(side, sizeof side, "%s-wal", path); unlink(side);
+    snprintf(side, sizeof side, "%s-shm", path); unlink(side);
+}
+
 int main(void) {
     test_memory_fifo();
+    test_sqlite_validators();
     test_sqlite_reclaim();
     test_memory_seen();
     test_sqlite_file();

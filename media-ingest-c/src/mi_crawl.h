@@ -126,6 +126,12 @@ typedef struct {
      * looks like success, and a caller should be able to see it happened.
      */
     int blocked;
+    /*
+     * Pages the server said were unchanged (304). Reported because "nothing new
+     * since last time" is the useful answer for an incremental crawl, and it is
+     * not the same as "the page was fetched and had no matches".
+     */
+    int not_modified;
 } mi_crawl_result;
 
 void mi_crawl_result_free(mi_crawl_result *res);

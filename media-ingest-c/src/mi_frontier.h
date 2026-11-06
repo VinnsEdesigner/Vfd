@@ -89,6 +89,20 @@ long mi_frontier_pending(mi_frontier *f);
  */
 int mi_frontier_reclaim_stale(mi_frontier *f, int lease_seconds);
 
+/*
+ * The conditional-GET validators a page last returned, so a re-crawl can ask
+ * "has this changed?" and skip an unchanged page.
+ *
+ * Stored beside the visited-set: a URL is visited *and* its last validators are
+ * known. `get` returns 1 and fills owned strings when the URL was seen with
+ * validators; `set` records them. Either validator may be NULL.
+ */
+int mi_frontier_get_validators(mi_frontier *f, const char *url, char **etag,
+                               char **last_modified);
+void mi_frontier_set_validators(mi_frontier *f, const char *url, const char *etag,
+                                const char *last_modified);
+
+
 void mi_frontier_free(mi_frontier *f);
 
 #endif

@@ -64,7 +64,13 @@ static const char *SCHEMA[] = {
     " run_id TEXT NOT NULL, url TEXT NOT NULL, depth INTEGER NOT NULL,"
     " claimed_at TEXT, PRIMARY KEY (run_id, url))",
     "CREATE TABLE IF NOT EXISTS visited ("
-    " run_id TEXT NOT NULL, url TEXT NOT NULL, PRIMARY KEY (run_id, url))",
+    " run_id TEXT NOT NULL, url TEXT NOT NULL,"
+    " etag TEXT, last_modified TEXT, PRIMARY KEY (run_id, url))",
+    /* An older database has a `visited` without the validator columns; adding
+     * them is idempotent-ish (SQLite errors if they exist, which is ignored) so
+     * an upgrade needs no migration step. */
+    "ALTER TABLE visited ADD COLUMN etag TEXT",
+    "ALTER TABLE visited ADD COLUMN last_modified TEXT",
 };
 
 /* ------------------------------------------------------------------ */
@@ -111,7 +117,13 @@ mi_frontier *mi_frontier_new_sqlite(const char *path, const char *run_id,
         return NULL;
     }
     for (size_t i = 0; i < sizeof SCHEMA / sizeof SCHEMA[0]; i++) {
+        /* An ALTER that fails because the column already exists is fine; any
+         * other failure on a CREATE is fatal. */
         if (sqlite_exec(f->db, SCHEMA[i], err, errcap) != 0) {
+            if (strstr(SCHEMA[i], "ALTER TABLE")) {
+                if (err && errcap) err[0] = '\0';
+                continue;
+            }
             mi_frontier_free(f);
             return NULL;
         }
@@ -264,6 +276,49 @@ static int sqlite_reclaim_stale(mi_frontier *f, int lease_seconds) {
     return changed;
 }
 
+static int sqlite_get_validators(mi_frontier *f, const char *url, char **etag,
+                                 char **last_modified) {
+    if (etag) *etag = NULL;
+    if (last_modified) *last_modified = NULL;
+    pthread_mutex_lock(&f->lock);
+    sqlite3_stmt *st = NULL;
+    int found = 0;
+    if (sqlite3_prepare_v2(f->db,
+            "SELECT etag, last_modified FROM visited WHERE run_id = ? AND url = ?",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, f->run_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, url, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            const unsigned char *e = sqlite3_column_text(st, 0);
+            const unsigned char *lm = sqlite3_column_text(st, 1);
+            if (e && etag) *etag = mi_strdup((const char *)e);
+            if (lm && last_modified) *last_modified = mi_strdup((const char *)lm);
+            found = (e || lm) ? 1 : 0;
+        }
+        sqlite3_finalize(st);
+    }
+    pthread_mutex_unlock(&f->lock);
+    return found;
+}
+
+static void sqlite_set_validators(mi_frontier *f, const char *url, const char *etag,
+                                  const char *last_modified) {
+    pthread_mutex_lock(&f->lock);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(f->db,
+            "UPDATE visited SET etag = ?, last_modified = ?"
+            " WHERE run_id = ? AND url = ?",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, etag ? etag : "", -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, last_modified ? last_modified : "", -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 3, f->run_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 4, url, -1, SQLITE_TRANSIENT);
+        sqlite3_step(st);
+        sqlite3_finalize(st);
+    }
+    pthread_mutex_unlock(&f->lock);
+}
+
 static int sqlite_empty(mi_frontier *f) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(f->db,
@@ -310,9 +365,11 @@ mi_frontier *mi_frontier_new_turso(const char *url, const char *token,
 
     for (size_t i = 0; i < sizeof SCHEMA / sizeof SCHEMA[0]; i++) {
         int status = 0;
+        char step_err[200] = {0};
         mi_json *r = mi_turso_execute(f->db_url, f->db_token, SCHEMA[i], NULL, 0,
-                                      &status, err, errcap);
-        if (!r) {
+                                      &status, step_err, sizeof step_err);
+        if (!r && !strstr(SCHEMA[i], "ALTER TABLE")) {
+            if (err && errcap) snprintf(err, errcap, "%s", step_err);
             mi_frontier_free(f);
             return NULL;
         }
@@ -444,6 +501,45 @@ static int turso_reclaim_stale(mi_frontier *f, int lease_seconds) {
     return 1;
 }
 
+static int turso_get_validators(mi_frontier *f, const char *url, char **etag,
+                                char **last_modified) {
+    if (etag) *etag = NULL;
+    if (last_modified) *last_modified = NULL;
+    mi_turso_arg args[] = {MI_TURSO_TEXT(f->run_id), MI_TURSO_TEXT(url)};
+    char err[160];
+    int status = 0;
+    mi_json *r = mi_turso_execute(
+        f->db_url, f->db_token,
+        "SELECT etag, last_modified FROM visited WHERE run_id = ? AND url = ?",
+        args, 2, &status, err, sizeof err);
+    if (!r) return 0;
+    int found = 0;
+    if (mi_turso_row_count(r) >= 1) {
+        const char *e = mi_turso_cell_text(r, 0, 0);
+        const char *lm = mi_turso_cell_text(r, 0, 1);
+        if (e && *e && etag) *etag = mi_strdup(e);
+        if (lm && *lm && last_modified) *last_modified = mi_strdup(lm);
+        found = (e && *e) || (lm && *lm) ? 1 : 0;
+    }
+    mi_json_value_free(r);
+    return found;
+}
+
+static void turso_set_validators(mi_frontier *f, const char *url, const char *etag,
+                                 const char *last_modified) {
+    mi_turso_arg args[] = {MI_TURSO_TEXT(etag ? etag : ""),
+                           MI_TURSO_TEXT(last_modified ? last_modified : ""),
+                           MI_TURSO_TEXT(f->run_id), MI_TURSO_TEXT(url)};
+    char err[160];
+    int status = 0;
+    mi_json *r = mi_turso_execute(
+        f->db_url, f->db_token,
+        "UPDATE visited SET etag = ?, last_modified = ?"
+        " WHERE run_id = ? AND url = ?",
+        args, 4, &status, err, sizeof err);
+    if (r) mi_json_value_free(r);
+}
+
 static int turso_empty(mi_frontier *f) {
     mi_turso_arg args[] = {MI_TURSO_TEXT(f->run_id)};
     char err[160];
@@ -553,6 +649,28 @@ int mi_frontier_empty(mi_frontier *f) {
         case BACKEND_SQLITE: return sqlite_empty(f);
         case BACKEND_TURSO: return turso_empty(f);
         default: return f->head >= f->count;
+    }
+}
+
+int mi_frontier_get_validators(mi_frontier *f, const char *url, char **etag,
+                               char **last_modified) {
+    if (etag) *etag = NULL;
+    if (last_modified) *last_modified = NULL;
+    if (!f || !url) return 0;
+    switch (f->kind) {
+        case BACKEND_SQLITE: return sqlite_get_validators(f, url, etag, last_modified);
+        case BACKEND_TURSO: return turso_get_validators(f, url, etag, last_modified);
+        default: return 0;
+    }
+}
+
+void mi_frontier_set_validators(mi_frontier *f, const char *url, const char *etag,
+                                const char *last_modified) {
+    if (!f || !url) return;
+    switch (f->kind) {
+        case BACKEND_SQLITE: sqlite_set_validators(f, url, etag, last_modified); break;
+        case BACKEND_TURSO: turso_set_validators(f, url, etag, last_modified); break;
+        default: break;
     }
 }
 

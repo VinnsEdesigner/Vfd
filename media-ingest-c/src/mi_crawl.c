@@ -567,8 +567,39 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         }
     }
 
-    char *body = mi_download_fetch_text(&dcfg, url, CRAWL_MAX_BODY);
+    /*
+     * Conditional GET, so a re-crawl does not re-read an unchanged page.
+     *
+     * The validators the page returned last time are sent back; a 304 means the
+     * cached copy is current and there is nothing to parse. This is what makes an
+     * incremental crawl cheap rather than a full re-download every run.
+     */
+    char *prev_etag = NULL, *prev_lm = NULL;
+    if (f && mi_frontier_get_validators(f, url, &prev_etag, &prev_lm)) {
+        dcfg.if_none_match = prev_etag;
+        dcfg.if_modified_since = prev_lm;
+    }
+
+    mi_fetch_info info;
+    char *body = mi_download_fetch_document(&dcfg, url, CRAWL_MAX_BODY, &info);
     res->fetched++;
+    if (info.not_modified) {
+        mi_logf(MI_LOG_INFO, "crawl: %s is unchanged (304)", url);
+        res->not_modified++;
+        mi_fetch_info_free(&info);
+        free(prev_etag);
+        free(prev_lm);
+        if (cfg->brain && host) mi_antibot_note_success(cfg->brain, host);
+        free(host);
+        return 0;
+    }
+    /* Remember the validators this response carried, for the next run. */
+    if (f && (info.etag || info.last_modified)) {
+        mi_frontier_set_validators(f, url, info.etag, info.last_modified);
+    }
+    mi_fetch_info_free(&info);
+    free(prev_etag);
+    free(prev_lm);
     if (cfg->brain && host) {
         if (body) mi_antibot_note_success(cfg->brain, host);
     }
