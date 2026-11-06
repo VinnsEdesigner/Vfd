@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMediaApi } from './provider';
 import { queryKeys } from './query-keys';
+import type { EgressUpdate } from '../domain/media';
 
 export function useHealth() {
   const { api } = useMediaApi();
@@ -53,6 +54,32 @@ export function useStorageConfig() {
   return useQuery({
     queryKey: queryKeys.storageConfig(),
     queryFn: ({ signal }) => api.system.storageConfig(signal),
+  });
+}
+
+/**
+ * The cookies and proxy Vyzor uses to reach a site that refuses this host.
+ *
+ * A query, not a mutation: it is a small GET, and the panel shows what is
+ * currently set, so it should read fresh when the settings tab is opened.
+ */
+export function useEgressSettings() {
+  const { api } = useMediaApi();
+  return useQuery({
+    queryKey: queryKeys.egressSettings(),
+    queryFn: ({ signal }) => api.system.egressSettings(signal),
+  });
+}
+
+/** Set cookies and/or proxy. The saved answer replaces the cached report. */
+export function useSetEgress() {
+  const { api } = useMediaApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (next: EgressUpdate) => api.system.setEgress(next),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.egressSettings() });
+    },
   });
 }
 

@@ -22,6 +22,7 @@ export type { BrowsePageProps, BrowseMode } from './BrowsePage';
 export { InteractiveView } from './InteractiveView';
 export type { InteractiveViewProps, LiveViewProps } from './InteractiveView';
 export type { StorageLocationValue } from '../settings/StorageLocationPanel';
+export type { EgressValue } from '../settings/EgressPanel';
 export {
   OverviewSkeleton,
   DownloadsSkeleton,

@@ -285,6 +285,26 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+/* A cookie export is pasted as text, so its field is a textarea: the same shape
+   as an input, but mono and taller, because its content is a file. */
+.field textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  transition: border-color 0.14s, box-shadow 0.14s;
+}
+.field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 .input-group {
   position: relative;
 }

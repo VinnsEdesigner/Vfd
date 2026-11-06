@@ -21,6 +21,7 @@ import {
   type StorageLocationValue,
   type VyzorLocationFacts,
 } from '../settings/StorageLocationPanel';
+import { EgressPanel, type EgressValue } from '../settings/EgressPanel';
 import { Note } from '../primitives/Note';
 import type { StorageCredentialsValue } from './StoragePage';
 import type { DownloadView } from '../../hooks/view-models';
@@ -32,7 +33,15 @@ export interface DeliveryCredentialsValue {
   cfToken: string;
 }
 
-export type SettingsTab = 'general' | 'location' | 'vyzor' | 'object' | 'cdn' | 'storage' | 'more';
+export type SettingsTab =
+  | 'general'
+  | 'location'
+  | 'vyzor'
+  | 'object'
+  | 'cdn'
+  | 'egress'
+  | 'storage'
+  | 'more';
 
 export interface VyzorFacts {
   vyzorVersion: string;
@@ -59,6 +68,12 @@ export interface SettingsPageProps {
   vyzorLocation: VyzorLocationFacts | null;
   onSaveConnection: () => void;
   onSaveLocation: (dir: string) => void;
+  /** The cookies and proxy Vyzor uses to reach a refusing host. */
+  egress: EgressValue | null;
+  /** Save cookies and/or proxy; a field set to null is left unchanged. */
+  onSaveEgress: (next: { cookies: string | null; proxy: string | null }) => void;
+  /** Clear the stored cookies. */
+  onClearCookies: () => void;
   /** The local-storage section, rendered on its own tab. */
   storageSection?: React.ReactNode;
   /**
@@ -100,6 +115,7 @@ export function SettingsPage(props: SettingsPageProps) {
           { id: 'vyzor', label: 'Vyzor' },
           { id: 'object', label: 'Object storage' },
           { id: 'cdn', label: 'CDN & delivery' },
+          { id: 'egress', label: 'Egress' },
           { id: 'storage', label: 'Local storage' },
           { id: 'more', label: 'More' },
         ]}
@@ -261,6 +277,15 @@ export function SettingsPage(props: SettingsPageProps) {
             browser storage and never persisted on the server.
           </Note>
         </Card>
+      )}
+
+      {tab === 'egress' && (
+        <EgressPanel
+          value={props.egress}
+          {...(props.busy ? { saving: true } : {})}
+          onSave={props.onSaveEgress}
+          onClearCookies={props.onClearCookies}
+        />
       )}
 
       {tab === 'storage' && props.storageSection}

@@ -5,11 +5,25 @@
 import type { ApiClient } from '../api-client';
 import {
   normalizeCapabilities,
+  normalizeEgressSettings,
   normalizeStorageConfig,
   normalizeSystemStorage,
 } from '../domain/normalize';
-import type { Capabilities, StorageConfig, SystemStorage } from '../domain/media';
-import type { WireCapabilities, WireSetLocationResult, WireStorageConfig, WireSystemStorage } from '../domain/wire';
+import type {
+  Capabilities,
+  EgressSettings,
+  EgressUpdate,
+  StorageConfig,
+  SystemStorage,
+} from '../domain/media';
+import type {
+  WireCapabilities,
+  WireEgressSettings,
+  WireEgressUpdate,
+  WireSetLocationResult,
+  WireStorageConfig,
+  WireSystemStorage,
+} from '../domain/wire';
 
 export interface SystemResource {
   health(signal?: AbortSignal): Promise<boolean>;
@@ -19,6 +33,10 @@ export interface SystemResource {
   systemStorage(signal?: AbortSignal): Promise<SystemStorage>;
   /** Ask Vyzor to write downloads to `dir`. Rejects if it cannot. */
   setLocation(dir: string, signal?: AbortSignal): Promise<void>;
+  /** The cookies and proxy Vyzor uses to reach a refusing host. */
+  egressSettings(signal?: AbortSignal): Promise<EgressSettings>;
+  /** Set cookies and/or proxy. A field left out is unchanged. */
+  setEgress(next: EgressUpdate, signal?: AbortSignal): Promise<EgressSettings>;
 }
 
 export function createSystemResource(client: ApiClient): SystemResource {
@@ -70,6 +88,29 @@ export function createSystemResource(client: ApiClient): SystemResource {
         body: { dir },
         ...(signal ? { signal } : {}),
       });
+    },
+
+    async egressSettings(signal) {
+      const wire = await client.transport.request<WireEgressSettings>({
+        method: 'GET',
+        path: '/api/v1/settings/egress',
+        ...(signal ? { signal } : {}),
+      });
+      return normalizeEgressSettings(wire);
+    },
+
+    async setEgress(next, signal) {
+      // An omitted field is left alone by the server; an empty string clears.
+      const body: WireEgressUpdate = {};
+      if (next.cookies !== undefined) body.cookies = next.cookies;
+      if (next.proxy !== undefined) body.proxy = next.proxy;
+      const wire = await client.transport.request<WireEgressSettings>({
+        method: 'PUT',
+        path: '/api/v1/settings/egress',
+        body,
+        ...(signal ? { signal } : {}),
+      });
+      return normalizeEgressSettings(wire);
     },
   };
 }

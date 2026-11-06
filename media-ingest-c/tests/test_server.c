@@ -1867,7 +1867,111 @@ static void test_user_agent(void) {
     if (pid > 0) kill(pid, SIGKILL);
 }
 
+/*
+ * The egress settings endpoint: cookies and proxy, set and read at runtime.
+ *
+ * The property that matters most is that the cookie *value* never comes back —
+ * it is a credential for whatever account the operator signed in with. The
+ * endpoint reports only whether one is set and which names it carries.
+ */
+static void test_egress_settings(void) {
+    mi_server_config cfg;
+    mi_server_config_init(&cfg);
+    cfg.port = 0;
+    cfg.work_dir = "/tmp/mi-test-egress";
+    cfg.auth_token = "testtoken";
+    mi_mkdir_p(cfg.work_dir);
+
+    mi_server *srv = mi_server_new(&cfg);
+    CHECK(srv != NULL, "egress: server new");
+    CHECK(mi_server_listen(srv) == MI_OK, "egress: server listen");
+    int port = mi_server_port(srv);
+
+    pthread_t th;
+    pthread_create(&th, NULL, server_thread, srv);
+
+    int status = 0;
+    char *resp;
+
+    /* Nothing set: no cookies, no proxy. */
+    resp = http_call(port, "GET", "/api/v1/settings/egress", NULL, "testtoken", &status);
+    CHECK(status == 200, "egress GET 200");
+    CHECK(strstr(body_of(resp), "\"configured\":false") != NULL,
+          "egress starts with no cookies");
+    CHECK(strstr(body_of(resp), "\"proxy\":null") != NULL,
+          "egress starts with no proxy");
+    free(resp);
+
+    /* Set both. The cookie export is tab-separated, as a browser gives. */
+    const char *body =
+        "{\"cookies\":\"# Netscape HTTP Cookie File\\n"
+        ".example.com\\tTRUE\\t/\\tTRUE\\t1700000000\\tsid\\tSECRETXYZ\\n\","
+        "\"proxy\":\"http://127.0.0.1:8888\"}";
+    resp = http_call(port, "PUT", "/api/v1/settings/egress", body, "testtoken", &status);
+    CHECK(status == 200, "egress PUT 200");
+    CHECK(strstr(body_of(resp), "\"configured\":true") != NULL,
+          "egress PUT reports cookies set");
+    CHECK(strstr(body_of(resp), "http://127.0.0.1:8888") != NULL,
+          "egress PUT echoes the proxy");
+    free(resp);
+
+    /* Read back: the names are shown, the value is NOT. */
+    resp = http_call(port, "GET", "/api/v1/settings/egress", NULL, "testtoken", &status);
+    CHECK(status == 200, "egress GET after set 200");
+    CHECK(strstr(body_of(resp), "\"sid\"") != NULL,
+          "egress reports the cookie name");
+    CHECK(strstr(body_of(resp), "SECRETXYZ") == NULL,
+          "egress never returns the cookie value");
+    CHECK(strstr(body_of(resp), "http://127.0.0.1:8888") != NULL,
+          "egress reports the proxy");
+    free(resp);
+
+    /* An export that is not tab-separated is refused, not stored blind. */
+    resp = http_call(port, "PUT", "/api/v1/settings/egress",
+                     "{\"cookies\":\"not a netscape export\"}", "testtoken", &status);
+    CHECK(status == 422, "egress rejects a non-tab-separated cookie export");
+    free(resp);
+
+    /* Setting only the proxy leaves the cookies alone. */
+    resp = http_call(port, "PUT", "/api/v1/settings/egress",
+                     "{\"proxy\":\"socks5://127.0.0.1:1080\"}", "testtoken", &status);
+    CHECK(status == 200, "egress proxy-only PUT 200");
+    free(resp);
+    resp = http_call(port, "GET", "/api/v1/settings/egress", NULL, "testtoken", &status);
+    CHECK(strstr(body_of(resp), "\"configured\":true") != NULL,
+          "proxy-only PUT leaves the cookies set");
+    CHECK(strstr(body_of(resp), "socks5://127.0.0.1:1080") != NULL,
+          "proxy-only PUT updates the proxy");
+    free(resp);
+
+    /* An empty string clears. */
+    resp = http_call(port, "PUT", "/api/v1/settings/egress",
+                     "{\"proxy\":\"\"}", "testtoken", &status);
+    CHECK(status == 200, "egress clears proxy 200");
+    free(resp);
+    resp = http_call(port, "GET", "/api/v1/settings/egress", NULL, "testtoken", &status);
+    CHECK(strstr(body_of(resp), "\"proxy\":null") != NULL, "an empty proxy clears it");
+    CHECK(strstr(body_of(resp), "\"configured\":true") != NULL,
+          "clearing the proxy leaves the cookies set");
+    free(resp);
+
+    /* A request that sets nothing is a bad request, not a silent no-op. */
+    resp = http_call(port, "PUT", "/api/v1/settings/egress", "{}", "testtoken", &status);
+    CHECK(status == 400, "egress PUT with nothing to set -> 400");
+    free(resp);
+
+    /* It is behind the token like every other API route. */
+    resp = http_call(port, "GET", "/api/v1/settings/egress", NULL, NULL, &status);
+    CHECK(status == 401, "egress requires the token");
+    free(resp);
+
+    mi_server_stop(srv);
+    pthread_join(th, NULL);
+    mi_server_free(srv);
+}
+
 int main(void) {
+
     signal(SIGPIPE, SIG_IGN);
     mi_log_set_level(MI_LOG_ERROR);
 
@@ -1881,6 +1985,7 @@ int main(void) {
     test_render_endpoint();
     test_interactive_endpoint();
     test_http_api();
+    test_egress_settings();
     test_hls_serve_and_convert();
 
     printf("\n%d checks, %d failures\n", g_checks, g_failures);

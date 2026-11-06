@@ -14,6 +14,7 @@ import type {
   MediaKind,
   ProbeResult,
   StorageConfig,
+  EgressSettings,
 } from './media';
 import {
   browseKindFor,
@@ -28,6 +29,7 @@ import type {
   WireBrowseResult,
   WireCrawlResult,
   WireExtractResult,
+  WireEgressSettings,
   WireSystemStorage,
   WireCapabilities,
   WireDownload,
@@ -413,6 +415,14 @@ export function normalizeLiveMessage(w: WireLiveMessage): LiveMessage | null {
     default:
       return null;
   }
+}
+
+export function normalizeEgressSettings(w: WireEgressSettings): EgressSettings {
+  return {
+    cookieConfigured: Boolean(w.cookies?.configured),
+    cookieNames: w.cookies?.names ?? [],
+    proxy: w.proxy ?? '',
+  };
 }
 
 export function normalizeStorageConfig(w: WireStorageConfig): StorageConfig {

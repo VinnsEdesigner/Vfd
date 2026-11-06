@@ -62,6 +62,9 @@ import {
   type ExtractResult,
   useLiveVideo,
   useSetStorageLocation,
+  useEgressSettings,
+  useSetEgress,
+  type EgressUpdate,
   useCreateDownload,
   useCancelDownload,
   useRemoveDownload,
@@ -338,6 +341,8 @@ export function App({ initialView = 'overview' }: AppProps) {
   const capabilitiesQuery = useCapabilities();
   const capabilities = capabilitiesQuery.data ?? null;
   const setStorageLocation = useSetStorageLocation();
+  const egressQuery = useEgressSettings();
+  const setEgress = useSetEgress();
   const browseQuery = useBrowse({ term: browseTerm, kind: browseKind, page: browsePage });
   const browseUrlQuery = useBrowseUrl(browseUrlSubmitted, browseFilter);
   const createDownload = useCreateDownload();
@@ -1939,6 +1944,39 @@ export function App({ initialView = 'overview' }: AppProps) {
                   persistLocation(location);
                 },
                 { success: 'Storage location saved', failure: 'Could not save the location' },
+              )
+            }
+            egress={
+              egressQuery.data
+                ? {
+                    cookieConfigured: egressQuery.data.cookieConfigured,
+                    cookieNames: egressQuery.data.cookieNames,
+                    proxy: egressQuery.data.proxy,
+                  }
+                : null
+            }
+            onSaveEgress={(next) => {
+              /* A field left null is unchanged, so a proxy-only save never
+               * resends (or clears) the cookies, whose value the console does
+               * not even hold. */
+              const body: EgressUpdate = {};
+              if (next.cookies !== null) body.cookies = next.cookies;
+              if (next.proxy !== null) body.proxy = next.proxy;
+              void runAction(
+                'save-egress',
+                async () => {
+                  await setEgress.mutateAsync(body);
+                },
+                { success: 'Egress settings saved', failure: 'Could not save egress settings' },
+              );
+            }}
+            onClearCookies={() =>
+              void runAction(
+                'clear-cookies',
+                async () => {
+                  await setEgress.mutateAsync({ cookies: '' });
+                },
+                { success: 'Cookies cleared', failure: 'Could not clear cookies' },
               )
             }
             vyzorLocation={

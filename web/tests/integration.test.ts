@@ -74,6 +74,57 @@ describe('system resource', () => {
   });
 });
 
+describe('egress settings', () => {
+  it('starts with no cookies and no proxy', async () => {
+    const s = await api.system.egressSettings();
+    expect(s.cookieConfigured).toBe(false);
+    expect(s.cookieNames).toEqual([]);
+    expect(s.proxy).toBe('');
+  });
+
+  it('stores cookies and a proxy, and reports only the cookie names', async () => {
+    const exportText =
+      '# Netscape HTTP Cookie File\n' +
+      '.example.com\tTRUE\t/\tTRUE\t1700000000\tsid\tSUPERSECRET\n';
+    await api.system.setEgress({ cookies: exportText, proxy: 'http://127.0.0.1:8888' });
+
+    const s = await api.system.egressSettings();
+    expect(s.cookieConfigured).toBe(true);
+    // The names are returned so the operator can confirm the right export...
+    expect(s.cookieNames).toContain('sid');
+    // ...but the value must never come back over the API.
+    expect(JSON.stringify(s)).not.toContain('SUPERSECRET');
+    expect(s.proxy).toBe('http://127.0.0.1:8888');
+  });
+
+  it('leaves the cookies alone when only the proxy changes', async () => {
+    await api.system.setEgress({ proxy: 'socks5://127.0.0.1:1080' });
+    const s = await api.system.egressSettings();
+    expect(s.cookieConfigured).toBe(true);
+    expect(s.proxy).toBe('socks5://127.0.0.1:1080');
+  });
+
+  it('clears the proxy with an empty string', async () => {
+    await api.system.setEgress({ proxy: '' });
+    const s = await api.system.egressSettings();
+    expect(s.proxy).toBe('');
+    expect(s.cookieConfigured).toBe(true);
+  });
+
+  it('refuses an export that is not Netscape format', async () => {
+    await expect(
+      api.system.setEgress({ cookies: 'not a tab-separated export' }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it('clears the cookies with an empty string', async () => {
+    await api.system.setEgress({ cookies: '' });
+    const s = await api.system.egressSettings();
+    expect(s.cookieConfigured).toBe(false);
+    expect(s.cookieNames).toEqual([]);
+  });
+});
+
 describe('browse resource', () => {
   it('rejects a non-http url without trying to fetch it', async () => {
     await expect(api.browse.listFromUrl('file:///etc/passwd')).rejects.toMatchObject({

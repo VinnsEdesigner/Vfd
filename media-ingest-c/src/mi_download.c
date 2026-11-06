@@ -241,6 +241,7 @@ int mi_probe(const mi_download_config *cfg, const char *url,
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    if (cfg->proxy && *cfg->proxy) curl_easy_setopt(curl, CURLOPT_PROXY, cfg->proxy);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_sniff);
@@ -357,6 +358,7 @@ static int fetch_range_once(const mi_download_config *cfg, const char *url,
     struct curl_slist *headers = build_headers(cfg, range);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    if (cfg->proxy && *cfg->proxy) curl_easy_setopt(curl, CURLOPT_PROXY, cfg->proxy);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, w);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_retry_after);
@@ -695,6 +697,7 @@ static int download_stream(const mi_download_config *cfg, const char *url,
     struct curl_slist *headers = build_headers(cfg, NULL);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    if (cfg->proxy && *cfg->proxy) curl_easy_setopt(curl, CURLOPT_PROXY, cfg->proxy);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &w);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -894,6 +897,8 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->extract_pages = 0;
     cfg->extractor_path = NULL;
     cfg->gallery_extractor_path = NULL;
+    cfg->cookies_text = NULL;
+    cfg->proxy = NULL;
     cfg->preferred_height = 0;
 }
 
@@ -1028,6 +1033,14 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
     mi_extract_config ecfg;
     mi_extract_config_init(&ecfg);
     ecfg.binary = cfg->extractor_path;
+    ecfg.gallery_binary = cfg->gallery_extractor_path;
+    /* The same cookies the download was given: resolving a page and fetching its
+     * media are two requests to the same host, and a site that needs a sign-in
+     * needs it for both. */
+    ecfg.cookies_text = cfg->cookies_text;
+    /* The same egress the transfer uses: the resolve is a request to the same
+     * host, so a proxy that got the fetch past a refusal must carry it too. */
+    ecfg.proxy = cfg->proxy;
 
     mi_extract_result er;
     if (mi_extract(&ecfg, page_url, &er) != MI_OK) return MI_ERR_NET;
@@ -1092,6 +1105,25 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
     argv[a++] = "-nostdin";
     argv[a++] = "-loglevel";
     argv[a++] = "error";
+    /*
+     * Cookies, when the site needs a sign-in.
+     *
+     * ffmpeg does the fetching, so it is ffmpeg that must send them — the
+     * extractor's cookies only got the *resolve* past the sign-in wall. ffmpeg
+     * wants newline-delimited `Set-Cookie` values, not a Netscape file, so the
+     * conversion is made here from the same input.
+     */
+    char *ff_cookies = mi_extract_cookies_for_ffmpeg(cfg->cookies_text);
+    if (ff_cookies) {
+        argv[a++] = "-cookies";
+        argv[a++] = ff_cookies;
+    }
+    /* The same egress the resolve used: ffmpeg does the fetch, so a proxy that
+     * got the resolve past a refusal must carry the transfer too. */
+    if (cfg->proxy && *cfg->proxy) {
+        argv[a++] = "-http_proxy";
+        argv[a++] = cfg->proxy;
+    }
     argv[a++] = "-y";
     argv[a++] = "-i";
     argv[a++] = muxed ? muxed->url : video->url;

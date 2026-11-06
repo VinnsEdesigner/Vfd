@@ -231,6 +231,25 @@ export interface StorageConfig {
   configured: boolean;
 }
 
+/**
+ * The cookies and proxy Vyzor uses to reach a site that refuses this host.
+ *
+ * The cookie value is never sent to the console — only whether one is set and
+ * which names it carries — so this is not the credential, it is a report about
+ * it.
+ */
+export interface EgressSettings {
+  cookieConfigured: boolean;
+  cookieNames: readonly string[];
+  proxy: string;
+}
+
+/** A partial update: a field left out is unchanged, an empty string clears it. */
+export interface EgressUpdate {
+  cookies?: string;
+  proxy?: string;
+}
+
 /** Requests the data layer accepts (already domain-shaped). */
 export interface CreateDownloadInput {
   url: string;

@@ -50,6 +50,12 @@ typedef struct {
     int viewport_width;
     int viewport_height;
     const char *user_agent;    /* NULL uses Vyzor's default */
+    /*
+     * A proxy the session's browser sends its requests through, e.g.
+     * "http://host:port" or "socks5://host:port". Passed as --proxy-server, so
+     * a driven page reaches a host that refuses this address. NULL is direct.
+     */
+    const char *proxy;
     const char *profile_root;  /* where throwaway profiles are made */
     /*
      * Close a session that has had no input and produced no frame for this many

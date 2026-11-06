@@ -480,3 +480,21 @@ export interface WireSetLocationResult {
   dir: string;
   writable: boolean;
 }
+
+/** The egress settings. The cookie *value* is never returned, only its shape. */
+export interface WireEgressCookies {
+  configured: boolean;
+  /** The cookie names, so an operator can confirm the right export loaded. */
+  names?: string[];
+}
+
+export interface WireEgressSettings {
+  cookies: WireEgressCookies | null;
+  proxy: string | null;
+}
+
+/** A partial update; a field left out is not changed, an empty string clears. */
+export interface WireEgressUpdate {
+  cookies?: string;
+  proxy?: string;
+}

@@ -145,6 +145,24 @@ typedef struct {
      * unlisted video the caller has rights to. NULL sends none. */
     const char *cookies_file;
     /*
+     * The same cookies, as an inline string, for a caller that has them in hand
+     * rather than on disk.
+     *
+     * Netscape format, same as the file. A server holding a credential for a
+     * user has it in memory and should not have to write it to disk to pass it
+     * on — a file is one more place a secret can outlive its use.
+     */
+    const char *cookies_text;
+    /*
+     * A proxy the extractor should send its requests through, e.g.
+     * "http://host:port" or "socks5://host:port".
+     *
+     * A site may refuse a request from the host's own address — a datacenter
+     * range, or a country — and a proxy is the way out. yt-dlp takes this as
+     * `--proxy`, so it is passed through unchanged. NULL sends direct.
+     */
+    const char *proxy;
+    /*
      * A search to run instead of resolving a URL.
      *
      * yt-dlp answers `ytsearch<N>:term` with a list of matching videos, so a
@@ -200,6 +218,18 @@ typedef struct {
 } mi_extract_config;
 
 void mi_extract_config_init(mi_extract_config *cfg);
+
+/*
+ * Netscape cookie text as ffmpeg's `-cookies` string, or NULL.
+ *
+ * The two tools want the same credential in different shapes: the extractor takes
+ * a Netscape file, ffmpeg takes newline-delimited `Set-Cookie` values. This is the
+ * conversion, exposed because the download path needs it — ffmpeg does the
+ * fetching, so it is ffmpeg that must send the cookies.
+ *
+ * Returns an owned string the caller frees, or NULL when there is nothing usable.
+ */
+char *mi_extract_cookies_for_ffmpeg(const char *text);
 
 /*
  * The extractor to use for a URL, honouring an explicit choice.

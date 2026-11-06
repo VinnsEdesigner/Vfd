@@ -170,6 +170,26 @@ typedef struct {
      * the right one.
      */
     const char *gallery_extractor_path;
+    /*
+     * Cookies for a site that refuses an anonymous request.
+     *
+     * Netscape format, the same input the download path takes. A crawl of a
+     * site behind a sign-in needs them for the same reason a single download
+     * does: the extractor cannot resolve a page it is turned away from. Carried
+     * here so the walk and the download agree on the credential.
+     *
+     * NULL sends none. A credential, so it is never logged.
+     */
+    const char *cookies_text;
+    /*
+     * A proxy every request the walk makes goes through, e.g.
+     * "http://host:port" or "socks5://host:port".
+     *
+     * A crawl makes many requests to one host, so a host that refuses this
+     * address refuses the whole walk. The same egress reaches the page fetches,
+     * the extractor and the browser fallback. NULL is direct.
+     */
+    const char *proxy;
     /* The User-Agent to send. NULL uses the built-in default. */
     const char *user_agent;
     /*

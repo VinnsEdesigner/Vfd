@@ -60,6 +60,13 @@ typedef struct {
     int max_concurrent;
     /* Sent to the site. NULL uses Vyzor's default. */
     const char *user_agent;
+    /*
+     * A proxy the browser sends its requests through, e.g.
+     * "http://host:port" or "socks5://host:port". Passed to Chromium as
+     * --proxy-server, so a rendered page reaches a host that refuses this
+     * address. NULL is direct.
+     */
+    const char *proxy;
     /* Where throwaway browser profiles are made. NULL uses the system temp dir. */
     const char *profile_root;
     /*

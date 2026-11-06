@@ -278,6 +278,34 @@ void mi_server_config_init(mi_server_config *cfg) {
      */
     cfg->extractor_path = NULL;
     cfg->gallery_extractor_path = NULL;
+    /*
+     * Cookies for a site that refuses an anonymous request.
+     *
+     * From MI_COOKIES_FILE — a path, not the contents — so the credential lives
+     * in a file the operator controls the permissions on, rather than in the
+     * process environment where `ps e` or a core dump can expose it.
+     */
+    cfg->cookies_text = NULL;
+    cfg->proxy = NULL;
+    {
+        const char *px = getenv("MI_PROXY");
+        if (px && *px) cfg->proxy = mi_strdup(px);
+    }
+    {
+        const char *ck = getenv("MI_COOKIES_FILE");
+        if (ck && *ck) {
+            FILE *f = fopen(ck, "rb");
+            if (f) {
+                char buf[65536];
+                size_t n = fread(buf, 1, sizeof buf - 1, f);
+                fclose(f);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    cfg->cookies_text = mi_strdup(buf);
+                }
+            }
+        }
+    }
     /* NULL means "ffmpeg" from PATH. Named so an operator can point at a build
      * of their own; a distribution's copy can lag. */
     cfg->ffmpeg_path = NULL;
@@ -1513,6 +1541,7 @@ static void *download_worker(void *arg) {
     dcfg.extract_pages = 1;
     dcfg.extractor_path = srv->cfg.extractor_path;
     dcfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
+    dcfg.cookies_text = srv->cfg.cookies_text;
     /*
      * The viewer's quality choice, when they made one.
      *
@@ -1528,6 +1557,7 @@ static void *download_worker(void *arg) {
     /* A host that refuses a non-browser agent is a host the operator may have
      * told Vyzor how to present itself to. */
     dcfg.user_agent = srv->cfg.user_agent;
+    dcfg.proxy = srv->cfg.proxy;
 
     char *out_dir = j->out_dir ? mi_strdup(j->out_dir)
                                : mi_asprintf("%s/%s", srv->download_dir, j->id);
@@ -2951,6 +2981,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_extract_config_init(&ecfg);
         ecfg.binary = srv->cfg.extractor_path;
         ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
+        ecfg.cookies_text = srv->cfg.cookies_text;
+        ecfg.proxy = srv->cfg.proxy;
         mi_json_raw(&b, ",\"extract\":");
         mi_json_raw(&b, "{");
         mi_json_key(&b, "enabled");
@@ -3075,6 +3107,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_extract_config_init(&ecfg);
         ecfg.binary = srv->cfg.extractor_path;
         ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
+        ecfg.cookies_text = srv->cfg.cookies_text;
+        ecfg.proxy = srv->cfg.proxy;
         double timeout = mi_json_get_number(in, "timeout_seconds", 0);
         if (timeout > 0) ecfg.timeout_seconds = timeout;
         if (searching) {
@@ -3251,6 +3285,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ccfg.extract_enabled = mi_json_get_bool(in, "use_extractor", 1);
         ccfg.extractor_path = srv->cfg.extractor_path;
         ccfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
+        ccfg.cookies_text = srv->cfg.cookies_text;
+        ccfg.proxy = srv->cfg.proxy;
         int depth = (int)mi_json_get_number(in, "depth", 0);
         int pages = (int)mi_json_get_number(in, "max_pages", 0);
         int budget = (int)mi_json_get_number(in, "budget_seconds", 0);
@@ -4205,6 +4241,129 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         return;
     }
 
+    /*
+     * GET /api/v1/settings/egress — the egress settings, without the credential.
+     *
+     * Cookies are a credential for whatever account the operator signed in
+     * with, so their *value* is never returned — only whether one is set and
+     * which cookie names it carries. The proxy is not secret and is shown in
+     * full. Both are settable at runtime so an operator can fix a refusal
+     * without a restart.
+     */
+    if (!strcmp(req->path, "/api/v1/settings/egress") && !strcmp(req->method, "GET")) {
+        const char *ck = srv->cfg.cookies_text;
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"cookies\":{");
+        mi_json_key(&b, "configured");
+        mi_json_bool(&b, ck && *ck);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "names");
+        mi_json_raw(&b, "[");
+        int first = 1;
+        if (ck) {
+            const char *p = ck;
+            while (*p) {
+                const char *nl = strchr(p, '\n');
+                size_t n = nl ? (size_t)(nl - p) : strlen(p);
+                if (n > 0 && p[0] != '#') {
+                    char line[2048];
+                    if (n < sizeof line) {
+                        memcpy(line, p, n);
+                        line[n] = '\0';
+                        char *t[7] = {0};
+                        int nf = 0;
+                        char *save = NULL;
+                        for (char *tok = strtok_r(line, "\t", &save); tok && nf < 7;
+                             tok = strtok_r(NULL, "\t", &save))
+                            t[nf++] = tok;
+                        if (nf >= 6 && *t[5]) {
+                            if (!first) mi_json_raw(&b, ",");
+                            mi_json_string(&b, t[5]);
+                            first = 0;
+                        }
+                    }
+                }
+                if (!nl) break;
+                p = nl + 1;
+            }
+        }
+        mi_json_raw(&b, "]},");
+        mi_json_key(&b, "proxy");
+        mi_json_string(&b, srv->cfg.proxy);
+        mi_json_raw(&b, "}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        return;
+    }
+
+    /*
+     * PUT /api/v1/settings/egress  {"cookies": "...", "proxy": "..."} — set
+     * either or both. A field that is absent is left alone; an empty string
+     * clears it. Cookies are held in memory and never written to disk by Vyzor.
+     */
+    if (!strcmp(req->path, "/api/v1/settings/egress") && !strcmp(req->method, "PUT")) {
+        mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+        const mi_json *cookies_v = mi_json_get(in, "cookies");
+        const mi_json *proxy_v = mi_json_get(in, "proxy");
+        if (!cookies_v && !proxy_v) {
+            send_error(fd, 400, "Bad Request", "nothing to set", cors);
+            mi_json_value_free(in);
+            return;
+        }
+        const char *cookies = NULL, *proxy = NULL;
+        if (cookies_v) {
+            if (cookies_v->type != MI_JSON_STRING && cookies_v->type != MI_JSON_NULL) {
+                send_error(fd, 400, "Bad Request", "cookies must be a string", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            cookies = cookies_v->string;
+            /* An export that is not tab-separated cannot be read, so it is
+             * refused here rather than silently producing no cookies later. */
+            if (cookies && *cookies && !strchr(cookies, '\t')) {
+                send_error(fd, 422, "Unprocessable Entity",
+                           "cookies must be a Netscape-format export (tab-separated)", cors);
+                mi_json_value_free(in);
+                return;
+            }
+        }
+        if (proxy_v) {
+            if (proxy_v->type != MI_JSON_STRING && proxy_v->type != MI_JSON_NULL) {
+                send_error(fd, 400, "Bad Request", "proxy must be a string", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            proxy = proxy_v->string;
+        }
+        pthread_mutex_lock(&srv->lock);
+        if (cookies_v) {
+            free((char *)srv->cfg.cookies_text);
+            srv->cfg.cookies_text = (cookies && *cookies) ? mi_strdup(cookies) : NULL;
+        }
+        if (proxy_v) {
+            free((char *)srv->cfg.proxy);
+            srv->cfg.proxy = (proxy && *proxy) ? mi_strdup(proxy) : NULL;
+        }
+        int cookie_set = srv->cfg.cookies_text && *srv->cfg.cookies_text;
+        int proxy_set = srv->cfg.proxy && *srv->cfg.proxy;
+        pthread_mutex_unlock(&srv->lock);
+
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"cookies\":{");
+        mi_json_key(&b, "configured");
+        mi_json_bool(&b, cookie_set);
+        mi_json_raw(&b, "},");
+        mi_json_key(&b, "proxy");
+        mi_json_string(&b, proxy_set ? proxy : NULL);
+        mi_json_raw(&b, "}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        mi_json_value_free(in);
+        return;
+    }
+
     /* GET /api/v1/storage/config  (non-secret view) */
     if (!strcmp(req->path, "/api/v1/storage/config") && !strcmp(req->method, "GET")) {
         const char *endpoint = request_header(req, "X-S3-Endpoint");
@@ -4259,6 +4418,12 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
     mi_server *srv = mi_calloc(1, sizeof *srv);
     if (!srv) return NULL;
     srv->cfg = *cfg;
+    /* The egress settings are mutable at runtime (PUT /api/v1/settings/egress),
+     * so the server takes and owns its own copy: a caller's buffer, or a
+     * literal, must never be freed by us or read after it goes away. */
+    srv->cfg.cookies_text = (cfg->cookies_text && *cfg->cookies_text)
+                                ? mi_strdup(cfg->cookies_text) : NULL;
+    srv->cfg.proxy = (cfg->proxy && *cfg->proxy) ? mi_strdup(cfg->proxy) : NULL;
     srv->download_dir = mi_strdup(cfg->work_dir ? cfg->work_dir : "./downloads");
     srv->listen_fd = -1;
     srv->stop = 0;
@@ -4277,6 +4442,7 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
         rcfg.viewport_width = cfg->render_viewport_width;
         rcfg.viewport_height = cfg->render_viewport_height;
         rcfg.user_agent = cfg->user_agent;
+        rcfg.proxy = cfg->proxy;
         rcfg.profile_root = cfg->render_profile_root;
 
         /* The cache lives beside the downloads unless told otherwise: it is the
@@ -4308,6 +4474,7 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
         icfg.viewport_width = cfg->render_viewport_width;
         icfg.viewport_height = cfg->render_viewport_height;
         icfg.user_agent = cfg->user_agent;
+        icfg.proxy = cfg->proxy;
         icfg.profile_root = cfg->render_profile_root;
         if (cfg->interactive_keepalive_ping_seconds > 0)
             icfg.keepalive_ping_seconds = cfg->interactive_keepalive_ping_seconds;
@@ -4355,6 +4522,8 @@ void mi_server_free(mi_server *srv) {
     free(srv->downloads);
     free(srv->threads);
     free(srv->download_dir);
+    free((char *)srv->cfg.cookies_text);
+    free((char *)srv->cfg.proxy);
     mi_render_pool_free(srv->renderer);
     mi_interactive_pool_free(srv->driver);
     mi_rtc_pool_free(srv->rtc);

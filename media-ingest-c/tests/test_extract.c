@@ -169,8 +169,57 @@ static void test_extract_needs_a_url_or_a_search(void) {
           "a NULL config is refused");
 }
 
+/* ------------------------------------------------------------------ */
+/* Netscape cookies -> ffmpeg's `-cookies` string                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The conversion is pure string work, so it is tested with no tool and no
+ * network. It is the one piece of the cookie path with a shape to get wrong:
+ * yt-dlp and ffmpeg want the same credential in different forms, and a mistake
+ * here means ffmpeg fetches anonymously and the sign-in wall answers.
+ */
+static void test_cookies_for_ffmpeg(void) {
+    /* Nothing in, nothing out: no cookie file is the common case. */
+    CHECK(mi_extract_cookies_for_ffmpeg(NULL) == NULL, "NULL cookies yield NULL");
+    CHECK(mi_extract_cookies_for_ffmpeg("") == NULL, "empty cookies yield NULL");
+
+    /* A Netscape export: comments and blanks are skipped, and a leading-dot
+     * domain loses the dot — ffmpeg matches the domain itself. */
+    const char *export_text =
+        "# Netscape HTTP Cookie File\n"
+        "\n"
+        ".example.com\tTRUE\t/\tTRUE\t1700000000\tsessionid\tabc123\n";
+    char *got = mi_extract_cookies_for_ffmpeg(export_text);
+    CHECK(got != NULL, "a one-cookie export converts");
+    CHECK(got && strcmp(got, "sessionid=abc123; domain=example.com; path=/") == 0,
+          "the leading dot is dropped and the path is kept");
+    free(got);
+
+    /* Two cookies, one per line, in the order they appeared; a domain without a
+     * leading dot is kept whole. */
+    const char *two =
+        ".a.test\tTRUE\t/\tFALSE\t0\tone\t1\n"
+        "b.test\tTRUE\t/secure\tTRUE\t0\ttwo\t2\n";
+    got = mi_extract_cookies_for_ffmpeg(two);
+    CHECK(got != NULL, "a two-cookie export converts");
+    CHECK(got && strcmp(got,
+              "one=1; domain=a.test; path=/\n"
+              "two=2; domain=b.test; path=/secure") == 0,
+          "cookies are newline-separated with domains and paths");
+    free(got);
+
+    /* A line with too few fields is dropped rather than half-parsed. */
+    const char *junk =
+        "not-a-cookie\n"
+        "c.test\tTRUE\t/\tFALSE\t0\tname\n"; /* six fields: no value */
+    CHECK(mi_extract_cookies_for_ffmpeg(junk) == NULL,
+          "a malformed line yields no cookie");
+}
+
 int main(void) {
     test_pick_by_host();
+    test_cookies_for_ffmpeg();
     test_extract_needs_a_url_or_a_search();
     test_video_resolve();
     test_gallery_resolve();

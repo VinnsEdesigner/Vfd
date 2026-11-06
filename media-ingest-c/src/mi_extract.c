@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -46,6 +47,8 @@ void mi_extract_config_init(mi_extract_config *cfg) {
     cfg->kind = MI_EXTRACT_AUTO;
     cfg->timeout_seconds = 60.0;
     cfg->cookies_file = NULL;
+    cfg->cookies_text = NULL;
+    cfg->proxy = NULL;
     cfg->enumerate = 0;
     cfg->search_term = NULL;
     cfg->search_limit = 0;
@@ -96,6 +99,107 @@ static const char *binary_for(const mi_extract_config *cfg) {
 static const char *gallery_binary_for(const mi_extract_config *cfg) {
     return (cfg && cfg->gallery_binary && *cfg->gallery_binary) ? cfg->gallery_binary
                                                                 : "gallery-dl";
+}
+
+/*
+ * Netscape cookie text as ffmpeg's `-cookies` string.
+ *
+ * The two tools want different things and neither will take the other's:
+ *
+ *   yt-dlp   a Netscape cookie FILE (what a browser export gives)
+ *   ffmpeg   newline-delimited `Set-Cookie` field values
+ *
+ * A user exports once, in Netscape format, so that is the input and this converts
+ * it for the tool that needs the other shape. A Netscape line is
+ *
+ *   domain  include-subdomains  path  secure  expiry  name  value
+ *
+ * tab-separated, with `#` comments and blank lines to skip. ffmpeg's form is
+ * `name=value; domain=...; path=...`, one per line — the domain and path matter
+ * or the cookie is not sent.
+ *
+ * Returns an owned string, or NULL when there is nothing usable.
+ */
+char *mi_extract_cookies_for_ffmpeg(const char *text) {
+    if (!text || !*text) return NULL;
+    mi_json_buf out;
+    mi_json_init(&out);
+
+    const char *p = text;
+    int written = 0;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t n = nl ? (size_t)(nl - p) : strlen(p);
+
+        /* Skip comments and blanks; a Netscape export is full of both. */
+        if (n > 0 && p[0] != '#') {
+            char line[2048];
+            if (n < sizeof line) {
+                memcpy(line, p, n);
+                line[n] = '\0';
+                char *f[7] = {0};
+                int nf = 0;
+                char *save = NULL;
+                for (char *t = strtok_r(line, "\t", &save); t && nf < 7;
+                     t = strtok_r(NULL, "\t", &save)) {
+                    f[nf++] = t;
+                }
+                /* A cookie needs a name and a value; the rest is placement. */
+                if (nf >= 7 && *f[5]) {
+                    if (written) mi_json_raw(&out, "\n");
+                    mi_json_raw(&out, f[5]); /* name */
+                    mi_json_raw(&out, "=");
+                    mi_json_raw(&out, f[6]); /* value */
+                    mi_json_raw(&out, "; domain=");
+                    /* A leading dot means "any subdomain" in Netscape; ffmpeg
+                     * matches the domain itself, so the dot is dropped. */
+                    mi_json_raw(&out, f[0][0] == '.' ? f[0] + 1 : f[0]);
+                    mi_json_raw(&out, "; path=");
+                    mi_json_raw(&out, *f[2] ? f[2] : "/");
+                    written++;
+                }
+            }
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+
+    if (!written) {
+        mi_json_free(&out);
+        return NULL;
+    }
+    char *result = mi_strdup(mi_json_data(&out));
+    mi_json_free(&out);
+    return result;
+}
+
+/*
+ * Write inline cookies to a temporary file for yt-dlp, which takes a path.
+ *
+ * Created 0600 and removed by the caller as soon as the resolve finishes: it
+ * holds a credential, and a credential on disk is one more place it can outlive
+ * its use. The path is returned in `out_path`, owned by the caller.
+ *
+ * Returns 0 on success.
+ */
+static int write_temp_cookies(const char *text, char **out_path) {
+    *out_path = NULL;
+    if (!text || !*text) return -1;
+    char tmpl[] = "/tmp/vyzor-cookies-XXXXXX";
+    int fd = mkstemp(tmpl);
+    if (fd < 0) return -1;
+    /* mkstemp already creates 0600, but say so: this file must never be
+     * group- or world-readable. */
+    fchmod(fd, 0600);
+    size_t len = strlen(text);
+    ssize_t wrote = write(fd, text, len);
+    close(fd);
+    if (wrote < 0 || (size_t)wrote != len) {
+        unlink(tmpl);
+        return -1;
+    }
+    *out_path = mi_strdup(tmpl);
+    return *out_path ? 0 : -1;
 }
 
 /*
@@ -219,6 +323,9 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
     const char **argv = mi_calloc(EXTRACT_BASE_ARGS + (cfg ? cfg->extractor_arg_count : 0) + 8,
                                   sizeof *argv);
     if (!argv) return NULL;
+    /* Inline cookies are written to a temp file for yt-dlp, which takes a path;
+     * unlinked on every exit path below. */
+    char *cookie_tmp = NULL;
     int a = 0;
     argv[a++] = binary;
     if (probe_only) {
@@ -235,9 +342,25 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
         argv[a++] = "-j";
         argv[a++] = "--no-download";
         argv[a++] = "--no-colors";
+        /*
+         * Cookies, from a file or from memory.
+         *
+         * yt-dlp takes a path, so inline cookies are written to a 0600 temp file
+         * for the length of the resolve and removed straight after. The file is
+         * created here and unlinked by the caller below.
+         */
         if (cfg && cfg->cookies_file && *cfg->cookies_file) {
             argv[a++] = "--cookies";
             argv[a++] = cfg->cookies_file;
+        } else if (cfg && cfg->cookies_text && *cfg->cookies_text) {
+            if (write_temp_cookies(cfg->cookies_text, &cookie_tmp) == 0) {
+                argv[a++] = "--cookies";
+                argv[a++] = cookie_tmp;
+            }
+        }
+        if (cfg && cfg->proxy && *cfg->proxy) {
+            argv[a++] = "--proxy";
+            argv[a++] = cfg->proxy;
         }
         argv[a++] = "--";
         argv[a++] = url;
@@ -283,6 +406,24 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
         if (cfg && cfg->cookies_file && *cfg->cookies_file) {
             argv[a++] = "--cookies";
             argv[a++] = cfg->cookies_file;
+        } else if (cfg && cfg->cookies_text && *cfg->cookies_text) {
+            /* The same from-memory cookies the gallery path takes: yt-dlp wants
+             * a path, so they are written to a 0600 temp file for the resolve
+             * and removed by the caller below. Without this the video extractor
+             * resolved anonymously and a site behind a sign-in answered with a
+             * wall. */
+            if (write_temp_cookies(cfg->cookies_text, &cookie_tmp) == 0) {
+                argv[a++] = "--cookies";
+                argv[a++] = cookie_tmp;
+            }
+        }
+        /*
+         * The proxy, when the host's own address is refused. yt-dlp resolves
+         * *and* the media fetch that follows both go through it.
+         */
+        if (cfg && cfg->proxy && *cfg->proxy) {
+            argv[a++] = "--proxy";
+            argv[a++] = cfg->proxy;
         }
         /*
          * The discovery filters.
@@ -408,6 +549,12 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
     int status = 0;
     waitpid(pid, &status, 0);
     if (exit_code) *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    /* The cookie file held a credential; remove it the moment the child is done
+     * with it rather than leaving it for a later sweep. */
+    if (cookie_tmp) {
+        unlink(cookie_tmp);
+        free(cookie_tmp);
+    }
     free(argv);
     if (timed_out) {
         free(buf);

@@ -130,6 +130,29 @@ typedef struct {
      */
     const char *gallery_extractor_path;
     /*
+     * Cookies for a site that refuses an anonymous request.
+     *
+     * Netscape format. Set from the settings endpoint or MI_COOKIES_FILE, and
+     * never logged: it is a credential for whatever account the operator signed
+     * in with, and a site that demands a sign-in is one they have an account on.
+     *
+     * It is a *setting* rather than a per-request field because it is a
+     * credential — one per Vyzor, chosen by the operator, not something a
+     * download request should be able to change.
+     */
+    const char *cookies_text;
+    /*
+     * A proxy every outbound request goes through, e.g. "http://host:port" or
+     * "socks5://host:port".
+     *
+     * A site may refuse the host's own address — a datacenter range, or a
+     * country — and a proxy is the way out. One setting, applied everywhere a
+     * request leaves the process: the crawler's page fetches, the extractor,
+     * ffmpeg's transfer and the browser. Set from the settings endpoint or
+     * MI_PROXY. NULL is direct.
+     */
+    const char *proxy;
+    /*
      * The ffmpeg binary.
      *
      * Used to read a manifest (an HLS or DASH URL is a playlist, not a file) and

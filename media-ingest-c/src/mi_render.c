@@ -203,6 +203,7 @@ void mi_render_config_init(mi_render_config *cfg) {
     cfg->v8_heap_mb = 256;
     cfg->max_concurrent = 1;
     cfg->user_agent = NULL;
+    cfg->proxy = NULL;
     cfg->profile_root = NULL;
     cfg->cache_dir = NULL;
     cfg->cache_max_bytes = 0; /* 0 -> the cache's own default */
@@ -594,6 +595,9 @@ mi_render_status mi_render_run(mi_render_pool *pool, const char *url,
     args_push(&args, "--disable-features=Translate,BackForwardCache,AcceptCHFrame");
     if (pool->cfg.user_agent && *pool->cfg.user_agent) {
         args_push_owned(&args, mi_asprintf("--user-agent=%s", pool->cfg.user_agent));
+    }
+    if (pool->cfg.proxy && *pool->cfg.proxy) {
+        args_push_owned(&args, mi_asprintf("--proxy-server=%s", pool->cfg.proxy));
     }
     args_push_owned(&args, mi_asprintf("--js-flags=--max-old-space-size=%d", pool->cfg.v8_heap_mb));
     args_push_owned(&args, mi_asprintf("--user-data-dir=%s", profile));

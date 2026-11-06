@@ -81,6 +81,27 @@ typedef struct {
     /* The gallery extractor's binary; NULL uses "gallery-dl" from PATH. */
     const char *gallery_extractor_path;
     /*
+     * Cookies for a site that refuses an anonymous request.
+     *
+     * Netscape format, as a browser export gives. Two consumers need them and in
+     * two different shapes: the extractor takes the file, and ffmpeg — which does
+     * the actual fetch — takes a `Set-Cookie` string. The conversion is the
+     * extractor module's job; this carries the input.
+     *
+     * NULL sends none. A credential, so it is never logged.
+     */
+    const char *cookies_text;
+    /*
+     * A proxy every outbound request goes through, e.g. "http://host:port" or
+     * "socks5://host:port".
+     *
+     * A site may refuse the host's own address, and a proxy is the way out. It
+     * reaches curl for the ordinary fetch and ffmpeg for a manifest, so both
+     * the transfer and the resolve behind it use the same egress. NULL is
+     * direct.
+     */
+    const char *proxy;
+    /*
      * The height to prefer when resolving a page, e.g. 720.
      *
      * A stream offers many renditions and the choice is the viewer's: a phone on

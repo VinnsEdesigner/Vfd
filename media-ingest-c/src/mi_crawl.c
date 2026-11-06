@@ -52,6 +52,8 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->extract_enabled = 1;
     cfg->extractor_path = NULL;
     cfg->gallery_extractor_path = NULL;
+    cfg->cookies_text = NULL;
+    cfg->proxy = NULL;
     cfg->user_agent = NULL;
     cfg->render_pool = NULL;
     cfg->interactive_pool = NULL;
@@ -555,6 +557,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
     mi_download_config_init(&dcfg);
     dcfg.require_media = 0;
     dcfg.user_agent = cfg->user_agent;
+    dcfg.proxy = cfg->proxy;
     /* A crawl fetches many pages; a single slow one must not consume the whole
      * budget, so each fetch gets a fraction of it. */
     dcfg.timeout_seconds = 15;
@@ -664,6 +667,8 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         mi_extract_config_init(&ecfg);
         ecfg.binary = cfg->extractor_path;
         ecfg.gallery_binary = cfg->gallery_extractor_path;
+        ecfg.cookies_text = cfg->cookies_text;
+        ecfg.proxy = cfg->proxy;
         if (mi_extract_available(&ecfg)) {
             mi_extract_result er;
             if (mi_extract(&ecfg, url, &er) == MI_OK && er.format_count > 0) {

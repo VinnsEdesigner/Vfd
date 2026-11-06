@@ -211,6 +211,7 @@ void mi_interactive_config_init(mi_interactive_config *cfg) {
     cfg->viewport_width = 1280;
     cfg->viewport_height = 800;
     cfg->user_agent = NULL;
+    cfg->proxy = NULL;
     cfg->profile_root = NULL;
     /*
      * The idle window.
@@ -1306,6 +1307,8 @@ static pid_t spawn_browser(const mi_interactive_config *cfg, const char *browser
                                 cfg->viewport_height);
         char *ua = (cfg->user_agent && *cfg->user_agent)
                        ? mi_asprintf("--user-agent=%s", cfg->user_agent) : NULL;
+        char *px = (cfg->proxy && *cfg->proxy)
+                       ? mi_asprintf("--proxy-server=%s", cfg->proxy) : NULL;
         const char *av[40];
         int n = 0;
         av[n++] = browser;
@@ -1330,6 +1333,7 @@ static pid_t spawn_browser(const mi_interactive_config *cfg, const char *browser
         av[n++] = "--disable-background-timer-throttling";
         av[n++] = "--remote-debugging-pipe";
         if (ua) av[n++] = ua;
+        if (px) av[n++] = px;
         if (jsflags) av[n++] = jsflags;
         if (udd) av[n++] = udd;
         if (win) av[n++] = win;
