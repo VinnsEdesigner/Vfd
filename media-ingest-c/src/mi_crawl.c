@@ -24,6 +24,7 @@
 #include "mi_captcha.h"
 #include "mi_frontier.h"
 #include "mi_antibot.h"
+#include "mi_sitemap.h"
 #include "mi_politeness.h"
 #include "mi_download.h"
 #include "mi_extract.h"
@@ -62,6 +63,7 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->brain = NULL;
     cfg->politeness = NULL;
     cfg->obey_robots = 1;
+    cfg->use_sitemap = 1;
     cfg->user_agent = NULL;
     cfg->frontier_db_url = NULL;
     cfg->frontier_token = NULL;
@@ -960,6 +962,81 @@ static void fetch_robots(const mi_crawl_config *cfg, const char *host) {
     free(url);
 }
 
+/*
+ * Seed the frontier from the host's sitemaps.
+ *
+ * The sitemaps come from the robots.txt `Sitemap:` directives when there are
+ * any, plus the conventional `/sitemap.xml`. A sitemapindex names further
+ * sitemaps, which are followed one level — enough for the sharding real sites
+ * use, without a loop that could run away. Every `<loc>` is pushed at depth 0,
+ * because a sitemap page is a starting point, not a child of the seed.
+ */
+static int seed_from_sitemaps(const mi_crawl_config *cfg, frontier *f,
+                              const char *host, int max_pages) {
+    char **maps = cfg->politeness ? mi_politeness_sitemaps(cfg->politeness, host) : NULL;
+
+    char **queue = NULL;
+    size_t queue_n = 0;
+    size_t queue_cap = 0;
+    for (size_t i = 0; maps && maps[i]; i++) {
+        if (queue_n == queue_cap) {
+            queue_cap = queue_cap ? queue_cap * 2 : 4;
+            char **g = mi_realloc(queue, queue_cap * sizeof *g);
+            if (!g) break;
+            queue = g;
+        }
+        queue[queue_n++] = mi_strdup(maps[i]);
+    }
+    if (queue_n == 0) {
+        if (queue_cap == 0) { queue = mi_calloc(2, sizeof *queue); queue_cap = 2; }
+        char *def = mi_asprintf("https://%s/sitemap.xml", host);
+        if (def) queue[queue_n++] = def;
+    }
+    mi_politeness_free_sitemaps(maps);
+
+    mi_download_config dcfg;
+    mi_download_config_init(&dcfg);
+    dcfg.require_media = 0;
+    dcfg.user_agent = cfg->user_agent;
+    dcfg.proxy = cfg->proxy;
+    dcfg.impersonate = cfg->impersonate;
+    dcfg.cookies_text = cfg->cookies_text;
+    dcfg.timeout_seconds = 15;
+
+    int pushed = 0;
+    for (size_t qi = 0; qi < queue_n && pushed < max_pages; qi++) {
+        mi_fetch_info info;
+        char *body = mi_download_fetch_document(&dcfg, queue[qi], 8 * 1024 * 1024, &info);
+        mi_fetch_info_free(&info);
+        if (!body) continue;
+        mi_sitemap sm;
+        if (mi_sitemap_parse((const unsigned char *)body, strlen(body), &sm) == 0) {
+            for (size_t i = 0; i < sm.count && pushed < max_pages; i++) {
+                if (sm.is_index) {
+                    if (queue_n == queue_cap) {
+                        queue_cap = queue_cap ? queue_cap * 2 : 4;
+                        char **g = mi_realloc(queue, queue_cap * sizeof *g);
+                        if (!g) break;
+                        queue = g;
+                    }
+                    queue[queue_n++] = mi_strdup(sm.entries[i].loc);
+                } else {
+                    if (mi_frontier_push(f, sm.entries[i].loc, 0) == 0) pushed++;
+                }
+            }
+            if (sm.count > 0) {
+                mi_logf(MI_LOG_INFO, "crawl: %s yielded %zu %s", queue[qi], sm.count,
+                        sm.is_index ? "child sitemaps" : "urls");
+            }
+            mi_sitemap_free(&sm);
+        }
+        free(body);
+    }
+    for (size_t i = 0; i < queue_n; i++) free(queue[i]);
+    free(queue);
+    return pushed;
+}
+
 int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
              mi_crawl_result *out) {
     if (!cfg || !site_url || !out) return MI_ERR_ARG;
@@ -1025,6 +1102,22 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
 
     mi_frontier_push(f, site_url, 0);
     strset_add(f, site_url);
+
+    /*
+     * Seed from the host's sitemaps, before the walk. A sitemap reaches pages no
+     * link does, so it is the best coverage a crawler can get; the walk then
+     * follows links *and* visits what the sitemap named.
+     */
+    if (cfg->use_sitemap && cfg->obey_robots && cfg->politeness) {
+        char *shost = mi_antibot_host_of(site_url);
+        if (shost) {
+            if (!mi_politeness_have_robots(cfg->politeness, shost))
+                fetch_robots(cfg, shost);
+            int n = seed_from_sitemaps(cfg, f, shost, max_pages);
+            if (n > 0) mi_logf(MI_LOG_INFO, "crawl: seeded %d url(s) from sitemaps", n);
+            free(shost);
+        }
+    }
 
     int pages_read = 0;
     while (!frontier_empty(f)) {

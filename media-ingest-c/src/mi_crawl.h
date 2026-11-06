@@ -239,6 +239,16 @@ typedef struct {
      * crawler is — and off for a user's explicit fetch of a URL they chose.
      */
     int obey_robots;
+    /*
+     * Whether to seed the walk from the host's sitemaps.
+     *
+     * A sitemap is the site's own index of its pages, so it reaches pages no
+     * link does — the best coverage a crawler can get. The sitemaps are read
+     * from the robots.txt `Sitemap:` directives, plus the conventional
+     * `/sitemap.xml`. On by default; a caller that wants only link-following
+     * turns it off.
+     */
+    int use_sitemap;
     /* The User-Agent to send. NULL uses the built-in default. */
     const char *user_agent;
     /*

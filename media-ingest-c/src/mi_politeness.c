@@ -26,6 +26,9 @@ typedef struct {
     double crawl_delay;    /* from the host, or -1 for "not given" */
     robots_rule rules[MAX_RULES];
     size_t rule_count;
+    /* The `Sitemap:` directives the file carried. */
+    char **sitemaps;
+    size_t sitemap_count;
     /* Pacing. */
     double last_request;   /* monotonic seconds of the last request */
 } host_pol;
@@ -48,6 +51,8 @@ mi_politeness *mi_politeness_new(void) {
 static void host_clear(host_pol *h) {
     free(h->host);
     for (size_t i = 0; i < h->rule_count; i++) free(h->rules[i].path);
+    for (size_t i = 0; i < h->sitemap_count; i++) free(h->sitemaps[i]);
+    free(h->sitemaps);
     memset(h, 0, sizeof *h);
 }
 
@@ -123,6 +128,10 @@ void mi_politeness_set_robots(mi_politeness *p, const char *host,
     /* Reset any previous rules for the host. */
     for (size_t i = 0; i < h->rule_count; i++) free(h->rules[i].path);
     h->rule_count = 0;
+    for (size_t i = 0; i < h->sitemap_count; i++) free(h->sitemaps[i]);
+    free(h->sitemaps);
+    h->sitemaps = NULL;
+    h->sitemap_count = 0;
     h->have_robots = 1;
     h->crawl_delay = -1;
     h->allow_all = 1;
@@ -160,6 +169,22 @@ void mi_politeness_set_robots(mi_politeness *p, const char *host,
         char *value = colon + 1;
         while (*value == ' ' || *value == '\t') value++;
         trim(value);
+
+        /*
+         * A Sitemap directive is not scoped to a User-agent group, so it is
+         * captured before the group filter — a crawler that honours robots for
+         * its rules should also see the site's own index of its pages.
+         */
+        if (!strcasecmp(field, "sitemap")) {
+            if (*value) {
+                char **g = mi_realloc(h->sitemaps, (h->sitemap_count + 1) * sizeof *g);
+                if (g) {
+                    h->sitemaps = g;
+                    h->sitemaps[h->sitemap_count++] = mi_strdup(value);
+                }
+            }
+            continue;
+        }
 
         if (!strcasecmp(field, "user-agent")) {
             int ours = agent_matches(value, user_agent);
@@ -300,6 +325,29 @@ void mi_politeness_set_default_interval(mi_politeness *p, double seconds) {
     pthread_mutex_lock(&p->lock);
     p->default_interval = seconds < 0 ? 0 : seconds;
     pthread_mutex_unlock(&p->lock);
+}
+
+char **mi_politeness_sitemaps(const mi_politeness *p, const char *host) {
+    if (!p || !host) return NULL;
+    mi_politeness *m = (mi_politeness *)p;
+    pthread_mutex_lock(&m->lock);
+    char **out = NULL;
+    for (size_t i = 0; i < m->host_count; i++) {
+        if (strcmp(m->hosts[i].host, host)) continue;
+        host_pol *h = &m->hosts[i];
+        if (h->sitemap_count == 0) break;
+        out = mi_calloc(h->sitemap_count + 1, sizeof *out);
+        if (out) for (size_t j = 0; j < h->sitemap_count; j++) out[j] = mi_strdup(h->sitemaps[j]);
+        break;
+    }
+    pthread_mutex_unlock(&m->lock);
+    return out;
+}
+
+void mi_politeness_free_sitemaps(char **sitemaps) {
+    if (!sitemaps) return;
+    for (size_t i = 0; sitemaps[i]; i++) free(sitemaps[i]);
+    free(sitemaps);
 }
 
 double mi_politeness_interval(const mi_politeness *p, const char *host) {

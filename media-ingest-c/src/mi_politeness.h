@@ -74,4 +74,20 @@ void mi_politeness_set_default_interval(mi_politeness *p, double seconds);
 /* The interval in force for `host`: its Crawl-delay, or the default. */
 double mi_politeness_interval(const mi_politeness *p, const char *host);
 
+/*
+ * The `Sitemap:` directives a host's robots.txt carried, as an owned
+ * NULL-terminated array the caller frees with `mi_politeness_free_sitemaps`.
+ *
+ * A robots.txt is where a site declares its sitemaps, so a crawler that already
+ * reads robots.txt for the rules should also pick these up — the sitemap is the
+ * site's own index of what exists, and seeding a crawl from it is far better
+ * coverage than hoping a link reaches every page.
+ *
+ * Returns NULL when the host published none.
+ */
+char **mi_politeness_sitemaps(const mi_politeness *p, const char *host);
+
+/* Free a list returned by `mi_politeness_sitemaps`. */
+void mi_politeness_free_sitemaps(char **sitemaps);
+
 #endif
