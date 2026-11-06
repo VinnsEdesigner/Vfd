@@ -25,7 +25,7 @@ LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_impersonate.c $(SRC_DIR)/mi_antibot.c \
            $(SRC_DIR)/mi_browser_headers.c $(SRC_DIR)/mi_politeness.c \
            $(SRC_DIR)/mi_html.c $(SRC_DIR)/mi_html5.c $(SRC_DIR)/mi_css.c $(SRC_DIR)/mi_xpath.c \
-           $(SRC_DIR)/mi_charset.c \
+           $(SRC_DIR)/mi_charset.c $(SRC_DIR)/mi_structured.c \
            $(SRC_DIR)/mi_extract_rows.c \
            $(SRC_DIR)/mi_frontier.c \
            $(SRC_DIR)/mi_server.c
@@ -52,6 +52,7 @@ TEST_POLITENESS_SRC := tests/test_politeness.c
 TEST_CONDGET_SRC := tests/test_condget.c
 TEST_HTML_SRC := tests/test_html.c
 TEST_CHARSET_SRC := tests/test_charset.c
+TEST_STRUCTURED_SRC := tests/test_structured.c
 TEST_HTML5_SRC := tests/test_html5.c
 TEST_CSS_SRC := tests/test_css.c
 TEST_XPATH_SRC := tests/test_xpath.c
@@ -133,6 +134,9 @@ $(BUILD)/test_html: $(LIB_SRC) $(TEST_HTML_SRC) | $(BUILD)
 $(BUILD)/test_charset: $(LIB_SRC) $(TEST_CHARSET_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_CHARSET_SRC) $(LDLIBS)
 
+$(BUILD)/test_structured: $(LIB_SRC) $(TEST_STRUCTURED_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_STRUCTURED_SRC) $(LDLIBS)
+
 $(BUILD)/test_html5: $(LIB_SRC) $(TEST_HTML5_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_HTML5_SRC) $(LDLIBS)
 
@@ -145,7 +149,7 @@ $(BUILD)/test_xpath: $(LIB_SRC) $(TEST_XPATH_SRC) | $(BUILD)
 $(BUILD)/test_extract_rows: $(LIB_SRC) $(TEST_EXTRACT_ROWS_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_EXTRACT_ROWS_SRC) $(LDLIBS)
 
-test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate $(BUILD)/test_antibot $(BUILD)/test_browser_headers $(BUILD)/test_politeness $(BUILD)/test_condget $(BUILD)/test_html $(BUILD)/test_charset $(BUILD)/test_html5 $(BUILD)/test_css $(BUILD)/test_xpath $(BUILD)/test_extract_rows
+test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate $(BUILD)/test_antibot $(BUILD)/test_browser_headers $(BUILD)/test_politeness $(BUILD)/test_condget $(BUILD)/test_html $(BUILD)/test_charset $(BUILD)/test_structured $(BUILD)/test_html5 $(BUILD)/test_css $(BUILD)/test_xpath $(BUILD)/test_extract_rows
 	$(BUILD)/test_media_ingest
 	$(BUILD)/test_server
 	$(BUILD)/test_render
@@ -168,6 +172,7 @@ test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUI
 	$(BUILD)/test_condget
 	$(BUILD)/test_html
 	$(BUILD)/test_charset
+	$(BUILD)/test_structured
 	$(BUILD)/test_html5
 	$(BUILD)/test_css
 	$(BUILD)/test_xpath
