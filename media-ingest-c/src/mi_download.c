@@ -289,6 +289,17 @@ int mi_probe(const mi_download_config *cfg, const char *url,
     long code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
 
+    /*
+     * Name the refusal here, while the body is still in hand.
+     *
+     * The probe already read the first bytes of the response, which is exactly
+     * what tells a challenge wall from a plain ban — so the classification costs
+     * nothing extra and is what lets the caller react correctly instead of
+     * blindly retrying.
+     */
+    out->status = (int)code;
+    out->block = mi_antibot_classify((int)code, NULL, (const char *)head, sink.len);
+
     if (rc == CURLE_OK && code > 0) {
         char *ct = NULL, *eff = NULL, *cr = NULL;
         curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct);
@@ -1314,7 +1325,8 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
 
 static int mi_download_once(const mi_download_config *cfg, const char *url,
                             const char *dest, mi_progress_fn on_progress, void *user,
-                            mi_download_result *out) {
+                            mi_download_result *out, int *status_out,
+                            mi_block_kind *block_out) {
     if (ensure_curl() != 0) return MI_ERR;
     memset(out, 0, sizeof *out);
     out->url = mi_strdup(url);
@@ -1336,6 +1348,8 @@ static int mi_download_once(const mi_download_config *cfg, const char *url,
 
     mi_download_plan plan;
     int rc = mi_probe(cfg, url, &plan);
+    if (status_out) *status_out = plan.status;
+    if (block_out) *block_out = plan.block;
     if (rc != MI_OK) {
         mi_download_result_free(out);
         return rc;
@@ -1433,8 +1447,42 @@ static int mi_download_once(const mi_download_config *cfg, const char *url,
                              plan.have_media ? &plan.media : NULL);
     }
     mi_download_plan_free(&plan);
+    if (out->block == MI_BLOCK_NONE) out->block = (block_out ? *block_out : MI_BLOCK_NONE);
     if (rc != MI_OK) mi_download_result_free(out);
     return rc;
+}
+
+/* The identity a strategy asks for, applied to `c`. */
+static void apply_strategy(mi_strategy strat, const mi_download_config *cfg,
+                           mi_identity_pool *pool, mi_antibot *brain, int attempt,
+                           mi_download_config *c) {
+    *c = *cfg;
+    switch (strat) {
+        case MI_STRATEGY_IMPERSONATE:
+            /* Wear a browser's TLS fingerprint and the coherent headers that go
+             * with it. */
+            c->impersonate = (cfg->impersonate && *cfg->impersonate)
+                                 ? cfg->impersonate : "chrome";
+            break;
+        case MI_STRATEGY_ROTATE_UA: {
+            mi_identity id = mi_identity_for_attempt(pool, attempt);
+            if (id.user_agent) c->user_agent = id.user_agent;
+            break;
+        }
+        case MI_STRATEGY_ROTATE_PROXY: {
+            const char *px = mi_antibot_next_proxy(brain);
+            if (px) c->proxy = px;
+            break;
+        }
+        case MI_STRATEGY_COOKIES:
+            /* The cookies are already in cfg; the move is to *use* them, which
+             * they are by default. Nothing extra to set. */
+            break;
+        case MI_STRATEGY_WAIT:
+        default:
+            /* Same configuration, retried. */
+            break;
+    }
 }
 
 int mi_download(const mi_download_config *cfg, const char *url, const char *dest,
@@ -1443,37 +1491,107 @@ int mi_download(const mi_download_config *cfg, const char *url, const char *dest
     if (!cfg || !url || !dest || !out) return MI_ERR_ARG;
 
     /*
-     * A download that is refused is retried with a different identity.
+     * A refusal is answered with the move its *kind* calls for.
      *
-     * The first attempt is the caller's own configuration, so the happy path is
-     * exactly as configured. Only a *refusal* moves to the next identity: a
-     * different browser User-Agent and, when more than one proxy is configured,
-     * a different proxy. A retry that looked identical would just be the same
-     * request refused again.
+     * The old loop rotated a User-Agent on every failure, whatever the failure
+     * was — which is wasted work against a TLS-fingerprint block and makes a
+     * rate limit worse. The brain names the block and picks the strategy, and
+     * remembers the identity that worked so a later request to the same host
+     * starts from it rather than rediscovering it.
      */
     mi_identity_pool *pool = mi_identity_pool_new(cfg->user_agent, cfg->proxy,
                                                   cfg->impersonate, cfg->rotate_identity);
-    int attempts = cfg->identity_retries > 0 ? cfg->identity_retries + 1 : 1;
+    mi_antibot *brain = cfg->brain;
+    int own_brain = 0;
+    if (!brain) {
+        brain = mi_antibot_new();
+        own_brain = 1;
+    }
+    char *host = mi_antibot_host_of(url);
 
-    int rc = MI_ERR_NET;
-    for (int attempt = 0; attempt < attempts; attempt++) {
-        mi_identity id = mi_identity_for_attempt(pool, attempt);
-        mi_download_config c = *cfg;
-        c.user_agent = id.user_agent;
-        c.proxy = id.proxy;
-        c.impersonate = id.impersonate;
-        rc = mi_download_once(&c, url, dest, on_progress, user, out);
-        if (rc == MI_OK) break;
-        /* The caller stopped it, or the arguments are wrong: neither is fixed by
-         * a retry. */
-        if (rc == MI_ERR_ABORTED || rc == MI_ERR_ARG) break;
-        if (attempt + 1 < attempts) {
-            mi_logf(MI_LOG_INFO,
-                    "download: refused; retrying with a fresh identity (%d/%d)",
-                    attempt + 1, attempts - 1);
-            usleep((useconds_t)(500000 * (attempt + 1)));
+    /* What this Vyzor can actually do. The download path has no browser and no
+     * solver, so those rungs are skipped rather than attempted. */
+    mi_antibot_caps caps = {0};
+    {
+        char *helper = NULL;
+        caps.can_impersonate = mi_impersonate_available(NULL, &helper);
+        free(helper);
+    }
+    caps.can_rotate_ua = 1;
+    caps.proxy_count = (int)mi_identity_proxy_count(pool);
+    caps.have_cookies = cfg->cookies_text && *cfg->cookies_text;
+
+    /* The identity that worked for this host before, reused first. */
+    char *sticky_proxy = NULL, *sticky_ua = NULL, *sticky_imp = NULL;
+    if (host) {
+        mi_site_identity id;
+        if (mi_antibot_recall_identity(brain, host, &id)) {
+            sticky_proxy = id.proxy;
+            sticky_ua = id.user_agent;
+            sticky_imp = id.impersonate;
         }
     }
+
+    int attempts = cfg->identity_retries > 0 ? cfg->identity_retries + 1 : 1;
+    int rc = MI_ERR_NET;
+    mi_block_kind block = MI_BLOCK_NONE;
+    mi_strategy used = MI_STRATEGY_DIRECT;
+
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        mi_download_config c = *cfg;
+        if (attempt == 0) {
+            /* The caller's own configuration, or the identity that already
+             * worked for this host. */
+            if (sticky_proxy) c.proxy = sticky_proxy;
+            if (sticky_imp) c.impersonate = sticky_imp;
+            if (sticky_ua) c.user_agent = sticky_ua;
+        } else {
+            int wait = 0;
+            mi_strategy strat = mi_antibot_next(brain, host, block, &caps, &wait);
+            if (strat == MI_STRATEGY_GIVE_UP) {
+                mi_logf(MI_LOG_INFO, "download: no move left for a %s block",
+                        mi_antibot_kind_name(block));
+                break;
+            }
+            used = strat;
+            mi_logf(MI_LOG_INFO, "download: %s block; trying %s",
+                    mi_antibot_kind_name(block), mi_antibot_strategy_name(strat));
+            if (strat == MI_STRATEGY_WAIT && wait > 0) {
+                mi_logf(MI_LOG_INFO, "download: waiting %ds for %s", wait,
+                        host ? host : "the host");
+                usleep((useconds_t)(wait * 1000000));
+            }
+            apply_strategy(strat, cfg, pool, brain, attempt, &c);
+        }
+
+        int status = 0;
+        mi_block_kind got = MI_BLOCK_NONE;
+        rc = mi_download_once(&c, url, dest, on_progress, user, out, &status, &got);
+        if (rc == MI_OK) {
+            if (host) {
+                mi_antibot_note_success(brain, host);
+                /* Pin the winning identity so the next request reuses it. */
+                mi_antibot_remember_identity(brain, host, used, c.proxy, c.user_agent,
+                                             c.impersonate);
+            }
+            break;
+        }
+        if (rc == MI_ERR_ABORTED || rc == MI_ERR_ARG) break;
+
+        /* A failure with no classified block is a plain network error; treat it
+         * as unknown so the ladder still offers a gentle escalation. */
+        block = (got == MI_BLOCK_NONE) ? MI_BLOCK_UNKNOWN : got;
+        if (host) mi_antibot_note_block(brain, host, block);
+        /* A proxy that was refused is parked, so the next rotation does not
+         * immediately reuse it. */
+        if (c.proxy && block != MI_BLOCK_NONE) mi_antibot_park_proxy(brain, c.proxy, 60);
+    }
+
+    free(sticky_proxy);
+    free(sticky_ua);
+    free(sticky_imp);
+    free(host);
     mi_identity_pool_free(pool);
+    if (own_brain) mi_antibot_free(brain);
     return rc;
 }

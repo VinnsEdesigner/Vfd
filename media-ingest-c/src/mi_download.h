@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "mi_detect.h"
+#include "mi_antibot.h"
 
 typedef struct {
     char *url;
@@ -15,6 +16,9 @@ typedef struct {
     char *final_url;
     mi_media_info media;
     int have_media;
+    /* What the probe saw, so a refusal can be named rather than guessed at. */
+    int status;
+    mi_block_kind block;
 } mi_download_plan;
 
 typedef struct {
@@ -111,6 +115,16 @@ typedef struct {
      */
     const char *impersonate;
     /*
+     * The anti-bot brain, shared across downloads so a host is solved once.
+     *
+     * NULL creates a temporary one for this call, which is fine for a single
+     * download but forgets everything after it. A long-running Vyzor passes one
+     * brain so the identity that worked for a host is reused rather than
+     * rediscovered on every request — the difference between rotating and
+     * sticking.
+     */
+    mi_antibot *brain;
+    /*
      * Whether a refused download is retried with a different identity.
      *
      * A refusal is often of the *identity* — a bot User-Agent, a datacenter
@@ -147,6 +161,9 @@ typedef struct {
     mi_media_info media;
     int resumed;
     double elapsed_seconds;
+    /* The last HTTP status seen, and what it was classified as. */
+    int status;
+    mi_block_kind block;
 } mi_download_result;
 
 void mi_download_config_init(mi_download_config *cfg);

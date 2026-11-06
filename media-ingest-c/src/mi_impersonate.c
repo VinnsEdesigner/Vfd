@@ -16,9 +16,10 @@
  * search covers the common install locations rather than trusting PATH alone. */
 static const char *CANDIDATES[] = {
     "fetch-impersonate",
-    "media-ingest-c/scripts/fetch-impersonate",
+    "scripts/fetch-impersonate.py",
+    "media-ingest-c/scripts/fetch-impersonate.py",
     "scripts/fetch-impersonate",
-    "./scripts/fetch-impersonate",
+    "./scripts/fetch-impersonate.py",
     NULL,
 };
 
@@ -50,7 +51,10 @@ int mi_impersonate_available(const mi_impersonate_config *cfg, char **resolved) 
         return 1;
     }
     for (size_t i = 0; CANDIDATES[i]; i++) {
-        if (mi_which(CANDIDATES[i])) {
+        /* A repo-relative helper is not on PATH, so the path is tested directly
+         * as well as searched — a service started from the workspace finds its
+         * own scripts this way. */
+        if (mi_which(CANDIDATES[i]) || is_executable(CANDIDATES[i])) {
             if (resolved) *resolved = mi_strdup(CANDIDATES[i]);
             return 1;
         }
