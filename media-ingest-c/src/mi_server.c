@@ -25,6 +25,7 @@
 #include "mi_detect.h"
 #include "mi_extract.h"
 #include "mi_captcha.h"
+#include "mi_politeness.h"
 #include "mi_download.h"
 #include "mi_hls.h"
 #include "mi_identify.h"
@@ -161,6 +162,9 @@ struct mi_server {
      * so a host is solved once rather than per request. NULL when sharing is
      * off. */
     mi_antibot *brain;
+    /* robots.txt and per-host pacing, shared by every crawl, so a host's rules
+     * and its pace are learned once. */
+    mi_politeness *politeness;
 };
 
 /* ------------------------------------------------------------------ */
@@ -319,6 +323,14 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->frontier_token = NULL;
     cfg->frontier_db_path = NULL;
     cfg->share_brain = 1;
+    cfg->obey_robots = 1;
+    cfg->crawl_interval_seconds = 1.0;
+    {
+        const char *ci = getenv("MI_CRAWL_INTERVAL");
+        if (ci && *ci) cfg->crawl_interval_seconds = atof(ci);
+        const char *ro = getenv("MI_OBEY_ROBOTS");
+        if (ro && *ro) cfg->obey_robots = atoi(ro) != 0;
+    }
     {
         const char *fu = getenv("MI_FRONTIER_DB_URL");
         if (fu && *fu) cfg->frontier_db_url = mi_strdup(fu);
@@ -3343,10 +3355,15 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                 ccfg.frontier_run_id = run_id;
             } else if (srv->cfg.frontier_db_path && srv->cfg.frontier_db_path[0]) {
                 ccfg.frontier_db_path = srv->cfg.frontier_db_path;
-        ccfg.brain = srv->brain;
                 ccfg.frontier_run_id = run_id;
             }
         }
+        /* The brain and the politeness state are shared with the rest of the
+         * server, so a host solved in one crawl is solved for the next, and its
+         * robots.txt and pace are learned once. */
+        ccfg.brain = srv->brain;
+        ccfg.politeness = srv->politeness;
+        ccfg.obey_robots = srv->cfg.obey_robots;
         int depth = (int)mi_json_get_number(in, "depth", 0);
         int pages = (int)mi_json_get_number(in, "max_pages", 0);
         int budget = (int)mi_json_get_number(in, "budget_seconds", 0);
@@ -4726,6 +4743,12 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
 
     /* The anti-bot brain, one per process by default, so a host solved once
      * stays solved across crawls and downloads. */
+    /* The politeness state, one per process: a host's robots.txt and its pace
+     * are learned once and shared by every crawl. */
+    srv->politeness = mi_politeness_new();
+    if (srv->politeness) {
+        mi_politeness_set_default_interval(srv->politeness, cfg->crawl_interval_seconds);
+    }
     if (cfg->share_brain) {
         srv->brain = mi_antibot_new();
         /* The proxy pool is the same list the identity pool uses, so a refused
@@ -4836,6 +4859,7 @@ void mi_server_free(mi_server *srv) {
     free((char *)srv->cfg.frontier_token);
     free((char *)srv->cfg.frontier_db_path);
     mi_antibot_free(srv->brain);
+    mi_politeness_free(srv->politeness);
     mi_render_pool_free(srv->renderer);
     mi_interactive_pool_free(srv->driver);
     mi_rtc_pool_free(srv->rtc);

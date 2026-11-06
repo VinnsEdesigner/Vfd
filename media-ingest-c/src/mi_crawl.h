@@ -31,6 +31,7 @@
 #include <stdint.h>
 
 #include "mi_antibot.h"
+#include "mi_politeness.h"
 
 /* One selectable quality of a resolved stream. */
 typedef struct {
@@ -221,6 +222,17 @@ typedef struct {
      * identity that worked for it is reused.
      */
     mi_antibot *brain;
+    /*
+     * robots.txt and per-host pacing, shared with the rest of the server so a
+     * host's rules and its pace are learned once. NULL means no politeness:
+     * every URL is fetched as fast as the walk can. A crawl should pass one.
+     */
+    struct mi_politeness *politeness;
+    /*
+     * Whether to honour robots.txt. On by default for a crawl — that is what a
+     * crawler is — and off for a user's explicit fetch of a URL they chose.
+     */
+    int obey_robots;
     /* The User-Agent to send. NULL uses the built-in default. */
     const char *user_agent;
     /*

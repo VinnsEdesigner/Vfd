@@ -24,6 +24,7 @@
 #include "mi_captcha.h"
 #include "mi_frontier.h"
 #include "mi_antibot.h"
+#include "mi_politeness.h"
 #include "mi_download.h"
 #include "mi_extract.h"
 #include "mi_interactive.h"
@@ -59,6 +60,8 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->proxy = NULL;
     cfg->impersonate = NULL;
     cfg->brain = NULL;
+    cfg->politeness = NULL;
+    cfg->obey_robots = 1;
     cfg->user_agent = NULL;
     cfg->frontier_db_url = NULL;
     cfg->frontier_token = NULL;
@@ -894,6 +897,37 @@ static int prefers_over(const mi_crawl_hit *a, const mi_crawl_hit *b) {
     return 0;
 }
 
+/*
+ * Fetch and store a host's robots.txt, once.
+ *
+ * The fetch goes through the same path as any other page — same identity, proxy
+ * and impersonation — so a site that fingerprints TLS is read the same way here
+ * as everywhere else. A robots.txt that cannot be read (a 404, a 5xx, a
+ * network error) is stored as empty, which allows everything: a broken
+ * robots.txt must not take a site off the web, and it must not be re-fetched on
+ * every page.
+ */
+static void fetch_robots(const mi_crawl_config *cfg, const char *host) {
+    char *url = mi_asprintf("https://%s/robots.txt", host);
+    if (!url) return;
+    mi_download_config dcfg;
+    mi_download_config_init(&dcfg);
+    dcfg.require_media = 0;
+    dcfg.user_agent = cfg->user_agent;
+    dcfg.proxy = cfg->proxy;
+    dcfg.impersonate = cfg->impersonate;
+    dcfg.timeout_seconds = 10;
+    /* robots.txt is small; a cap keeps a hostile host from streaming forever. */
+    char *text = mi_download_fetch_text(&dcfg, url, 512 * 1024);
+    mi_politeness_set_robots(cfg->politeness, host, text ? text : "", cfg->user_agent);
+    if (text) {
+        mi_logf(MI_LOG_INFO, "crawl: read robots.txt for %s (%zu bytes)", host,
+                strlen(text));
+    }
+    free(text);
+    free(url);
+}
+
 int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
              mi_crawl_result *out) {
     if (!cfg || !site_url || !out) return MI_ERR_ARG;
@@ -956,6 +990,45 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
         int next_depth = 0;
         int got = frontier_take(f, &next_url, &next_depth);
         if (got <= 0) break;
+
+        /*
+         * robots.txt and pace, before the page is fetched.
+         *
+         * A crawler that ignores robots is a liability, and one that fetches as
+         * fast as the network allows turns a soft block into a hard one. Both
+         * are per host, and the rules are fetched once — the first time the walk
+         * reaches a host — then cached in the shared politeness state.
+         */
+        char *host = next_url ? mi_antibot_host_of(next_url) : NULL;
+        if (host && cfg->politeness) {
+            if (cfg->obey_robots) {
+                if (!mi_politeness_have_robots(cfg->politeness, host)) {
+                    fetch_robots(cfg, host);
+                }
+                if (!mi_politeness_allowed(cfg->politeness, host, next_url)) {
+                    mi_logf(MI_LOG_INFO, "crawl: robots.txt disallows %s", next_url);
+                    free(host);
+                    free(next_url);
+                    continue;
+                }
+            }
+            /* Wait out the host's interval, then record that we are asking. */
+            double wait = mi_politeness_delay(cfg->politeness, host);
+            if (wait > 0) {
+                if (now_seconds() + wait >= deadline) {
+                    /* Waiting would blow the budget; stop rather than overrun. */
+                    free(host);
+                    free(next_url);
+                    break;
+                }
+                struct timespec ts = {.tv_sec = (time_t)wait,
+                                      .tv_nsec = (long)((wait - (double)(time_t)wait) * 1e9)};
+                nanosleep(&ts, NULL);
+            }
+            mi_politeness_note_request(cfg->politeness, host);
+        }
+        free(host);
+
         read_page(out, cfg, f, next_url, next_depth, term, deadline, started, site_url);
         free(next_url);
         pages_read++;

@@ -208,6 +208,17 @@ typedef struct {
      */
     int share_brain;
     /*
+     * Whether a crawl honours robots.txt. On by default: that is what a crawler
+     * is. A user's explicit fetch of one URL is not a crawl and is not subject
+     * to it.
+     */
+    int obey_robots;
+    /*
+     * The default minimum seconds between requests to one host, when the host
+     * published no Crawl-delay. 0 disables pacing.
+     */
+    double crawl_interval_seconds;
+    /*
      * The ffmpeg binary.
      *
      * Used to read a manifest (an HLS or DASH URL is a playlist, not a file) and
