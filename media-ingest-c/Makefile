@@ -24,7 +24,8 @@ LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_identity.c $(SRC_DIR)/mi_captcha.c $(SRC_DIR)/mi_turso.c \
            $(SRC_DIR)/mi_impersonate.c $(SRC_DIR)/mi_antibot.c \
            $(SRC_DIR)/mi_browser_headers.c $(SRC_DIR)/mi_politeness.c \
-           $(SRC_DIR)/mi_html.c $(SRC_DIR)/mi_css.c \
+           $(SRC_DIR)/mi_html.c $(SRC_DIR)/mi_css.c $(SRC_DIR)/mi_xpath.c \
+           $(SRC_DIR)/mi_extract_rows.c \
            $(SRC_DIR)/mi_frontier.c \
            $(SRC_DIR)/mi_server.c
 CLI_SRC := $(SRC_DIR)/mi_cli.c
@@ -50,6 +51,8 @@ TEST_POLITENESS_SRC := tests/test_politeness.c
 TEST_CONDGET_SRC := tests/test_condget.c
 TEST_HTML_SRC := tests/test_html.c
 TEST_CSS_SRC := tests/test_css.c
+TEST_XPATH_SRC := tests/test_xpath.c
+TEST_EXTRACT_ROWS_SRC := tests/test_extract_rows.c
 
 .PHONY: all clean test
 
@@ -127,7 +130,13 @@ $(BUILD)/test_html: $(LIB_SRC) $(TEST_HTML_SRC) | $(BUILD)
 $(BUILD)/test_css: $(LIB_SRC) $(TEST_CSS_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_CSS_SRC) $(LDLIBS)
 
-test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate $(BUILD)/test_antibot $(BUILD)/test_browser_headers $(BUILD)/test_politeness $(BUILD)/test_condget $(BUILD)/test_html $(BUILD)/test_css
+$(BUILD)/test_xpath: $(LIB_SRC) $(TEST_XPATH_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_XPATH_SRC) $(LDLIBS)
+
+$(BUILD)/test_extract_rows: $(LIB_SRC) $(TEST_EXTRACT_ROWS_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_EXTRACT_ROWS_SRC) $(LDLIBS)
+
+test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate $(BUILD)/test_antibot $(BUILD)/test_browser_headers $(BUILD)/test_politeness $(BUILD)/test_condget $(BUILD)/test_html $(BUILD)/test_css $(BUILD)/test_xpath $(BUILD)/test_extract_rows
 	$(BUILD)/test_media_ingest
 	$(BUILD)/test_server
 	$(BUILD)/test_render
@@ -150,6 +159,8 @@ test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUI
 	$(BUILD)/test_condget
 	$(BUILD)/test_html
 	$(BUILD)/test_css
+	$(BUILD)/test_xpath
+	$(BUILD)/test_extract_rows
 
 clean:
 	rm -rf $(BUILD)
