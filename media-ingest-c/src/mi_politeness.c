@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "mi_politeness.h"
 #include "mi_util.h"
 

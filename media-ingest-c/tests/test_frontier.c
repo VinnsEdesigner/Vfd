@@ -150,8 +150,50 @@ static void test_turso_shared(void) {
     mi_frontier_free(b);
 }
 
+/* A claim older than the lease goes back to the queue; a fresh one does not. */
+static void test_sqlite_reclaim(void) {
+    char path[128];
+    snprintf(path, sizeof path, "/tmp/mi-frontier-reap-%d.db", (int)getpid());
+    unlink(path);
+    char err[256];
+    char run_id[64];
+    snprintf(run_id, sizeof run_id, "reap-%d", (int)getpid());
+
+    mi_frontier *f = mi_frontier_new_sqlite(path, run_id, err, sizeof err);
+    CHECK(f != NULL, "sqlite frontier builds for reclaim");
+    if (!f) return;
+    mi_frontier_push(f, "http://a/", 0);
+    mi_frontier_push(f, "http://b/", 0);
+
+    /* Claim both, so both are in-flight. */
+    char *u = NULL;
+    int d = -1;
+    CHECK(mi_frontier_take(f, &u, &d) == 1, "claim a");
+    free(u);
+    CHECK(mi_frontier_take(f, &u, &d) == 1, "claim b");
+    free(u);
+    CHECK(mi_frontier_pending(f) == 0, "both are claimed, none pending");
+
+    /* A long lease leaves the fresh claims alone. */
+    CHECK(mi_frontier_reclaim_stale(f, 3600) == 0, "a fresh claim is not reclaimed");
+    CHECK(mi_frontier_pending(f) == 0, "nothing came back yet");
+
+    /* A negative lease reclaims everything in-flight, which is what a worker
+     * that died would have left. */
+    int n = mi_frontier_reclaim_stale(f, -1);
+    CHECK(n >= 0, "reclaim runs");
+    CHECK(mi_frontier_pending(f) == 2, "both stale claims came back to the queue");
+    mi_frontier_free(f);
+
+    unlink(path);
+    char side[160];
+    snprintf(side, sizeof side, "%s-wal", path); unlink(side);
+    snprintf(side, sizeof side, "%s-shm", path); unlink(side);
+}
+
 int main(void) {
     test_memory_fifo();
+    test_sqlite_reclaim();
     test_memory_seen();
     test_sqlite_file();
     test_turso_shared();

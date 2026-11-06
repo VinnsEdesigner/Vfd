@@ -115,6 +115,15 @@ typedef struct {
      */
     const char *impersonate;
     /*
+     * Conditional-GET validators: what the last fetch of this URL returned.
+     *
+     * Sending these back is how an incremental crawl avoids re-downloading an
+     * unchanged page — the server answers 304 and the body is not transferred.
+     * NULL sends no condition, which fetches unconditionally.
+     */
+    const char *if_none_match;     /* an ETag */
+    const char *if_modified_since; /* an HTTP date */
+    /*
      * The anti-bot brain, shared across downloads so a host is solved once.
      *
      * NULL creates a temporary one for this call, which is fine for a single
@@ -187,6 +196,15 @@ typedef struct {
     char *content_type;  /* as sent; NULL when absent */
     int framable;        /* 1 unless the response forbids framing */
     char *frame_blocker; /* the header that forbade it, when one did */
+    /*
+     * The validators the response carried, so a caller can send them back on
+     * the next fetch and be told 304 instead of the whole page.
+     */
+    char *etag;
+    char *last_modified;
+    /* 1 when the server answered 304 Not Modified: the body is empty and the
+     * caller's cached copy is still current. */
+    int not_modified;
 } mi_fetch_info;
 
 void mi_fetch_info_free(mi_fetch_info *info);

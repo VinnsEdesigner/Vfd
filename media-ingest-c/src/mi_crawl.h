@@ -254,6 +254,15 @@ typedef struct {
      */
     const char *frontier_db_path;
     /*
+     * How long a claim may stand before another worker may take it back.
+     *
+     * A worker that dies mid-page leaves its claim; a claim older than this is
+     * assumed abandoned and re-queued. Long enough that a slow page is not
+     * stolen from a live worker, short enough that a dead one does not stall the
+     * run. 0 uses the default.
+     */
+    int frontier_lease_seconds;
+    /*
      * The browser pool to render with, or NULL to never render.
      *
      * Passed in rather than owned: the pool is Vyzor's single browser gate, and

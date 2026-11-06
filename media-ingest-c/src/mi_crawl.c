@@ -67,6 +67,7 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->frontier_token = NULL;
     cfg->frontier_run_id = NULL;
     cfg->frontier_db_path = NULL;
+    cfg->frontier_lease_seconds = 300;
     cfg->render_pool = NULL;
     cfg->interactive_pool = NULL;
     cfg->click_selectors = NULL;
@@ -976,6 +977,20 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
     }
     if (!f) f = mi_frontier_new_memory();
     if (!f) return MI_ERR_NOMEM;
+
+    /*
+     * A shared frontier is swept before the walk starts.
+     *
+     * A worker that died mid-page left its claim in place; without this the
+     * frontier slowly silts up with URLs no one will finish, and the crawl stops
+     * making progress without erroring. Only *stale* claims are taken, so a
+     * second worker already walking the same run keeps its in-flight pages.
+     */
+    if (cfg->frontier_run_id && *cfg->frontier_run_id) {
+        int lease = cfg->frontier_lease_seconds > 0 ? cfg->frontier_lease_seconds : 300;
+        int n = mi_frontier_reclaim_stale(f, lease);
+        if (n > 0) mi_logf(MI_LOG_INFO, "crawl: reclaimed %d stale claim(s)", n);
+    }
 
     mi_frontier_push(f, site_url, 0);
     strset_add(f, site_url);

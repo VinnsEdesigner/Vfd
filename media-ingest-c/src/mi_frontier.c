@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "mi_frontier.h"
 #include "mi_turso.h"
 #include "mi_util.h"
@@ -171,9 +172,15 @@ static int sqlite_mark_seen(mi_frontier *f, const char *url) {
  */
 static int sqlite_take(mi_frontier *f, char **url, int *depth) {
     pthread_mutex_lock(&f->lock);
+    /*
+     * The claim token is wall-clock, not monotonic: a reaper in another process
+     * has to be able to tell how old a claim is, and CLOCK_MONOTONIC has a
+     * different origin per process. The pid keeps two claims in the same second
+     * distinct.
+     */
     char token[64];
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    clock_gettime(CLOCK_REALTIME, &ts);
     snprintf(token, sizeof token, "%d-%lld.%09ld", (int)getpid(),
              (long long)ts.tv_sec, (long)ts.tv_nsec);
 
@@ -210,6 +217,51 @@ static int sqlite_take(mi_frontier *f, char **url, int *depth) {
     sqlite3_finalize(st);
     pthread_mutex_unlock(&f->lock);
     return result;
+}
+
+/*
+ * Re-queue claims older than the lease.
+ *
+ * A claim token is "<epoch>.<nanos>" with a pid prefix, so the age is the epoch
+ * part read back from the token. The cutoff is computed here and compared in
+ * SQL by string, which works because every token starts with the same-width
+ * epoch. Simpler and portable: read the stale tokens, then clear them.
+ */
+static int sqlite_reclaim_stale(mi_frontier *f, int lease_seconds) {
+    /*
+     * A negative lease means "reclaim everything in flight", which is what a
+     * caller wants at start-up before any worker has had a chance to be alive:
+     * nothing can be legitimately in progress yet. A zero lease uses the
+     * default. This is also what makes the behaviour testable without sleeping.
+     */
+    int reclaim_all = lease_seconds < 0;
+    if (lease_seconds == 0) lease_seconds = 300;
+    long long cutoff = (long long)time(NULL) - (lease_seconds > 0 ? lease_seconds : 0);
+
+    pthread_mutex_lock(&f->lock);
+    /* The token is "<pid>-<epoch>.<nanos>", so the epoch starts after the first
+     * '-' and the comparison is on the integer before the '.'. SQLite can do
+     * that with CAST over substr, which keeps it one statement. */
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(f->db,
+        reclaim_all
+            ? "UPDATE frontier SET claimed_at = NULL"
+              " WHERE run_id = ? AND claimed_at IS NOT NULL"
+            : "UPDATE frontier SET claimed_at = NULL"
+              " WHERE run_id = ? AND claimed_at IS NOT NULL"
+              " AND CAST(substr(claimed_at, instr(claimed_at, '-') + 1) AS INTEGER) < ?",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        pthread_mutex_unlock(&f->lock);
+        return -1;
+    }
+    sqlite3_bind_text(st, 1, f->run_id, -1, SQLITE_TRANSIENT);
+    if (!reclaim_all) sqlite3_bind_int64(st, 2, cutoff);
+    int step = sqlite3_step(st);
+    sqlite3_finalize(st);
+    int changed = (step == SQLITE_DONE) ? sqlite3_changes(f->db) : -1;
+    pthread_mutex_unlock(&f->lock);
+    return changed;
 }
 
 static int sqlite_empty(mi_frontier *f) {
@@ -315,7 +367,7 @@ static int turso_take(mi_frontier *f, char **url, int *depth) {
     for (int tries = 0; tries < 20 && result == 0; tries++) {
         char token[64];
         struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
+        clock_gettime(CLOCK_REALTIME, &ts);
         snprintf(token, sizeof token, "%d-%lld.%09ld", (int)getpid(),
                  (long long)ts.tv_sec, (long)ts.tv_nsec);
         char err[200];
@@ -361,6 +413,35 @@ static int turso_take(mi_frontier *f, char **url, int *depth) {
     }
     pthread_mutex_unlock(&f->lock);
     return result;
+}
+
+static int turso_reclaim_stale(mi_frontier *f, int lease_seconds) {
+    int reclaim_all = lease_seconds < 0;
+    if (lease_seconds == 0) lease_seconds = 300;
+    long long cutoff = (long long)time(NULL) - (lease_seconds > 0 ? lease_seconds : 0);
+    char cutoff_s[32];
+    snprintf(cutoff_s, sizeof cutoff_s, "%lld", cutoff);
+    mi_turso_arg args[] = {MI_TURSO_TEXT(f->run_id), MI_TURSO_INT(cutoff_s)};
+    char err[160];
+    int status = 0;
+    /* Same token shape as SQLite; libSQL has instr() and substr() too. */
+    mi_json *r = mi_turso_execute(
+        f->db_url, f->db_token,
+        reclaim_all
+            ? "UPDATE frontier SET claimed_at = NULL"
+              " WHERE run_id = ? AND claimed_at IS NOT NULL"
+            : "UPDATE frontier SET claimed_at = NULL"
+              " WHERE run_id = ? AND claimed_at IS NOT NULL"
+              " AND CAST(substr(claimed_at, instr(claimed_at, '-') + 1) AS INTEGER) < ?",
+        args, reclaim_all ? 1 : 2, &status, err, sizeof err);
+    if (!r) {
+        mi_logf(MI_LOG_ERROR, "frontier reclaim failed: %s", err);
+        return -1;
+    }
+    mi_json_value_free(r);
+    /* The row count is not returned by this shape; report "some" so the caller
+     * loops rather than assuming none. */
+    return 1;
 }
 
 static int turso_empty(mi_frontier *f) {
@@ -472,6 +553,15 @@ int mi_frontier_empty(mi_frontier *f) {
         case BACKEND_SQLITE: return sqlite_empty(f);
         case BACKEND_TURSO: return turso_empty(f);
         default: return f->head >= f->count;
+    }
+}
+
+int mi_frontier_reclaim_stale(mi_frontier *f, int lease_seconds) {
+    if (!f) return -1;
+    switch (f->kind) {
+        case BACKEND_SQLITE: return sqlite_reclaim_stale(f, lease_seconds);
+        case BACKEND_TURSO: return turso_reclaim_stale(f, lease_seconds);
+        default: return 0; /* nothing claimed for long in memory */
     }
 }
 

@@ -75,6 +75,20 @@ int mi_frontier_mark_seen(mi_frontier *f, const char *url);
 /* How many URLs are still to visit (unclaimed). -1 on error. */
 long mi_frontier_pending(mi_frontier *f);
 
+/*
+ * Return URLs whose claim has gone stale to the queue.
+ *
+ * A worker that dies mid-page leaves its claim in place, and without this the
+ * frontier slowly silts up with URLs no one will ever finish — the failure mode
+ * that makes a distributed crawl stop making progress without erroring. A claim
+ * older than `lease_seconds` is assumed abandoned and re-queued. Returns the
+ * number reclaimed, or -1 on error.
+ *
+ * Safe to call from any worker, at any time, on any backend; on the in-memory
+ * backend there is nothing to reclaim, so it returns 0.
+ */
+int mi_frontier_reclaim_stale(mi_frontier *f, int lease_seconds);
+
 void mi_frontier_free(mi_frontier *f);
 
 #endif

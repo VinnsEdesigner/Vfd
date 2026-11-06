@@ -777,6 +777,8 @@ void mi_fetch_info_free(mi_fetch_info *info) {
     free(info->final_url);
     free(info->content_type);
     free(info->frame_blocker);
+    free(info->etag);
+    free(info->last_modified);
     memset(info, 0, sizeof *info);
 }
 
@@ -832,6 +834,24 @@ static void apply_header_line(mi_fetch_info *info, char **csp, const char *ptr,
         while (len > 0 && (v[len - 1] == '\r' || v[len - 1] == '\n')) len--;
         free(info->content_type);
         info->content_type = mi_strndup(v, len);
+    }
+
+    /* The validators, so a caller can ask "has this changed?" next time. */
+    if (n > 5 && !strncasecmp(ptr, "ETag:", 5)) {
+        const char *v = ptr + 5;
+        while (*v == ' ' || *v == '\t') v++;
+        size_t len = n - (size_t)(v - ptr);
+        while (len > 0 && (v[len - 1] == '\r' || v[len - 1] == '\n')) len--;
+        free(info->etag);
+        info->etag = mi_strndup(v, len);
+    }
+    if (n > 14 && !strncasecmp(ptr, "Last-Modified:", 14)) {
+        const char *v = ptr + 14;
+        while (*v == ' ' || *v == '\t') v++;
+        size_t len = n - (size_t)(v - ptr);
+        while (len > 0 && (v[len - 1] == '\r' || v[len - 1] == '\n')) len--;
+        free(info->last_modified);
+        info->last_modified = mi_strndup(v, len);
     }
 }
 
@@ -944,14 +964,26 @@ char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
 
     membuf b = {0};
     struct curl_slist *headers = build_headers(cfg, NULL);
+    /* The conditional-GET conditions, when the caller has them. A server that
+     * still has the same version answers 304 and sends no body, which is how an
+     * incremental crawl avoids re-reading an unchanged page. */
+    char *inm = NULL, *ims = NULL;
+    if (cfg->if_none_match && *cfg->if_none_match) {
+        inm = mi_asprintf("If-None-Match: %s", cfg->if_none_match);
+        if (inm) headers = curl_slist_append(headers, inm);
+    }
+    if (cfg->if_modified_since && *cfg->if_modified_since) {
+        ims = mi_asprintf("If-Modified-Since: %s", cfg->if_modified_since);
+        if (ims) headers = curl_slist_append(headers, ims);
+    }
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_membuf);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &b);
-    if (info) {
-        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_document);
-        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &hctx);
-    }
+    /* Read the headers even when the caller did not ask for the framing info,
+     * so the validators are always available to a crawl. */
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_document);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &hctx);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, cfg->timeout_seconds);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
@@ -977,9 +1009,21 @@ char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
         }
     }
     free(hctx.csp);
+    free(inm);
+    free(ims);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
+    /*
+     * 304 is a success, not a failure: the caller's copy is current and there is
+     * nothing to transfer. It is reported so the caller can tell "unchanged"
+     * from "empty".
+     */
+    if (code == 304) {
+        if (info) info->not_modified = 1;
+        free(b.data);
+        return mi_strdup("");
+    }
     if (rc != CURLE_OK || code < 200 || code >= 300 || !b.data) {
         free(b.data);
         return NULL;
