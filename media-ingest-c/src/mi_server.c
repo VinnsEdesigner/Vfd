@@ -3585,6 +3585,9 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_key(&b, "not_modified");
         mi_json_int(&b, cr.not_modified);
         mi_json_raw(&b, ",");
+        mi_json_key(&b, "duplicates");
+        mi_json_int(&b, cr.duplicates);
+        mi_json_raw(&b, ",");
         mi_json_key(&b, "items");
         mi_json_raw(&b, "[");
         for (size_t i = 0; i < cr.hit_count; i++) {

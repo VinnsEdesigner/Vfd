@@ -24,6 +24,7 @@
 #include "mi_captcha.h"
 #include "mi_frontier.h"
 #include "mi_antibot.h"
+#include "mi_fingerprint.h"
 #include "mi_sitemap.h"
 #include "mi_politeness.h"
 #include "mi_download.h"
@@ -64,6 +65,8 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->politeness = NULL;
     cfg->obey_robots = 1;
     cfg->use_sitemap = 1;
+    cfg->dedup = 1;
+    cfg->dedup_distance = 3;
     cfg->user_agent = NULL;
     cfg->frontier_db_url = NULL;
     cfg->frontier_token = NULL;
@@ -85,6 +88,39 @@ static double now_seconds(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/* ------------------------------------------------------------------ */
+/* The dedup set: fingerprints of pages already read                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A small list of the fingerprints seen, with a linear scan. A crawl reads at
+ * most a few hundred pages, so a scan over 64-bit values is nothing next to the
+ * network, and it avoids a hash table for a bounded set.
+ */
+typedef struct {
+    mi_simhash *items;
+    size_t count, cap;
+} dedup_set;
+
+static int dedup_seen(const dedup_set *d, mi_simhash fp, int max_distance) {
+    for (size_t i = 0; i < d->count; i++) {
+        if (mi_simhash_similar(d->items[i], fp, max_distance)) return 1;
+    }
+    return 0;
+}
+
+static void dedup_add(dedup_set *d, mi_simhash fp) {
+    if (!fp) return;
+    if (d->count == d->cap) {
+        size_t want = d->cap ? d->cap * 2 : 64;
+        mi_simhash *g = mi_realloc(d->items, want * sizeof *g);
+        if (!g) return;
+        d->items = g;
+        d->cap = want;
+    }
+    d->items[d->count++] = fp;
 }
 
 /* ------------------------------------------------------------------ */
@@ -515,7 +551,7 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
  * what makes a JavaScript-built listing work.
  */
 static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
-                     frontier *f, const char *url, int depth,
+                     frontier *f, dedup_set *dedup, const char *url, int depth,
                      const char *term, double deadline, double started,
                      const char *start_url) {
     mi_download_config dcfg;
@@ -640,6 +676,23 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
             free(body);
             return 0;
         }
+    }
+    /*
+     * Content deduplication. The page is fingerprinted; if its content is a
+     * near-duplicate of one already read, it is not read again — but its links
+     * are still followed below, because they may reach pages that are new.
+     */
+    int dup = 0;
+    if (cfg->dedup && dedup && body) {
+        mi_html_node *doc = mi_html_parse(body, strlen(body));
+        mi_simhash fp = doc ? mi_simhash_page(doc) : 0;
+        if (doc) mi_html_free(doc);
+        if (fp && dedup_seen(dedup, fp, cfg->dedup_distance)) dup = 1;
+        if (fp) dedup_add(dedup, fp);
+    }
+    if (dup) {
+        res->duplicates++;
+        mi_logf(MI_LOG_INFO, "crawl: %s is a near-duplicate; links only", url);
     }
     if (cfg->brain && host) free(host);
 
@@ -1100,6 +1153,7 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
         if (n > 0) mi_logf(MI_LOG_INFO, "crawl: reclaimed %d stale claim(s)", n);
     }
 
+    dedup_set dedup = {0};
     mi_frontier_push(f, site_url, 0);
     strset_add(f, site_url);
 
@@ -1168,7 +1222,8 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
         }
         free(host);
 
-        read_page(out, cfg, f, next_url, next_depth, term, deadline, started, site_url);
+        read_page(out, cfg, f, &dedup, next_url, next_depth, term, deadline, started,
+                  site_url);
         free(next_url);
         pages_read++;
     }
@@ -1186,6 +1241,7 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
         }
     }
 
+    free(dedup.items);
     mi_frontier_free(f);
     return MI_OK;
 }

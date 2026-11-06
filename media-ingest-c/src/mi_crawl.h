@@ -132,6 +132,14 @@ typedef struct {
      * not the same as "the page was fetched and had no matches".
      */
     int not_modified;
+    /*
+     * Pages whose content was a near-duplicate of one already read.
+     *
+     * The same content appears under many URLs at scale — a product at several
+     * facets, a page at `?session=` and `?ref=`. Reporting the count lets a
+     * caller see the walk skipped them rather than that it found nothing.
+     */
+    int duplicates;
 } mi_crawl_result;
 
 void mi_crawl_result_free(mi_crawl_result *res);
@@ -249,6 +257,16 @@ typedef struct {
      * turns it off.
      */
     int use_sitemap;
+    /*
+     * Whether to skip a page whose *content* is a near-duplicate of one already
+     * read. A page is fingerprinted with a SimHash, and a page within
+     * `dedup_distance` bits of one seen is not read again — though its links are
+     * still followed, because they may reach new pages. On by default.
+     */
+    int dedup;
+    /* The near-duplicate threshold, in differing bits of the 64-bit fingerprint.
+     * 0 uses the default (3). */
+    int dedup_distance;
     /* The User-Agent to send. NULL uses the built-in default. */
     const char *user_agent;
     /*
