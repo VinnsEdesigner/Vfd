@@ -230,6 +230,23 @@ int mi_interactive_go_forward(mi_interactive *it);
 void mi_interactive_stop(mi_interactive *it);
 void mi_interactive_screenshot(mi_interactive *it);
 
+/*
+ * Run JavaScript in the page, and collect the answer later.
+ *
+ * The answer is asynchronous like every other evaluate: this queues the script,
+ * and `mi_interactive_eval_result` returns the string the page produced once a
+ * pump has read it. Used by the captcha injection, which runs a script the caller
+ * wrote to plant a solved token; a caller that wants a value rather than an
+ * effect should return it from the script.
+ *
+ * `expression` is wrapped so its value is returned by value.
+ */
+void mi_interactive_eval(mi_interactive *it, const char *expression);
+
+/* The result of the last `mi_interactive_eval`, or NULL. Owned by the session,
+ * valid until the next eval or pump. */
+const char *mi_interactive_eval_result(mi_interactive *it);
+
 /* A mouse event. `type` is a CDP mouse type (mousePressed/mouseReleased/
  * mouseMoved/mouseWheel). Unknown types are refused by the browser, not here. */
 void mi_interactive_mouse(mi_interactive *it, const char *type, double x, double y,

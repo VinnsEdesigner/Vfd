@@ -165,6 +165,16 @@ struct mi_interactive {
      */
     int dom_probe_id;
     char *dom_links;
+    /*
+     * A caller's own evaluate, and its answer.
+     *
+     * The captcha injection needs to run JavaScript the caller wrote — the
+     * script that plants a solved token — which is not one of the built-in
+     * probes. The result is kept as text until the caller collects it, because
+     * the exchange is asynchronous like every other evaluate.
+     */
+    int eval_probe_id;
+    char *eval_result;
 
     /*
      * The page's history, so Back and Forward can be offered.
@@ -1171,6 +1181,14 @@ static void handle_message(mi_interactive *it, const char *json) {
             free(it->manifest_url);
             it->manifest_url = NULL;
         }
+        if (it->resp_ok && id == it->eval_probe_id) {
+            it->eval_probe_id = 0;
+            const mi_json *result = mi_json_get(root, "result");
+            const mi_json *inner = mi_json_get(result, "result");
+            const char *v = mi_json_get_string(inner, "value", NULL);
+            free(it->eval_result);
+            it->eval_result = v ? mi_strdup(v) : NULL;
+        }
         if (it->resp_ok && id == it->editing_probe_id) {
             it->editing_probe_id = 0;
             const mi_json *result = mi_json_get(root, "result");
@@ -1750,6 +1768,23 @@ static void touched(mi_interactive *it) {
     if (it) it->last_activity = mono_seconds();
 }
 
+void mi_interactive_eval(mi_interactive *it, const char *expression) {
+    if (!it || it->closed || !expression) return;
+    mi_json_buf b;
+    mi_json_init(&b);
+    /* returnByValue so the answer comes back as a value, not an object handle
+     * the caller would have to fetch separately. */
+    mi_json_raw(&b, "{\"expression\":");
+    mi_json_string(&b, expression);
+    mi_json_raw(&b, ",\"returnByValue\":true,\"awaitPromise\":true}");
+    it->eval_probe_id = cdp_command(it, "Runtime.evaluate", mi_json_data(&b));
+    mi_json_free(&b);
+}
+
+const char *mi_interactive_eval_result(mi_interactive *it) {
+    return it ? it->eval_result : NULL;
+}
+
 void mi_interactive_navigate(mi_interactive *it, const char *url) {
     if (!it || it->closed || !url) return;
     if (!mi_interactive_url_allowed(url)) return;
@@ -2166,6 +2201,7 @@ void mi_interactive_close(mi_interactive *it) {
     free(it->resp_json);
     free(it->manifest_url);
     free(it->dom_links);
+    free(it->eval_result);
     pending_clear(it);
     free(it->pending);
     mi_mediawatch_free(it->media);
