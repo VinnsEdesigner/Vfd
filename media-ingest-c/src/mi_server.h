@@ -201,6 +201,13 @@ typedef struct {
      */
     const char *frontier_db_path;
     /*
+     * Whether to share one anti-bot brain across crawls and downloads.
+     *
+     * On by default: a host solved once stays solved. Off gives each operation a
+     * fresh brain, which is only useful for reproducing a first-contact block.
+     */
+    int share_brain;
+    /*
      * The ffmpeg binary.
      *
      * Used to read a manifest (an HLS or DASH URL is a playlist, not a file) and

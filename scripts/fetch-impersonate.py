@@ -55,7 +55,20 @@ def main() -> int:
 
     headers = {}
     if args.user_agent:
-        headers["User-Agent"] = args.user_agent
+        # A caller-supplied User-Agent must not disagree with the fingerprint we
+        # are about to present: curl_cffi sends `sec-ch-ua` for the impersonated
+        # browser, and a UA from a different family alongside it is the exact
+        # header incoherence a checking site blocks on. So the UA is used only
+        # when it belongs to the same family; otherwise coherence wins and the
+        # impersonated browser's own UA is kept.
+        if _same_family(args.user_agent, target):
+            headers["User-Agent"] = args.user_agent
+        else:
+            print(
+                f"note: ignoring User-Agent {args.user_agent!r}; it does not match "
+                f"the impersonated {target!r} and would break header coherence",
+                file=sys.stderr,
+            )
     cookies = _load_cookies(args.cookies_file)
 
     proxies = {"http": args.proxy, "https": args.proxy} if args.proxy else None
@@ -104,6 +117,39 @@ def main() -> int:
             print(f"cannot write {args.meta_out}: {exc}", file=sys.stderr)
             return 7
     return 0
+
+
+def _ua_family(ua: str) -> str:
+    """The browser family a User-Agent string names."""
+    low = ua.lower()
+    if "firefox" in low:
+        return "firefox"
+    if "edg/" in low:
+        return "edge"
+    if "chrome" in low or "chromium" in low:
+        return "chrome"
+    if "safari" in low:
+        return "safari"
+    return "unknown"
+
+
+def _same_family(ua: str, target: str) -> bool:
+    """Whether a User-Agent belongs to the family the target impersonates.
+
+    Edge and Chrome share a Chromium fingerprint, so either is coherent with a
+    chrome target; Safari is not.
+    """
+    ua_fam = _ua_family(ua)
+    tgt_fam = target.split("1")[0].split("_")[0].lower()
+    if ua_fam == "unknown":
+        return False
+    if tgt_fam.startswith("chrome") or tgt_fam.startswith("edge"):
+        return ua_fam in ("chrome", "edge")
+    if tgt_fam.startswith("firefox"):
+        return ua_fam == "firefox"
+    if tgt_fam.startswith("safari"):
+        return ua_fam == "safari"
+    return False
 
 
 def _newest(family: str) -> str:

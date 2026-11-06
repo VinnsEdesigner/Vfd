@@ -157,6 +157,10 @@ struct mi_server {
      * stream of JPEG frames. Its own pool and gate again, because it holds a
      * browser *and* an X server for as long as it runs. */
     mi_rtc_pool *rtc;
+    /* The anti-bot brain, shared by every crawl and download this server runs,
+     * so a host is solved once rather than per request. NULL when sharing is
+     * off. */
+    mi_antibot *brain;
 };
 
 /* ------------------------------------------------------------------ */
@@ -314,6 +318,7 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->frontier_db_url = NULL;
     cfg->frontier_token = NULL;
     cfg->frontier_db_path = NULL;
+    cfg->share_brain = 1;
     {
         const char *fu = getenv("MI_FRONTIER_DB_URL");
         if (fu && *fu) cfg->frontier_db_url = mi_strdup(fu);
@@ -1592,6 +1597,7 @@ static void *download_worker(void *arg) {
     dcfg.impersonate = srv->cfg.impersonate;
     dcfg.identity_retries = srv->cfg.identity_retries;
     dcfg.rotate_identity = srv->cfg.rotate_identity;
+    dcfg.brain = srv->brain;
 
     char *out_dir = j->out_dir ? mi_strdup(j->out_dir)
                                : mi_asprintf("%s/%s", srv->download_dir, j->id);
@@ -3337,6 +3343,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                 ccfg.frontier_run_id = run_id;
             } else if (srv->cfg.frontier_db_path && srv->cfg.frontier_db_path[0]) {
                 ccfg.frontier_db_path = srv->cfg.frontier_db_path;
+        ccfg.brain = srv->brain;
                 ccfg.frontier_run_id = run_id;
             }
         }
@@ -3417,6 +3424,9 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, ",");
         mi_json_key(&b, "challenges_seen");
         mi_json_int(&b, cr.challenges_seen);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "blocked");
+        mi_json_int(&b, cr.blocked);
         mi_json_raw(&b, ",");
         mi_json_key(&b, "items");
         mi_json_raw(&b, "[");
@@ -4714,6 +4724,15 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
     srv->stop = 0;
     pthread_mutex_init(&srv->lock, NULL);
 
+    /* The anti-bot brain, one per process by default, so a host solved once
+     * stays solved across crawls and downloads. */
+    if (cfg->share_brain) {
+        srv->brain = mi_antibot_new();
+        /* The proxy pool is the same list the identity pool uses, so a refused
+         * proxy is parked for both. */
+        mi_antibot_set_proxies(srv->brain, cfg->proxy);
+    }
+
     /* Build the renderer once, here, so its concurrency gate is a property of
      * the process rather than of a request. A pool with no browser still
      * exists; it reports MI_RENDER_NO_BROWSER rather than crashing. */
@@ -4816,6 +4835,7 @@ void mi_server_free(mi_server *srv) {
     free((char *)srv->cfg.frontier_db_url);
     free((char *)srv->cfg.frontier_token);
     free((char *)srv->cfg.frontier_db_path);
+    mi_antibot_free(srv->brain);
     mi_render_pool_free(srv->renderer);
     mi_interactive_pool_free(srv->driver);
     mi_rtc_pool_free(srv->rtc);

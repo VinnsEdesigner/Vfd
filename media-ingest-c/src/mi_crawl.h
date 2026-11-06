@@ -30,6 +30,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mi_antibot.h"
+
 /* One selectable quality of a resolved stream. */
 typedef struct {
     int height;
@@ -117,6 +119,12 @@ typedef struct {
      * file matched", which are very different answers to the same empty result.
      */
     int challenges_seen;
+    /*
+     * Pages that answered with a *soft* block — HTTP 200 carrying a wall rather
+     * than content. Reported separately because a soft block is the failure that
+     * looks like success, and a caller should be able to see it happened.
+     */
+    int blocked;
 } mi_crawl_result;
 
 void mi_crawl_result_free(mi_crawl_result *res);
@@ -203,6 +211,16 @@ typedef struct {
      * this reaches the extractor, which can. NULL is off.
      */
     const char *impersonate;
+    /*
+     * The anti-bot brain, shared with the download path, or NULL.
+     *
+     * A crawl makes many requests to one host, which is exactly where sticky
+     * identity and per-host backoff matter most: without a brain, every page is
+     * a fresh gamble and a host that is refusing us is hammered page after page.
+     * With one, a host that is refusing is skipped until its cooldown, and the
+     * identity that worked for it is reused.
+     */
+    mi_antibot *brain;
     /* The User-Agent to send. NULL uses the built-in default. */
     const char *user_agent;
     /*

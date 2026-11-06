@@ -23,6 +23,7 @@
 #include "mi_browse.h"
 #include "mi_captcha.h"
 #include "mi_frontier.h"
+#include "mi_antibot.h"
 #include "mi_download.h"
 #include "mi_extract.h"
 #include "mi_interactive.h"
@@ -57,6 +58,7 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->cookies_text = NULL;
     cfg->proxy = NULL;
     cfg->impersonate = NULL;
+    cfg->brain = NULL;
     cfg->user_agent = NULL;
     cfg->frontier_db_url = NULL;
     cfg->frontier_token = NULL;
@@ -536,8 +538,36 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
     int room = max_hits - (int)res->hit_count;
     if (room < 0) room = 0;
 
+    /*
+     * A host in cooldown is not fetched.
+     *
+     * A crawl makes many requests to one host, so a host that has been refusing
+     * us would be hammered page after page — which turns a soft block into a
+     * hard one. The brain remembers the cooldown; the walk honours it.
+     */
+    char *host = cfg->brain ? mi_antibot_host_of(url) : NULL;
+    if (cfg->brain && host) {
+        int cd = mi_antibot_cooldown(cfg->brain, host);
+        if (cd > 0) {
+            mi_logf(MI_LOG_INFO, "crawl: %s is in cooldown for %ds; skipping", host, cd);
+            free(host);
+            return 0;
+        }
+        /* Reuse the identity that worked for this host, so the walk does not
+         * present a new face on every page. */
+        mi_site_identity id;
+        if (mi_antibot_recall_identity(cfg->brain, host, &id)) {
+            if (id.proxy) dcfg.proxy = id.proxy;
+            if (id.impersonate) dcfg.impersonate = id.impersonate;
+            if (id.user_agent) dcfg.user_agent = id.user_agent;
+        }
+    }
+
     char *body = mi_download_fetch_text(&dcfg, url, CRAWL_MAX_BODY);
     res->fetched++;
+    if (cfg->brain && host) {
+        if (body) mi_antibot_note_success(cfg->brain, host);
+    }
 
     /*
      * A challenge is not content. Recognising it here means the walk reports
@@ -551,10 +581,30 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
             mi_logf(MI_LOG_INFO, "crawl: %s answered with a %s challenge", url,
                     mi_captcha_kind_name(ch.kind));
             mi_captcha_challenge_free(&ch);
+            if (cfg->brain && host)
+                mi_antibot_note_block(cfg->brain, host, MI_BLOCK_CAPTCHA);
+            free(host);
             free(body);
             return 0;
         }
     }
+    /*
+     * A soft block: a 200 whose body is a wall. This is the failure that looks
+     * like success, so it is counted and recorded rather than read for links.
+     */
+    if (body) {
+        mi_block_kind soft = mi_antibot_soft_block(body, strlen(body));
+        if (soft != MI_BLOCK_NONE) {
+            res->blocked++;
+            mi_logf(MI_LOG_INFO, "crawl: %s is a soft block (%s)", url,
+                    mi_antibot_kind_name(soft));
+            if (cfg->brain && host) mi_antibot_note_block(cfg->brain, host, soft);
+            free(host);
+            free(body);
+            return 0;
+        }
+    }
+    if (cfg->brain && host) free(host);
 
     int links = 0, hits = 0, rendered = 0;
     if (body) {
