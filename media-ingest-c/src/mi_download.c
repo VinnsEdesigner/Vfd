@@ -1076,6 +1076,9 @@ char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
     long code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
     if (info) {
+        /* The status is reported for every document fetch, not just a POST: a
+         * link check and a login both judge the response by it. */
+        info->status = (int)code;
         char *final_url = NULL;
         curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &final_url);
         if (final_url && strcmp(final_url, url) != 0) {
