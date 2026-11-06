@@ -22,6 +22,7 @@
 
 #include "mi_browse.h"
 #include "mi_captcha.h"
+#include "mi_frontier.h"
 #include "mi_download.h"
 #include "mi_extract.h"
 #include "mi_interactive.h"
@@ -57,6 +58,9 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->proxy = NULL;
     cfg->impersonate = NULL;
     cfg->user_agent = NULL;
+    cfg->frontier_db_url = NULL;
+    cfg->frontier_token = NULL;
+    cfg->frontier_run_id = NULL;
     cfg->render_pool = NULL;
     cfg->interactive_pool = NULL;
     cfg->click_selectors = NULL;
@@ -75,89 +79,39 @@ static double now_seconds(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* The frontier                                                        */
+/* The frontier and the visited set                                    */
 /* ------------------------------------------------------------------ */
 
-typedef struct {
-    char *url;
-    int depth;
-} frontier_entry;
-
-typedef struct {
-    frontier_entry *items;
-    size_t head; /* the next to take */
-    size_t count;
-    size_t cap;
-} frontier;
+/*
+ * The queue and the seen-set are `mi_frontier` (see mi_frontier.h): an in-process
+ * queue, or one shared through Turso so several workers walk one site once. The
+ * walk does not care which it was given — it pushes, takes, and marks seen.
+ *
+ * These wrappers keep the call sites readable. `strset_has` is expressed through
+ * `mark_seen`: "already seen" is exactly "not newly added", which is the atomic
+ * operation the shared backend provides.
+ */
+typedef mi_frontier frontier;
 
 static int frontier_push(frontier *f, const char *url, int depth) {
-    if (f->count == f->cap) {
-        size_t want = f->cap ? f->cap * 2 : 64;
-        frontier_entry *grown = mi_realloc(f->items, want * sizeof *grown);
-        if (!grown) return -1;
-        f->items = grown;
-        f->cap = want;
-    }
-    f->items[f->count].url = mi_strdup(url);
-    if (!f->items[f->count].url) return -1;
-    f->items[f->count].depth = depth;
-    f->count++;
-    return 0;
+    return mi_frontier_push(f, url, depth);
 }
 
-static int frontier_empty(const frontier *f) { return f->head >= f->count; }
-
-/** Take the next entry. The frontier keeps ownership of the string; the caller
- *  must not free it. */
-static frontier_entry frontier_take(frontier *f) {
-    frontier_entry e = f->items[f->head];
-    f->head++;
-    return e;
+static int frontier_empty(const frontier *f) {
+    return mi_frontier_empty((mi_frontier *)f);
 }
 
-static void frontier_free(frontier *f) {
-    for (size_t i = 0; i < f->count; i++) free(f->items[i].url);
-    free(f->items);
-    memset(f, 0, sizeof *f);
+/* Take the next URL. Returns 1 and sets the out-params, 0 when empty. The URL is
+ * owned by the caller. */
+static int frontier_take(frontier *f, char **url, int *depth) {
+    return mi_frontier_take(f, url, depth);
 }
 
-/* ------------------------------------------------------------------ */
-/* The visited set                                                     */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    char **items;
-    size_t count, cap;
-} strset;
-
-static int strset_add(strset *s, const char *v) {
-    for (size_t i = 0; i < s->count; i++) {
-        if (!strcmp(s->items[i], v)) return 0; /* already there */
-    }
-    if (s->count == s->cap) {
-        size_t want = s->cap ? s->cap * 2 : 128;
-        char **grown = mi_realloc(s->items, want * sizeof *grown);
-        if (!grown) return -1;
-        s->items = grown;
-        s->cap = want;
-    }
-    s->items[s->count] = mi_strdup(v);
-    if (!s->items[s->count]) return -1;
-    s->count++;
-    return 1;
+static int strset_has(frontier *f, const char *url) {
+    return !mi_frontier_mark_seen(f, url);
 }
-
-static int strset_has(const strset *s, const char *v) {
-    for (size_t i = 0; i < s->count; i++) {
-        if (!strcmp(s->items[i], v)) return 1;
-    }
-    return 0;
-}
-
-static void strset_free(strset *s) {
-    for (size_t i = 0; i < s->count; i++) free(s->items[i]);
-    free(s->items);
-    memset(s, 0, sizeof *s);
+static int strset_add(frontier *f, const char *url) {
+    return mi_frontier_mark_seen(f, url);
 }
 
 /* ------------------------------------------------------------------ */
@@ -421,7 +375,7 @@ static int is_asset(const char *url) {
  * actually used, so the caller can report that the page needed it.
  */
 static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
-                            frontier *f, strset *visited, const char *url, int depth,
+                            frontier *f, const char *url, int depth,
                             const char *term, double deadline, int *rendered) {
     *rendered = 0;
     if (!cfg->interactive_pool || !mi_interactive_pool_available(cfg->interactive_pool)) {
@@ -527,7 +481,7 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
                             free(fname);
                         }
                         /* Follow it if it looks like a page to walk into. */
-                        if (is_page(u) && depth < cfg->max_depth && !strset_has(visited, u)) {
+                        if (is_page(u) && depth < cfg->max_depth && !strset_has(f, u)) {
                             frontier_push(f, u, depth + 1);
                         }
                     }
@@ -552,7 +506,7 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
  * what makes a JavaScript-built listing work.
  */
 static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
-                     frontier *f, strset *visited, const char *url, int depth,
+                     frontier *f, const char *url, int depth,
                      const char *term, double deadline, double started,
                      const char *start_url) {
     mi_download_config dcfg;
@@ -625,7 +579,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                         free(h2);
                         if (!same) { res->skipped_offsite++; continue; }
                     }
-                    if (strset_has(visited, u)) continue;
+                    if (strset_has(f, u)) continue;
                     frontier_push(f, u, depth + 1);
                 }
             }
@@ -790,7 +744,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         res->rendered < (cfg->max_browser_pages > 0 ? cfg->max_browser_pages : 3)) {
         if (cfg->interactive_pool && mi_interactive_pool_available(cfg->interactive_pool)) {
             int was_rendered = 0;
-            hits += read_page_driven(res, cfg, f, visited, url, depth, term, deadline,
+            hits += read_page_driven(res, cfg, f, url, depth, term, deadline,
                                      &was_rendered);
             if (was_rendered) {
                 /*
@@ -825,7 +779,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                         for (size_t i = 0; i < br.count; i++) {
                             const char *u = br.items[i].url;
                             if (!u || !is_page(u)) continue;
-                            if (strset_has(visited, u)) continue;
+                            if (strset_has(f, u)) continue;
                             frontier_push(f, u, depth + 1);
                         }
                     }
@@ -908,30 +862,41 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
     double started = now_seconds();
     double deadline = started + budget;
 
-    frontier f = {0};
-    strset visited = {0};
-    frontier_push(&f, site_url, 0);
-    strset_add(&visited, site_url);
+    /*
+     * The frontier: an in-process queue, or one shared through Turso when the
+     * caller named a database and a run id. A shared frontier is how several
+     * crawlers walk one site once rather than once each.
+     */
+    frontier *f = NULL;
+    if (cfg->frontier_db_url && *cfg->frontier_db_url && cfg->frontier_run_id &&
+        *cfg->frontier_run_id) {
+        char ferr[256];
+        f = mi_frontier_new_turso(cfg->frontier_db_url, cfg->frontier_token,
+                                  cfg->frontier_run_id, ferr, sizeof ferr);
+        if (!f) {
+            mi_logf(MI_LOG_ERROR, "crawl: shared frontier unavailable (%s); "
+                                  "falling back to an in-process queue", ferr);
+        }
+    }
+    if (!f) f = mi_frontier_new_memory();
+    if (!f) return MI_ERR_NOMEM;
+
+    mi_frontier_push(f, site_url, 0);
+    strset_add(f, site_url);
 
     int pages_read = 0;
-    while (!frontier_empty(&f)) {
+    while (!frontier_empty(f)) {
         if (pages_read >= max_pages) break;
         if ((int)out->hit_count >= max_hits) break;
         if (now_seconds() >= deadline) break;
 
-        /*
-         * The frontier owns the URL, so it is *not* freed here — `frontier_free`
-         * frees every entry it still holds, and freeing one here as well is a
-         * double free. The entry stays in the array; only `head` moves.
-         */
-        frontier_entry e = frontier_take(&f);
-        read_page(out, cfg, &f, &visited, e.url, e.depth, term, deadline, started,
-                  site_url);
+        char *next_url = NULL;
+        int next_depth = 0;
+        int got = frontier_take(f, &next_url, &next_depth);
+        if (got <= 0) break;
+        read_page(out, cfg, f, next_url, next_depth, term, deadline, started, site_url);
+        free(next_url);
         pages_read++;
-
-        /* Mark everything now queued as visited, so two pages linking the same
-         * third do not both enqueue it. */
-        for (size_t i = f.head; i < f.count; i++) strset_add(&visited, f.items[i].url);
     }
 
     /* Best match first, and among equals the file rather than a page about it —
@@ -947,7 +912,6 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
         }
     }
 
-    frontier_free(&f);
-    strset_free(&visited);
+    mi_frontier_free(f);
     return MI_OK;
 }

@@ -185,6 +185,13 @@ typedef struct {
     const char *captcha_provider;
     const char *captcha_api_key;
     /*
+     * A shared crawl frontier, so several Vyzors walk one site once rather than
+     * once each. When both are set, a crawl request's `run_id` puts its queue in
+     * this Turso database. The token is a credential and is never returned.
+     */
+    const char *frontier_db_url;
+    const char *frontier_token;
+    /*
      * The ffmpeg binary.
      *
      * Used to read a manifest (an HLS or DASH URL is a playlist, not a file) and

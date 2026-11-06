@@ -308,6 +308,14 @@ void mi_server_config_init(mi_server_config *cfg) {
         const char *ck = getenv("MI_CAPTCHA_KEY");
         if (ck && *ck) cfg->captcha_api_key = mi_strdup(ck);
     }
+    cfg->frontier_db_url = NULL;
+    cfg->frontier_token = NULL;
+    {
+        const char *fu = getenv("MI_FRONTIER_DB_URL");
+        if (fu && *fu) cfg->frontier_db_url = mi_strdup(fu);
+        const char *ft = getenv("MI_FRONTIER_TOKEN");
+        if (ft && *ft) cfg->frontier_token = mi_strdup(ft);
+    }
     {
         const char *ck = getenv("MI_COOKIES_FILE");
         if (ck && *ck) {
@@ -3310,6 +3318,18 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ccfg.cookies_text = srv->cfg.cookies_text;
         ccfg.proxy = srv->cfg.proxy;
         ccfg.impersonate = srv->cfg.impersonate;
+        /*
+         * A shared frontier, when the operator configured one and the caller
+         * named a run. The run id groups one logical crawl: every worker with the
+         * same id shares its queue and its seen-set.
+         */
+        const char *run_id = mi_json_get_string(in, "run_id", NULL);
+        if (srv->cfg.frontier_db_url && srv->cfg.frontier_db_url[0] && run_id &&
+            *run_id) {
+            ccfg.frontier_db_url = srv->cfg.frontier_db_url;
+            ccfg.frontier_token = srv->cfg.frontier_token;
+            ccfg.frontier_run_id = run_id;
+        }
         int depth = (int)mi_json_get_number(in, "depth", 0);
         int pages = (int)mi_json_get_number(in, "max_pages", 0);
         int budget = (int)mi_json_get_number(in, "budget_seconds", 0);
@@ -4329,6 +4349,12 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, ",");
         mi_json_key(&b, "captcha_key_set");
         mi_json_bool(&b, srv->cfg.captcha_api_key && *srv->cfg.captcha_api_key);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "frontier_db_url");
+        mi_json_string(&b, srv->cfg.frontier_db_url);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "frontier_token_set");
+        mi_json_bool(&b, srv->cfg.frontier_token && *srv->cfg.frontier_token);
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
@@ -4348,14 +4374,17 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         const mi_json *retries_v = mi_json_get(in, "identity_retries");
         const mi_json *cprov_v = mi_json_get(in, "captcha_provider");
         const mi_json *ckey_v = mi_json_get(in, "captcha_api_key");
+        const mi_json *furl_v = mi_json_get(in, "frontier_db_url");
+        const mi_json *ftok_v = mi_json_get(in, "frontier_token");
         if (!cookies_v && !proxy_v && !impersonate_v && !retries_v && !cprov_v &&
-            !ckey_v) {
+            !ckey_v && !furl_v && !ftok_v) {
             send_error(fd, 400, "Bad Request", "nothing to set", cors);
             mi_json_value_free(in);
             return;
         }
         const char *cookies = NULL, *proxy = NULL, *impersonate = NULL;
         const char *cprov = NULL, *ckey = NULL;
+        const char *furl = NULL, *ftok = NULL;
         int retries = -1;
         if (cookies_v) {
             if (cookies_v->type != MI_JSON_STRING && cookies_v->type != MI_JSON_NULL) {
@@ -4415,6 +4444,22 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             }
             ckey = ckey_v->string;
         }
+        if (furl_v) {
+            if (furl_v->type != MI_JSON_STRING && furl_v->type != MI_JSON_NULL) {
+                send_error(fd, 400, "Bad Request", "frontier_db_url must be a string", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            furl = furl_v->string;
+        }
+        if (ftok_v) {
+            if (ftok_v->type != MI_JSON_STRING && ftok_v->type != MI_JSON_NULL) {
+                send_error(fd, 400, "Bad Request", "frontier_token must be a string", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            ftok = ftok_v->string;
+        }
         pthread_mutex_lock(&srv->lock);
         if (cookies_v) {
             free((char *)srv->cfg.cookies_text);
@@ -4437,6 +4482,14 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         if (ckey_v) {
             free((char *)srv->cfg.captcha_api_key);
             srv->cfg.captcha_api_key = (ckey && *ckey) ? mi_strdup(ckey) : NULL;
+        }
+        if (furl_v) {
+            free((char *)srv->cfg.frontier_db_url);
+            srv->cfg.frontier_db_url = (furl && *furl) ? mi_strdup(furl) : NULL;
+        }
+        if (ftok_v) {
+            free((char *)srv->cfg.frontier_token);
+            srv->cfg.frontier_token = (ftok && *ftok) ? mi_strdup(ftok) : NULL;
         }
         int cookie_set = srv->cfg.cookies_text && *srv->cfg.cookies_text;
         int proxy_set = srv->cfg.proxy && *srv->cfg.proxy;
@@ -4579,6 +4632,10 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
                                     ? mi_strdup(cfg->captcha_provider) : NULL;
     srv->cfg.captcha_api_key = (cfg->captcha_api_key && *cfg->captcha_api_key)
                                    ? mi_strdup(cfg->captcha_api_key) : NULL;
+    srv->cfg.frontier_db_url = (cfg->frontier_db_url && *cfg->frontier_db_url)
+                                   ? mi_strdup(cfg->frontier_db_url) : NULL;
+    srv->cfg.frontier_token = (cfg->frontier_token && *cfg->frontier_token)
+                                  ? mi_strdup(cfg->frontier_token) : NULL;
     srv->download_dir = mi_strdup(cfg->work_dir ? cfg->work_dir : "./downloads");
     srv->listen_fd = -1;
     srv->stop = 0;
@@ -4682,6 +4739,8 @@ void mi_server_free(mi_server *srv) {
     free((char *)srv->cfg.impersonate);
     free((char *)srv->cfg.captcha_provider);
     free((char *)srv->cfg.captcha_api_key);
+    free((char *)srv->cfg.frontier_db_url);
+    free((char *)srv->cfg.frontier_token);
     mi_render_pool_free(srv->renderer);
     mi_interactive_pool_free(srv->driver);
     mi_rtc_pool_free(srv->rtc);

@@ -206,6 +206,15 @@ typedef struct {
     /* The User-Agent to send. NULL uses the built-in default. */
     const char *user_agent;
     /*
+     * A shared frontier, so several crawlers walk one site once rather than once
+     * each. When all three are set the queue lives in a Turso database under
+     * `run_id`; otherwise the walk uses an in-process queue. The token is a
+     * credential and is never logged.
+     */
+    const char *frontier_db_url;
+    const char *frontier_token;
+    const char *frontier_run_id;
+    /*
      * The browser pool to render with, or NULL to never render.
      *
      * Passed in rather than owned: the pool is Vyzor's single browser gate, and
