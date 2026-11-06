@@ -15,6 +15,7 @@
 #include "mi_extract.h"
 #include "mi_identity.h"
 #include "mi_impersonate.h"
+#include "mi_json.h"
 #include "mi_util.h"
 
 #define MI_HEADER_SNIFF 8192
@@ -752,10 +753,16 @@ typedef struct {
     char *csp; /* Content-Security-Policy, when the response carries one */
 } doc_header_ctx;
 
-static size_t header_document(char *ptr, size_t size, size_t nmemb, void *userdata) {
-    doc_header_ctx *ctx = userdata;
-    size_t n = size * nmemb;
-    if (!ctx || !ctx->info) return n;
+/*
+ * Apply one response header line to the info.
+ *
+ * Shared by the libcurl path and the impersonation helper's path, so the rule
+ * for "may this page be framed" lives in exactly one place — a page routed
+ * through the helper must get the same framing answer as one fetched by curl.
+ */
+static void apply_header_line(mi_fetch_info *info, char **csp, const char *ptr,
+                              size_t n) {
+    if (!info) return;
 
     /* X-Frame-Options: DENY or SAMEORIGIN both forbid another origin framing
      * this page. A value that merely whitelists some other origin also blocks
@@ -766,10 +773,10 @@ static size_t header_document(char *ptr, size_t size, size_t nmemb, void *userda
         while (*v == ' ' || *v == '\t') v++;
         if (!strncasecmp(v, "DENY", 4) || !strncasecmp(v, "SAMEORIGIN", 10) ||
             !strncasecmp(v, "ALLOW-FROM", 10)) {
-            ctx->info->framable = 0;
-            if (!ctx->info->frame_blocker) {
-                ctx->info->frame_blocker = mi_strndup("X-Frame-Options",
-                                                      strlen("X-Frame-Options"));
+            info->framable = 0;
+            if (!info->frame_blocker) {
+                info->frame_blocker = mi_strndup("X-Frame-Options",
+                                                 strlen("X-Frame-Options"));
             }
         }
     }
@@ -781,8 +788,8 @@ static size_t header_document(char *ptr, size_t size, size_t nmemb, void *userda
         while (*v == ' ' || *v == '\t') v++;
         size_t len = n - (size_t)(v - ptr);
         while (len > 0 && (v[len - 1] == '\r' || v[len - 1] == '\n')) len--;
-        free(ctx->csp);
-        ctx->csp = mi_strndup(v, len);
+        free(*csp);
+        *csp = mi_strndup(v, len);
     }
 
     if (n > 13 && !strncasecmp(ptr, "Content-Type:", 13)) {
@@ -790,10 +797,16 @@ static size_t header_document(char *ptr, size_t size, size_t nmemb, void *userda
         while (*v == ' ' || *v == '\t') v++;
         size_t len = n - (size_t)(v - ptr);
         while (len > 0 && (v[len - 1] == '\r' || v[len - 1] == '\n')) len--;
-        free(ctx->info->content_type);
-        ctx->info->content_type = mi_strndup(v, len);
+        free(info->content_type);
+        info->content_type = mi_strndup(v, len);
     }
+}
 
+static size_t header_document(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    doc_header_ctx *ctx = userdata;
+    size_t n = size * nmemb;
+    if (!ctx || !ctx->info) return n;
+    apply_header_line(ctx->info, &ctx->csp, ptr, n);
     return n;
 }
 
@@ -835,7 +848,7 @@ char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
      * helper does not return. A helper that is missing or fails falls through to
      * libcurl, so a plain fetch is still better than none.
      */
-    if (cfg->impersonate && *cfg->impersonate && !info) {
+    if (cfg->impersonate && *cfg->impersonate) {
         mi_impersonate_config icfg;
         memset(&icfg, 0, sizeof icfg);
         icfg.impersonate = cfg->impersonate;
@@ -844,8 +857,47 @@ char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
         icfg.cookies_text = cfg->cookies_text;
         icfg.timeout_seconds = (int)cfg->timeout_seconds;
         char ierr[200] = {0};
-        char *body = mi_impersonate_fetch(&icfg, url, max_bytes, ierr, sizeof ierr);
-        if (body) return body;
+        char *meta = NULL;
+        char *body = mi_impersonate_fetch(&icfg, url, max_bytes, &meta, ierr, sizeof ierr);
+        if (body) {
+            /*
+             * The helper returns the response headers too, and they go through
+             * the *same* rule libcurl's path uses — so a page fetched with a
+             * browser's handshake gets the same framing answer, and the console
+             * shows the same refusal.
+             */
+            if (info) {
+                info->framable = 1;
+                char *csp = NULL;
+                if (meta) {
+                    mi_json *m = mi_json_parse(meta);
+                    const char *final_url = mi_json_get_string(m, "final_url", NULL);
+                    if (final_url && strcmp(final_url, url) != 0) {
+                        info->final_url = mi_strdup(final_url);
+                    }
+                    const mi_json *hdrs = mi_json_get(m, "headers");
+                    if (hdrs && hdrs->type == MI_JSON_ARRAY) {
+                        for (size_t i = 0; i < hdrs->count; i++) {
+                            const mi_json *h = hdrs->items[i];
+                            if (h && h->type == MI_JSON_STRING && h->string) {
+                                apply_header_line(info, &csp, h->string, strlen(h->string));
+                            }
+                        }
+                    }
+                    mi_json_value_free(m);
+                }
+                if (csp_forbids_framing(csp)) {
+                    info->framable = 0;
+                    if (!info->frame_blocker) {
+                        info->frame_blocker = mi_strdup("Content-Security-Policy");
+                    }
+                }
+                free(csp);
+            }
+            free(meta);
+            return body;
+        }
+        free(meta);
         mi_logf(MI_LOG_INFO, "impersonated fetch failed (%s); falling back to libcurl",
                 ierr);
     }

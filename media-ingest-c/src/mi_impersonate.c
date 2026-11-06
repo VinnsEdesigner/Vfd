@@ -76,8 +76,9 @@ static char *read_file_capped(const char *path, size_t max_bytes, size_t *len_ou
 }
 
 char *mi_impersonate_fetch(const mi_impersonate_config *cfg, const char *url,
-                           size_t max_bytes, char *err, size_t errcap) {
+                           size_t max_bytes, char **meta_out, char *err, size_t errcap) {
     if (err && errcap) err[0] = '\0';
+    if (meta_out) *meta_out = NULL;
     if (!url) {
         if (err && errcap) snprintf(err, errcap, "no url");
         return NULL;
@@ -98,6 +99,15 @@ char *mi_impersonate_fetch(const mi_impersonate_config *cfg, const char *url,
         return NULL;
     }
     close(fd);
+
+    /* A second temp file for the response metadata, when the caller wants it. */
+    char meta_tmpl[64] = {0};
+    if (meta_out) {
+        snprintf(meta_tmpl, sizeof meta_tmpl, "/tmp/vyzor-impersonate-meta-XXXXXX");
+        int mfd = mkstemp(meta_tmpl);
+        if (mfd >= 0) close(mfd);
+        else meta_tmpl[0] = '\0';
+    }
 
     /* The helper takes a cookie *file*; write the caller's text to one, 0600,
      * and remove it after. */
@@ -138,6 +148,10 @@ char *mi_impersonate_fetch(const mi_impersonate_config *cfg, const char *url,
     argv[a++] = url;
     argv[a++] = "--out";
     argv[a++] = tmpl;
+    if (meta_tmpl[0]) {
+        argv[a++] = "--meta-out";
+        argv[a++] = meta_tmpl;
+    }
     argv[a++] = "--impersonate";
     argv[a++] = impersonate;
     argv[a++] = "--timeout";
@@ -164,6 +178,7 @@ char *mi_impersonate_fetch(const mi_impersonate_config *cfg, const char *url,
     int errpipe[2];
     if (pipe(errpipe) != 0) {
         unlink(tmpl);
+        if (meta_tmpl[0]) unlink(meta_tmpl);
         if (cookie_tmp[0]) unlink(cookie_tmp);
         free(helper);
         if (err && errcap) snprintf(err, errcap, "pipe failed");
@@ -175,6 +190,7 @@ char *mi_impersonate_fetch(const mi_impersonate_config *cfg, const char *url,
         close(errpipe[0]);
         close(errpipe[1]);
         unlink(tmpl);
+        if (meta_tmpl[0]) unlink(meta_tmpl);
         if (cookie_tmp[0]) unlink(cookie_tmp);
         free(helper);
         if (err && errcap) snprintf(err, errcap, "fork failed");
@@ -220,6 +236,7 @@ char *mi_impersonate_fetch(const mi_impersonate_config *cfg, const char *url,
             }
         }
         unlink(tmpl);
+        if (meta_tmpl[0]) unlink(meta_tmpl);
         if (cookie_tmp[0]) unlink(cookie_tmp);
         free(helper);
         return NULL;
@@ -228,6 +245,13 @@ char *mi_impersonate_fetch(const mi_impersonate_config *cfg, const char *url,
     size_t len = 0;
     char *body = read_file_capped(tmpl, max_bytes, &len);
     unlink(tmpl);
+    if (meta_tmpl[0]) {
+        if (meta_out) {
+            size_t mlen = 0;
+            *meta_out = read_file_capped(meta_tmpl, 256 * 1024, &mlen);
+        }
+        unlink(meta_tmpl);
+    }
     if (cookie_tmp[0]) unlink(cookie_tmp);
     free(helper);
     if (!body) {

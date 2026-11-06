@@ -3562,6 +3562,15 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_download_config_init(&cfg);
         cfg.require_media = 0;
         cfg.user_agent = srv->cfg.user_agent;
+        /*
+         * The page goes through the impersonation helper when a browser is
+         * configured, like every other fetch. The helper returns the response
+         * headers, so the framing answer the console shows is the same one a
+         * libcurl fetch would give.
+         */
+        cfg.impersonate = srv->cfg.impersonate;
+        cfg.proxy = srv->cfg.proxy;
+        cfg.cookies_text = srv->cfg.cookies_text;
         mi_fetch_info info;
         char *body = mi_download_fetch_document(&cfg, url, 4 * 1024 * 1024, &info);
         free(decoded);

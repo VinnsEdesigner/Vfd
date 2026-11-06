@@ -29,6 +29,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="fetch-impersonate")
     ap.add_argument("--url", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--meta-out", default="")
     ap.add_argument("--impersonate", default="chrome")
     ap.add_argument("--timeout", type=float, default=30.0)
     ap.add_argument("--max-bytes", type=int, default=0)
@@ -87,6 +88,21 @@ def main() -> int:
     except OSError as exc:
         print(f"cannot write {args.out}: {exc}", file=sys.stderr)
         return 6
+
+    # The response headers, so the caller can apply its own framing rule. curl_cffi
+    # exposes them as a case-insensitive multimap; flatten to "Name: value" lines
+    # exactly as an HTTP client would deliver them, which is what the C side parses.
+    if args.meta_out:
+        import json
+
+        headers = [f"{k}: {v}" for k, v in resp.headers.items()]
+        meta = {"final_url": str(resp.url), "headers": headers}
+        try:
+            with open(args.meta_out, "w", encoding="utf-8") as fh:
+                json.dump(meta, fh)
+        except OSError as exc:
+            print(f"cannot write {args.meta_out}: {exc}", file=sys.stderr)
+            return 7
     return 0
 
 

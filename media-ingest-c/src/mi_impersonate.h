@@ -45,8 +45,13 @@ int mi_impersonate_available(const mi_impersonate_config *cfg, char **resolved);
 /*
  * Fetch `url` and return the body (owned by the caller), or NULL with `err`
  * filled. `max_bytes` 0 means no cap.
+ *
+ * When `meta_out` is given it receives an owned JSON object describing the
+ * response — `{"final_url":…,"headers":["X-Frame-Options: DENY", …]}` — so the
+ * caller can apply the same framing rule it applies to its own fetches. It is
+ * NULL on failure or when the helper returned no headers.
  */
 char *mi_impersonate_fetch(const mi_impersonate_config *cfg, const char *url,
-                           size_t max_bytes, char *err, size_t errcap);
+                           size_t max_bytes, char **meta_out, char *err, size_t errcap);
 
 #endif
