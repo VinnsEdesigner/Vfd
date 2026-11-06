@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "mi_html.h"
+#include "mi_html5.h"
 #include "mi_json.h"
 #include "mi_util.h"
 
@@ -217,6 +218,11 @@ static char *read_name(const char **pp, const char *end) {
 }
 
 mi_html_node *mi_html_parse(const char *html, size_t len) {
+    /* The real thing: the HTML5 tree-construction algorithm. */
+    return mi_html5_parse(html, len, NULL);
+}
+
+mi_html_node *mi_html_parse_legacy(const char *html, size_t len) {
     mi_html_node *doc = node_new(MI_HTML_DOCUMENT);
     if (!doc) return NULL;
 

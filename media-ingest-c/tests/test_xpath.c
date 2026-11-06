@@ -43,7 +43,9 @@ static void test_paths(void) {
     CHECK(count(html, "//p") == 3, "descendant search finds all p");
     CHECK(count(html, "/html/body/p") == 1, "absolute path, child steps");
     CHECK(count(html, "//div/p") == 2, "a child step under a descendant");
-    CHECK(count(html, "//*") == 6, "wildcard counts every element");
+    /* 7, not 6: the HTML5 parser implies a <head> the fragment did not write,
+     * on top of the html/body/div/two p/p it did. */
+    CHECK(count(html, "//*") == 7, "wildcard counts every element");
 }
 
 static void test_predicates(void) {

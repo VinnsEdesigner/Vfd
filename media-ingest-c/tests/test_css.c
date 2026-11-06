@@ -47,7 +47,9 @@ static void test_tag_class_id(void) {
     CHECK(count_matches(html, "#a") == 1, "id selector");
     CHECK(count_matches(html, "p.x") == 1, "tag + class");
     CHECK(count_matches(html, ".x.y") == 1, "two classes on one element");
-    CHECK(count_matches(html, "*") == 4, "universal matches every element");
+    /* 7, not 4: the HTML5 parser implies <html>, <head> and <body>, so the
+     * fragment's four elements are joined by three the page did not write. */
+    CHECK(count_matches(html, "*") == 7, "universal matches every element");
 }
 
 /* A class is a whole word: `x` must not match `xx`. */

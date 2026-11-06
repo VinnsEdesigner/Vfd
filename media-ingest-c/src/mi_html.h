@@ -57,10 +57,20 @@ struct mi_html_node {
 
 /*
  * Parse `html` into a document node whose children are the top-level nodes.
- * Returns NULL only on allocation failure; a document with no nodes is a valid
- * result for empty input. Free with `mi_html_free`.
+ *
+ * This is the HTML5 tree-construction algorithm (see mi_html5.h), so the tree
+ * is nested the way a browser nests it — implied html/head/body, foster
+ * parenting around tables, the adoption agency for mis-nested formatting
+ * elements. The tolerant hand-written walker this used to be is kept as
+ * `mi_html_parse_legacy` for reference, but every consumer uses this.
+ *
+ * Returns NULL only on allocation failure; empty input yields an empty
+ * document. Free with `mi_html_free`.
  */
 mi_html_node *mi_html_parse(const char *html, size_t len);
+
+/* The previous tolerant walker, kept only for comparison in tests. */
+mi_html_node *mi_html_parse_legacy(const char *html, size_t len);
 
 /* Free a node and everything under it. */
 void mi_html_free(mi_html_node *node);
