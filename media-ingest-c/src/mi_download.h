@@ -102,6 +102,31 @@ typedef struct {
      */
     const char *proxy;
     /*
+     * A yt-dlp / curl_cffi impersonation target for the resolve, e.g. "chrome".
+     *
+     * A site that fingerprints TLS sees libcurl and blocks it; naming a real
+     * browser makes the resolve look like one. NULL is off. The download's own
+     * fetch is libcurl and cannot impersonate, so this only reaches the
+     * extractor.
+     */
+    const char *impersonate;
+    /*
+     * Whether a refused download is retried with a different identity.
+     *
+     * A refusal is often of the *identity* — a bot User-Agent, a datacenter
+     * address — so retrying the same way retries the same refusal. With this
+     * set, each retry gets a browser User-Agent and, when more than one proxy is
+     * configured, a different proxy. 0 retries nothing (the old behaviour); N
+     * allows up to N fresh-identity retries.
+     */
+    int identity_retries;
+    /*
+     * Whether the identity actually changes between retries. Off pins every
+     * attempt to the operator's own configuration, which is right when they
+     * meant that exact identity.
+     */
+    int rotate_identity;
+    /*
      * The height to prefer when resolving a page, e.g. 720.
      *
      * A stream offers many renditions and the choice is the viewer's: a phone on

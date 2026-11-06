@@ -291,6 +291,14 @@ void mi_server_config_init(mi_server_config *cfg) {
         const char *px = getenv("MI_PROXY");
         if (px && *px) cfg->proxy = mi_strdup(px);
     }
+    cfg->impersonate = NULL;
+    cfg->rotate_identity = 1;
+    {
+        const char *im = getenv("MI_IMPERSONATE");
+        if (im && *im) cfg->impersonate = mi_strdup(im);
+        const char *ir = getenv("MI_IDENTITY_RETRIES");
+        if (ir && *ir) cfg->identity_retries = atoi(ir);
+    }
     {
         const char *ck = getenv("MI_COOKIES_FILE");
         if (ck && *ck) {
@@ -1558,6 +1566,9 @@ static void *download_worker(void *arg) {
      * told Vyzor how to present itself to. */
     dcfg.user_agent = srv->cfg.user_agent;
     dcfg.proxy = srv->cfg.proxy;
+    dcfg.impersonate = srv->cfg.impersonate;
+    dcfg.identity_retries = srv->cfg.identity_retries;
+    dcfg.rotate_identity = srv->cfg.rotate_identity;
 
     char *out_dir = j->out_dir ? mi_strdup(j->out_dir)
                                : mi_asprintf("%s/%s", srv->download_dir, j->id);
@@ -2983,6 +2994,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
         ecfg.cookies_text = srv->cfg.cookies_text;
         ecfg.proxy = srv->cfg.proxy;
+        ecfg.impersonate = srv->cfg.impersonate;
         mi_json_raw(&b, ",\"extract\":");
         mi_json_raw(&b, "{");
         mi_json_key(&b, "enabled");
@@ -3109,6 +3121,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
         ecfg.cookies_text = srv->cfg.cookies_text;
         ecfg.proxy = srv->cfg.proxy;
+        ecfg.impersonate = srv->cfg.impersonate;
         double timeout = mi_json_get_number(in, "timeout_seconds", 0);
         if (timeout > 0) ecfg.timeout_seconds = timeout;
         if (searching) {
@@ -3287,6 +3300,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ccfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
         ccfg.cookies_text = srv->cfg.cookies_text;
         ccfg.proxy = srv->cfg.proxy;
+        ccfg.impersonate = srv->cfg.impersonate;
         int depth = (int)mi_json_get_number(in, "depth", 0);
         int pages = (int)mi_json_get_number(in, "max_pages", 0);
         int budget = (int)mi_json_get_number(in, "budget_seconds", 0);
@@ -4291,6 +4305,12 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, "]},");
         mi_json_key(&b, "proxy");
         mi_json_string(&b, srv->cfg.proxy);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "impersonate");
+        mi_json_string(&b, srv->cfg.impersonate);
+        mi_json_raw(&b, ",");
+        mi_json_key(&b, "identity_retries");
+        mi_json_int(&b, srv->cfg.identity_retries);
         mi_json_raw(&b, "}");
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
@@ -4306,12 +4326,15 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
         const mi_json *cookies_v = mi_json_get(in, "cookies");
         const mi_json *proxy_v = mi_json_get(in, "proxy");
-        if (!cookies_v && !proxy_v) {
+        const mi_json *impersonate_v = mi_json_get(in, "impersonate");
+        const mi_json *retries_v = mi_json_get(in, "identity_retries");
+        if (!cookies_v && !proxy_v && !impersonate_v && !retries_v) {
             send_error(fd, 400, "Bad Request", "nothing to set", cors);
             mi_json_value_free(in);
             return;
         }
-        const char *cookies = NULL, *proxy = NULL;
+        const char *cookies = NULL, *proxy = NULL, *impersonate = NULL;
+        int retries = -1;
         if (cookies_v) {
             if (cookies_v->type != MI_JSON_STRING && cookies_v->type != MI_JSON_NULL) {
                 send_error(fd, 400, "Bad Request", "cookies must be a string", cors);
@@ -4336,6 +4359,24 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             }
             proxy = proxy_v->string;
         }
+        if (impersonate_v) {
+            if (impersonate_v->type != MI_JSON_STRING && impersonate_v->type != MI_JSON_NULL) {
+                send_error(fd, 400, "Bad Request", "impersonate must be a string", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            impersonate = impersonate_v->string;
+        }
+        if (retries_v) {
+            if (retries_v->type != MI_JSON_NUMBER) {
+                send_error(fd, 400, "Bad Request", "identity_retries must be a number", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            retries = (int)retries_v->number;
+            if (retries < 0) retries = 0;
+            if (retries > 10) retries = 10;
+        }
         pthread_mutex_lock(&srv->lock);
         if (cookies_v) {
             free((char *)srv->cfg.cookies_text);
@@ -4345,6 +4386,12 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             free((char *)srv->cfg.proxy);
             srv->cfg.proxy = (proxy && *proxy) ? mi_strdup(proxy) : NULL;
         }
+        if (impersonate_v) {
+            free((char *)srv->cfg.impersonate);
+            srv->cfg.impersonate = (impersonate && *impersonate)
+                                       ? mi_strdup(impersonate) : NULL;
+        }
+        if (retries >= 0) srv->cfg.identity_retries = retries;
         int cookie_set = srv->cfg.cookies_text && *srv->cfg.cookies_text;
         int proxy_set = srv->cfg.proxy && *srv->cfg.proxy;
         pthread_mutex_unlock(&srv->lock);
@@ -4424,6 +4471,8 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
     srv->cfg.cookies_text = (cfg->cookies_text && *cfg->cookies_text)
                                 ? mi_strdup(cfg->cookies_text) : NULL;
     srv->cfg.proxy = (cfg->proxy && *cfg->proxy) ? mi_strdup(cfg->proxy) : NULL;
+    srv->cfg.impersonate = (cfg->impersonate && *cfg->impersonate)
+                               ? mi_strdup(cfg->impersonate) : NULL;
     srv->download_dir = mi_strdup(cfg->work_dir ? cfg->work_dir : "./downloads");
     srv->listen_fd = -1;
     srv->stop = 0;
@@ -4524,6 +4573,7 @@ void mi_server_free(mi_server *srv) {
     free(srv->download_dir);
     free((char *)srv->cfg.cookies_text);
     free((char *)srv->cfg.proxy);
+    free((char *)srv->cfg.impersonate);
     mi_render_pool_free(srv->renderer);
     mi_interactive_pool_free(srv->driver);
     mi_rtc_pool_free(srv->rtc);

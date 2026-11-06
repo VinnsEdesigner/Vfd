@@ -49,6 +49,7 @@ void mi_extract_config_init(mi_extract_config *cfg) {
     cfg->cookies_file = NULL;
     cfg->cookies_text = NULL;
     cfg->proxy = NULL;
+    cfg->impersonate = NULL;
     cfg->enumerate = 0;
     cfg->search_term = NULL;
     cfg->search_limit = 0;
@@ -424,6 +425,15 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
         if (cfg && cfg->proxy && *cfg->proxy) {
             argv[a++] = "--proxy";
             argv[a++] = cfg->proxy;
+        }
+        /*
+         * Impersonation, when a site fingerprints the client. yt-dlp wears the
+         * named browser's TLS/JA3 fingerprint; without this the request is
+         * plainly libcurl and a fingerprinting site refuses it.
+         */
+        if (cfg && cfg->impersonate && *cfg->impersonate) {
+            argv[a++] = "--impersonate";
+            argv[a++] = cfg->impersonate;
         }
         /*
          * The discovery filters.

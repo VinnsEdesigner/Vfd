@@ -153,6 +153,27 @@ typedef struct {
      */
     const char *proxy;
     /*
+     * A yt-dlp / curl_cffi impersonation target, e.g. "chrome".
+     *
+     * A site that fingerprints the TLS handshake sees libcurl and refuses it.
+     * Naming a real browser makes the extractor's request look like one. Set
+     * from the settings endpoint or MI_IMPERSONATE. NULL is off.
+     */
+    const char *impersonate;
+    /*
+     * How many times a refused download is retried with a *different* identity.
+     *
+     * A refusal is often of the identity, so the retry presents a browser
+     * User-Agent and, when more than one proxy is configured, a different proxy.
+     * 0 retries nothing (the old behaviour).
+     */
+    int identity_retries;
+    /*
+     * Whether the identity changes between retries. Off pins every attempt to
+     * the operator's own configuration.
+     */
+    int rotate_identity;
+    /*
      * The ffmpeg binary.
      *
      * Used to read a manifest (an HLS or DASH URL is a playlist, not a file) and

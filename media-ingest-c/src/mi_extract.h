@@ -163,6 +163,13 @@ typedef struct {
      */
     const char *proxy;
     /*
+     * A yt-dlp / curl_cffi impersonation target, e.g. "chrome" or "chrome131".
+     *
+     * A site that fingerprints the TLS handshake sees libcurl and refuses it;
+     * yt-dlp can wear a real browser's fingerprint when told to. NULL is off.
+     */
+    const char *impersonate;
+    /*
      * A search to run instead of resolving a URL.
      *
      * yt-dlp answers `ytsearch<N>:term` with a list of matching videos, so a

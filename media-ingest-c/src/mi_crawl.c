@@ -54,6 +54,7 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->gallery_extractor_path = NULL;
     cfg->cookies_text = NULL;
     cfg->proxy = NULL;
+    cfg->impersonate = NULL;
     cfg->user_agent = NULL;
     cfg->render_pool = NULL;
     cfg->interactive_pool = NULL;
@@ -669,6 +670,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         ecfg.gallery_binary = cfg->gallery_extractor_path;
         ecfg.cookies_text = cfg->cookies_text;
         ecfg.proxy = cfg->proxy;
+        ecfg.impersonate = cfg->impersonate;
         if (mi_extract_available(&ecfg)) {
             mi_extract_result er;
             if (mi_extract(&ecfg, url, &er) == MI_OK && er.format_count > 0) {

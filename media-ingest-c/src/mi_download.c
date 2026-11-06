@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "mi_extract.h"
+#include "mi_identity.h"
 #include "mi_util.h"
 
 #define MI_HEADER_SNIFF 8192
@@ -899,6 +900,9 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->gallery_extractor_path = NULL;
     cfg->cookies_text = NULL;
     cfg->proxy = NULL;
+    cfg->impersonate = NULL;
+    cfg->identity_retries = 0;
+    cfg->rotate_identity = 1;
     cfg->preferred_height = 0;
 }
 
@@ -1041,6 +1045,7 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
     /* The same egress the transfer uses: the resolve is a request to the same
      * host, so a proxy that got the fetch past a refusal must carry it too. */
     ecfg.proxy = cfg->proxy;
+    ecfg.impersonate = cfg->impersonate;
 
     mi_extract_result er;
     if (mi_extract(&ecfg, page_url, &er) != MI_OK) return MI_ERR_NET;
@@ -1206,9 +1211,9 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
     return MI_OK;
 }
 
-int mi_download(const mi_download_config *cfg, const char *url, const char *dest,
-                mi_progress_fn on_progress, void *user,
-                mi_download_result *out) {
+static int mi_download_once(const mi_download_config *cfg, const char *url,
+                            const char *dest, mi_progress_fn on_progress, void *user,
+                            mi_download_result *out) {
     if (ensure_curl() != 0) return MI_ERR;
     memset(out, 0, sizeof *out);
     out->url = mi_strdup(url);
@@ -1328,5 +1333,46 @@ int mi_download(const mi_download_config *cfg, const char *url, const char *dest
     }
     mi_download_plan_free(&plan);
     if (rc != MI_OK) mi_download_result_free(out);
+    return rc;
+}
+
+int mi_download(const mi_download_config *cfg, const char *url, const char *dest,
+                mi_progress_fn on_progress, void *user,
+                mi_download_result *out) {
+    if (!cfg || !url || !dest || !out) return MI_ERR_ARG;
+
+    /*
+     * A download that is refused is retried with a different identity.
+     *
+     * The first attempt is the caller's own configuration, so the happy path is
+     * exactly as configured. Only a *refusal* moves to the next identity: a
+     * different browser User-Agent and, when more than one proxy is configured,
+     * a different proxy. A retry that looked identical would just be the same
+     * request refused again.
+     */
+    mi_identity_pool *pool = mi_identity_pool_new(cfg->user_agent, cfg->proxy,
+                                                  cfg->impersonate, cfg->rotate_identity);
+    int attempts = cfg->identity_retries > 0 ? cfg->identity_retries + 1 : 1;
+
+    int rc = MI_ERR_NET;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        mi_identity id = mi_identity_for_attempt(pool, attempt);
+        mi_download_config c = *cfg;
+        c.user_agent = id.user_agent;
+        c.proxy = id.proxy;
+        c.impersonate = id.impersonate;
+        rc = mi_download_once(&c, url, dest, on_progress, user, out);
+        if (rc == MI_OK) break;
+        /* The caller stopped it, or the arguments are wrong: neither is fixed by
+         * a retry. */
+        if (rc == MI_ERR_ABORTED || rc == MI_ERR_ARG) break;
+        if (attempt + 1 < attempts) {
+            mi_logf(MI_LOG_INFO,
+                    "download: refused; retrying with a fresh identity (%d/%d)",
+                    attempt + 1, attempts - 1);
+            usleep((useconds_t)(500000 * (attempt + 1)));
+        }
+    }
+    mi_identity_pool_free(pool);
     return rc;
 }

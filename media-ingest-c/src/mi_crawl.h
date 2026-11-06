@@ -190,6 +190,12 @@ typedef struct {
      * the extractor and the browser fallback. NULL is direct.
      */
     const char *proxy;
+    /*
+     * A yt-dlp / curl_cffi impersonation target for the extractor step, e.g.
+     * "chrome". The walk's own page fetches are libcurl and cannot impersonate;
+     * this reaches the extractor, which can. NULL is off.
+     */
+    const char *impersonate;
     /* The User-Agent to send. NULL uses the built-in default. */
     const char *user_agent;
     /*
