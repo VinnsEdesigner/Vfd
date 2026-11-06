@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "mi_charset.h"
+#include "mi_cookiejar.h"
 #include "mi_extract.h"
 #include "mi_identity.h"
 #include "mi_impersonate.h"
@@ -109,8 +110,35 @@ static size_t write_file(char *ptr, size_t size, size_t nmemb, void *userdata) {
 /* The User-Agent sent when the caller has not named one. */
 #define MI_DEFAULT_USER_AGENT "media-ingest-c/" MI_VYZOR_VERSION
 
+/* The host of a URL, lowercased, without userinfo or port. */
+static char *mi_download_host_of(const char *url) {
+    const char *p = strstr(url, "://");
+    p = p ? p + 3 : url;
+    const char *at = strchr(p, '@');
+    const char *slash = strchr(p, '/');
+    if (at && (!slash || at < slash)) p = at + 1;
+    const char *end = p;
+    while (*end && *end != '/' && *end != ':' && *end != '?' && *end != '#') end++;
+    if (end == p) return NULL;
+    char *h = mi_strndup(p, (size_t)(end - p));
+    for (char *q = h; q && *q; q++) *q = (char)tolower((unsigned char)*q);
+    return h;
+}
+
+/* The path of a URL, defaulting to "/". */
+static char *mi_download_path_of(const char *url) {
+    const char *p = strstr(url, "://");
+    p = p ? p + 3 : url;
+    const char *slash = strchr(p, '/');
+    if (!slash) return mi_strdup("/");
+    const char *end = slash;
+    while (*end && *end != '?' && *end != '#') end++;
+    if (end == slash) return mi_strdup("/");
+    return mi_strndup(slash, (size_t)(end - slash));
+}
+
 static struct curl_slist *build_headers(const mi_download_config *cfg,
-                                        const char *range) {
+                                        const char *url, const char *range) {
     struct curl_slist *list = NULL;
 
     /*
@@ -132,6 +160,20 @@ static struct curl_slist *build_headers(const mi_download_config *cfg,
         mi_browser_headers_free(bh, bn);
     } else {
         list = curl_slist_append(list, "Accept: */*");
+    }
+
+    /*
+     * The session cookies, from the live jar. This is what carries a login from
+     * request to request: the login set the cookie, and every fetch after sends
+     * it. Built per request because the jar changes.
+     */
+    if (cfg->jar) {
+        char *cookie = mi_cookiejar_header_for_url(cfg->jar, url);
+        if (cookie) {
+            char *h = mi_asprintf("Cookie: %s", cookie);
+            if (h) { list = curl_slist_append(list, h); free(h); }
+            free(cookie);
+        }
     }
 
     /* The caller's agent when it named one, the built-in otherwise. A caller
@@ -263,7 +305,7 @@ int mi_probe(const mi_download_config *cfg, const char *url,
 
     char range[64];
     snprintf(range, sizeof range, "0-%zu", sizeof head - 1);
-    struct curl_slist *headers = build_headers(cfg, range);
+    struct curl_slist *headers = build_headers(cfg, url, range);
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -392,7 +434,7 @@ static int fetch_range_once(const mi_download_config *cfg, const char *url,
     char range[64];
     snprintf(range, sizeof range, "%lld-%lld", (long long)rng->start,
              (long long)rng->end);
-    struct curl_slist *headers = build_headers(cfg, range);
+    struct curl_slist *headers = build_headers(cfg, url, range);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     if (cfg->proxy && *cfg->proxy) curl_easy_setopt(curl, CURLOPT_PROXY, cfg->proxy);
@@ -731,7 +773,7 @@ static int download_stream(const mi_download_config *cfg, const char *url,
                      .lock = &lock,
                      .shared_bytes = &shared,
                      .control = cfg->control};
-    struct curl_slist *headers = build_headers(cfg, NULL);
+    struct curl_slist *headers = build_headers(cfg, url, NULL);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     if (cfg->proxy && *cfg->proxy) curl_easy_setopt(curl, CURLOPT_PROXY, cfg->proxy);
@@ -781,6 +823,7 @@ void mi_fetch_info_free(mi_fetch_info *info) {
     free(info->etag);
     free(info->last_modified);
     free(info->encoding);
+    free(info->location);
     memset(info, 0, sizeof *info);
 }
 
@@ -788,6 +831,11 @@ void mi_fetch_info_free(mi_fetch_info *info) {
 typedef struct {
     mi_fetch_info *info;
     char *csp; /* Content-Security-Policy, when the response carries one */
+    /* The live jar, when one is set, and the request's host/path — so a
+     * `Set-Cookie` can be scoped and stored as the browser would store it. */
+    struct mi_cookiejar *jar;
+    char *host;
+    char *path;
 } doc_header_ctx;
 
 /*
@@ -838,6 +886,15 @@ static void apply_header_line(mi_fetch_info *info, char **csp, const char *ptr,
         info->content_type = mi_strndup(v, len);
     }
 
+    if (n > 9 && !strncasecmp(ptr, "Location:", 9)) {
+        const char *v = ptr + 9;
+        while (*v == ' ' || *v == '\t') v++;
+        size_t len = n - (size_t)(v - ptr);
+        while (len > 0 && (v[len - 1] == '\r' || v[len - 1] == '\n')) len--;
+        free(info->location);
+        info->location = mi_strndup(v, len);
+    }
+
     /* The validators, so a caller can ask "has this changed?" next time. */
     if (n > 5 && !strncasecmp(ptr, "ETag:", 5)) {
         const char *v = ptr + 5;
@@ -862,6 +919,20 @@ static size_t header_document(char *ptr, size_t size, size_t nmemb, void *userda
     size_t n = size * nmemb;
     if (!ctx || !ctx->info) return n;
     apply_header_line(ctx->info, &ctx->csp, ptr, n);
+    /* A Set-Cookie is stored in the live jar, so a session survives the request
+     * that set it. */
+    if (ctx->jar && n > 11 && !strncasecmp(ptr, "Set-Cookie:", 11)) {
+        const char *v = ptr + 11;
+        while (*v == ' ' || *v == '\t') v++;
+        char *line = mi_strndup(v, n - (size_t)(v - ptr));
+        if (line) {
+            /* Strip the trailing CRLF the header carries. */
+            size_t l = strlen(line);
+            while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n')) line[--l] = 0;
+            mi_cookiejar_set(ctx->jar, line, ctx->host, ctx->path);
+            free(line);
+        }
+    }
     return n;
 }
 
@@ -963,9 +1034,16 @@ char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
 
     doc_header_ctx hctx = {.info = info, .csp = NULL};
     if (info) info->framable = 1;
+    /* The jar, when there is one, and where this request is going — a cookie is
+     * scoped to the request that set it. */
+    hctx.jar = cfg->jar;
+    if (cfg->jar) {
+        hctx.host = mi_download_host_of(url);
+        hctx.path = mi_download_path_of(url);
+    }
 
     membuf b = {0};
-    struct curl_slist *headers = build_headers(cfg, NULL);
+    struct curl_slist *headers = build_headers(cfg, url, NULL);
     /* The conditional-GET conditions, when the caller has them. A server that
      * still has the same version answers 304 and sends no body, which is how an
      * incremental crawl avoids re-reading an unchanged page. */
@@ -1011,6 +1089,8 @@ char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
         }
     }
     free(hctx.csp);
+    free(hctx.host);
+    free(hctx.path);
     free(inm);
     free(ims);
     curl_slist_free_all(headers);
@@ -1067,6 +1147,105 @@ char *mi_download_fetch_text(const mi_download_config *cfg, const char *url,
     return mi_download_fetch_document(cfg, url, max_bytes, NULL);
 }
 
+/*
+ * POST a body, and return the response.
+ *
+ * The same shape as the document fetch — same headers, same jar, same decode —
+ * with a method and a body. It is what a login needs: the credentials go in the
+ * body, the site answers with a `Set-Cookie`, and the jar stores it so the next
+ * request is authenticated. A redirect is followed, because a successful login
+ * is usually a 302 to the account page.
+ */
+char *mi_download_post(const mi_download_config *cfg, const char *url,
+                       const char *body, const char *content_type,
+                       size_t max_bytes, mi_fetch_info *info) {
+    if (info) memset(info, 0, sizeof *info);
+    if (ensure_curl() != 0 || !url || !body) return NULL;
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    doc_header_ctx hctx = {.info = info, .csp = NULL};
+    if (info) info->framable = 1;
+    hctx.jar = cfg->jar;
+    if (cfg->jar) {
+        hctx.host = mi_download_host_of(url);
+        hctx.path = mi_download_path_of(url);
+    }
+
+    membuf b = {0};
+    struct curl_slist *headers = build_headers(cfg, url, NULL);
+    char *ct = mi_asprintf("Content-Type: %s",
+                           content_type ? content_type
+                                        : "application/x-www-form-urlencoded");
+    if (ct) headers = curl_slist_append(headers, ct);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(body));
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_membuf);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &b);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_document);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &hctx);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    if (cfg->proxy && *cfg->proxy) curl_easy_setopt(curl, CURLOPT_PROXY, cfg->proxy);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, cfg->timeout_seconds);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+    CURLcode rc = curl_easy_perform(curl);
+    long code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+    if (info) {
+        char *eff = NULL;
+        curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &eff);
+        if (eff && strcmp(eff, url) != 0) info->final_url = mi_strdup(eff);
+        if (csp_forbids_framing(hctx.csp)) {
+            info->framable = 0;
+            if (!info->frame_blocker) info->frame_blocker = mi_strdup("Content-Security-Policy");
+        }
+    }
+    free(hctx.csp);
+    free(hctx.host);
+    free(hctx.path);
+    free(ct);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    /*
+     * Any HTTP status is a valid answer here: a login commonly ends on a 302 to
+     * a page, and the caller judges success from the content and the cookies,
+     * not the status. Only a transport failure is an error.
+     */
+    if (rc != CURLE_OK || code == 0) {
+        free(b.data);
+        return NULL;
+    }
+    if (info) info->status = (int)code;
+    /* A 302 carries no body, so b.data is NULL — which is a valid response, not
+     * a failure. A login is answered with one. */
+    if (!b.data) { b.data = mi_strdup(""); b.len = 0; }
+    if (b.len > max_bytes) { b.data[max_bytes] = 0; b.len = max_bytes; }
+
+    /* Decode the response to UTF-8, the same as a document fetch. */
+    {
+        const char *cct = info && info->content_type ? info->content_type : NULL;
+        mi_charset chosen = MI_CS_UNKNOWN;
+        char *utf8 = mi_charset_decode_document(cct, (const unsigned char *)b.data,
+                                                b.len, MI_CS_UTF8, &chosen);
+        if (utf8) {
+            free(b.data);
+            b.data = utf8;
+            if (info) {
+                free(info->encoding);
+                info->encoding = mi_strdup(mi_charset_name(chosen));
+            }
+        }
+    }
+    return b.data;
+}
+
 void mi_download_config_init(mi_download_config *cfg) {
     memset(cfg, 0, sizeof *cfg);
     cfg->connections = 8;
@@ -1085,6 +1264,7 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->extractor_path = NULL;
     cfg->gallery_extractor_path = NULL;
     cfg->cookies_text = NULL;
+    cfg->jar = NULL;
     cfg->proxy = NULL;
     cfg->impersonate = NULL;
     cfg->identity_retries = 0;

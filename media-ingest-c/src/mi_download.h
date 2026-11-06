@@ -96,6 +96,16 @@ typedef struct {
      */
     const char *cookies_text;
     /*
+     * A live cookie jar, or NULL.
+     *
+     * When set, the request's `Cookie` header is built from the jar and every
+     * `Set-Cookie` the response carries is stored back. This is what makes a
+     * *session* work: a login sets a cookie, the next request must send it, and
+     * the site rotates it as it goes. The static `cookies_text` above is the
+     * one-shot case; this is the live one. Both may be set.
+     */
+    struct mi_cookiejar *jar;
+    /*
      * A proxy every outbound request goes through, e.g. "http://host:port" or
      * "socks5://host:port".
      *
@@ -208,9 +218,30 @@ typedef struct {
     /* 1 when the server answered 304 Not Modified: the body is empty and the
      * caller's cached copy is still current. */
     int not_modified;
+    /*
+     * The `Location` header, when the response was a redirect that was not
+     * followed. A POST does not follow its own redirect (the cookie it sets must
+     * reach the jar first), so the caller needs the target to follow itself.
+     */
+    char *location;
+    /* The HTTP status of the response, for a caller that judges success from it
+     * (a login, a link check). 0 when the fetch failed before a response. */
+    int status;
 } mi_fetch_info;
 
 void mi_fetch_info_free(mi_fetch_info *info);
+
+/*
+ * POST `body` to `url` with `content_type`, and return the response body.
+ *
+ * This is what a login (or any form submission) needs: the credentials go in the
+ * body, and the response's `Set-Cookie` is stored in the jar. A redirect is
+ * followed, so a site that answers a successful login with a 302 to the account
+ * page ends on the account page.
+ */
+char *mi_download_post(const mi_download_config *cfg, const char *url,
+                       const char *body, const char *content_type,
+                       size_t max_bytes, mi_fetch_info *info);
 
 /* Like mi_download_fetch_text, but also reports what the response said. */
 char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
