@@ -111,6 +111,44 @@ void mi_json_key(mi_json_buf *b, const char *key) {
     mi_json_raw(b, ":");
 }
 
+void mi_json_emit_value(mi_json_buf *b, const mi_json *v) {
+    if (!v) {
+        mi_json_raw(b, "null");
+        return;
+    }
+    switch (v->type) {
+        case MI_JSON_NULL:
+            mi_json_raw(b, "null");
+            break;
+        case MI_JSON_BOOL:
+            mi_json_bool(b, v->boolean);
+            break;
+        case MI_JSON_NUMBER:
+            mi_json_double(b, v->number);
+            break;
+        case MI_JSON_STRING:
+            mi_json_string(b, v->string);
+            break;
+        case MI_JSON_ARRAY:
+            mi_json_raw(b, "[");
+            for (size_t i = 0; i < v->count; i++) {
+                if (i) mi_json_raw(b, ",");
+                mi_json_emit_value(b, v->items[i]);
+            }
+            mi_json_raw(b, "]");
+            break;
+        case MI_JSON_OBJECT:
+            mi_json_raw(b, "{");
+            for (size_t i = 0; i < v->member_count; i++) {
+                if (i) mi_json_raw(b, ",");
+                mi_json_key(b, v->keys[i]);
+                mi_json_emit_value(b, v->values[i]);
+            }
+            mi_json_raw(b, "}");
+            break;
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Reader                                                              */
 /* ------------------------------------------------------------------ */

@@ -39,6 +39,7 @@ void mi_json_null(mi_json_buf *b);
 /* Writes "key": (escaped). */
 void mi_json_key(mi_json_buf *b, const char *key);
 
+
 /* ------------------------------------------------------------------ */
 /* Reader                                                              */
 /* ------------------------------------------------------------------ */
@@ -74,5 +75,14 @@ const char *mi_json_get_string(const mi_json *obj, const char *key,
 double mi_json_get_number(const mi_json *obj, const char *key, double fallback);
 int64_t mi_json_get_int(const mi_json *obj, const char *key, int64_t fallback);
 int mi_json_get_bool(const mi_json *obj, const char *key, int fallback);
+
+/*
+ * Re-serialise a parsed value into a buffer.
+ *
+ * The reader has no "copy this subtree" primitive, so a caller that wants a
+ * parsed node on its own — the rows out of a database response, say — emits it
+ * here and parses the result.
+ */
+void mi_json_emit_value(mi_json_buf *b, const mi_json *v);
 
 #endif /* MI_JSON_H */

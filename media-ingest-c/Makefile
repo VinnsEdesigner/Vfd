@@ -21,7 +21,8 @@ LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_browse.c $(SRC_DIR)/mi_render.c $(SRC_DIR)/mi_cache.c \
            $(SRC_DIR)/mi_sanitize.c $(SRC_DIR)/mi_identify.c $(SRC_DIR)/mi_outbox.c $(SRC_DIR)/mi_rtc.c $(SRC_DIR)/mi_ws.c $(SRC_DIR)/mi_interactive.c $(SRC_DIR)/mi_mediawatch.c \
            $(SRC_DIR)/mi_crawl.c $(SRC_DIR)/mi_extract.c \
-           $(SRC_DIR)/mi_identity.c $(SRC_DIR)/mi_captcha.c \
+           $(SRC_DIR)/mi_identity.c $(SRC_DIR)/mi_captcha.c $(SRC_DIR)/mi_turso.c \
+           $(SRC_DIR)/mi_frontier.c \
            $(SRC_DIR)/mi_server.c
 CLI_SRC := $(SRC_DIR)/mi_cli.c
 TEST_SRC := tests/test_media_ingest.c
@@ -38,6 +39,7 @@ TEST_CRAWL_SRC := tests/test_crawl.c
 TEST_EXTRACT_SRC := tests/test_extract.c
 TEST_IDENTITY_SRC := tests/test_identity.c
 TEST_CAPTCHA_SRC := tests/test_captcha.c
+TEST_FRONTIER_SRC := tests/test_frontier.c
 
 .PHONY: all clean test
 
@@ -91,7 +93,10 @@ $(BUILD)/test_identity: $(LIB_SRC) $(TEST_IDENTITY_SRC) | $(BUILD)
 $(BUILD)/test_captcha: $(LIB_SRC) $(TEST_CAPTCHA_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_CAPTCHA_SRC) $(LDLIBS)
 
-test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha
+$(BUILD)/test_frontier: $(LIB_SRC) $(TEST_FRONTIER_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_FRONTIER_SRC) $(LDLIBS)
+
+test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier
 	$(BUILD)/test_media_ingest
 	$(BUILD)/test_server
 	$(BUILD)/test_render
@@ -106,6 +111,7 @@ test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUI
 	$(BUILD)/test_extract
 	$(BUILD)/test_identity
 	$(BUILD)/test_captcha
+	$(BUILD)/test_frontier
 
 clean:
 	rm -rf $(BUILD)
