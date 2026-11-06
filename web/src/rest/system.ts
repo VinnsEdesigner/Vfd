@@ -101,9 +101,17 @@ export function createSystemResource(client: ApiClient): SystemResource {
 
     async setEgress(next, signal) {
       // An omitted field is left alone by the server; an empty string clears.
+      // The domain is camelCase and the wire is snake_case, so the mapping is
+      // explicit here rather than spread over the callers.
       const body: WireEgressUpdate = {};
       if (next.cookies !== undefined) body.cookies = next.cookies;
       if (next.proxy !== undefined) body.proxy = next.proxy;
+      if (next.impersonate !== undefined) body.impersonate = next.impersonate;
+      if (next.identityRetries !== undefined) body.identity_retries = next.identityRetries;
+      if (next.captchaProvider !== undefined) body.captcha_provider = next.captchaProvider;
+      if (next.captchaApiKey !== undefined) body.captcha_api_key = next.captchaApiKey;
+      if (next.frontierDbUrl !== undefined) body.frontier_db_url = next.frontierDbUrl;
+      if (next.frontierToken !== undefined) body.frontier_token = next.frontierToken;
       const wire = await client.transport.request<WireEgressSettings>({
         method: 'PUT',
         path: '/api/v1/settings/egress',

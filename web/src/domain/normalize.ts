@@ -422,6 +422,12 @@ export function normalizeEgressSettings(w: WireEgressSettings): EgressSettings {
     cookieConfigured: Boolean(w.cookies?.configured),
     cookieNames: w.cookies?.names ?? [],
     proxy: w.proxy ?? '',
+    impersonate: w.impersonate ?? '',
+    identityRetries: w.identity_retries ?? 0,
+    captchaProvider: w.captcha_provider ?? '',
+    captchaKeySet: Boolean(w.captcha_key_set),
+    frontierDbUrl: w.frontier_db_url ?? '',
+    frontierTokenSet: Boolean(w.frontier_token_set),
   };
 }
 

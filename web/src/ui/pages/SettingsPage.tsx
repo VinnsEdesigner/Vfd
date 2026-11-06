@@ -21,7 +21,11 @@ import {
   type StorageLocationValue,
   type VyzorLocationFacts,
 } from '../settings/StorageLocationPanel';
-import { EgressPanel, type EgressValue } from '../settings/EgressPanel';
+import {
+  SiteAccessPanel,
+  type SiteAccessValue,
+  type SiteAccessSave,
+} from '../settings/SiteAccessPanel';
 import { Note } from '../primitives/Note';
 import type { StorageCredentialsValue } from './StoragePage';
 import type { DownloadView } from '../../hooks/view-models';
@@ -39,7 +43,7 @@ export type SettingsTab =
   | 'vyzor'
   | 'object'
   | 'cdn'
-  | 'egress'
+  | 'access'
   | 'storage'
   | 'more';
 
@@ -69,9 +73,9 @@ export interface SettingsPageProps {
   onSaveConnection: () => void;
   onSaveLocation: (dir: string) => void;
   /** The cookies and proxy Vyzor uses to reach a refusing host. */
-  egress: EgressValue | null;
-  /** Save cookies and/or proxy; a field set to null is left unchanged. */
-  onSaveEgress: (next: { cookies: string | null; proxy: string | null }) => void;
+  siteAccess: SiteAccessValue | null;
+  /** Save any site-access field; a field set to null is left unchanged. */
+  onSaveSiteAccess: (next: SiteAccessSave) => void;
   /** Clear the stored cookies. */
   onClearCookies: () => void;
   /** The local-storage section, rendered on its own tab. */
@@ -115,7 +119,7 @@ export function SettingsPage(props: SettingsPageProps) {
           { id: 'vyzor', label: 'Vyzor' },
           { id: 'object', label: 'Object storage' },
           { id: 'cdn', label: 'CDN & delivery' },
-          { id: 'egress', label: 'Egress' },
+          { id: 'access', label: 'Site access' },
           { id: 'storage', label: 'Local storage' },
           { id: 'more', label: 'More' },
         ]}
@@ -279,11 +283,11 @@ export function SettingsPage(props: SettingsPageProps) {
         </Card>
       )}
 
-      {tab === 'egress' && (
-        <EgressPanel
-          value={props.egress}
+      {tab === 'access' && (
+        <SiteAccessPanel
+          value={props.siteAccess}
           {...(props.busy ? { saving: true } : {})}
-          onSave={props.onSaveEgress}
+          onSave={props.onSaveSiteAccess}
           onClearCookies={props.onClearCookies}
         />
       )}

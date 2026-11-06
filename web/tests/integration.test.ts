@@ -123,6 +123,42 @@ describe('egress settings', () => {
     expect(s.cookieConfigured).toBe(false);
     expect(s.cookieNames).toEqual([]);
   });
+
+  it('sets and reports the identity, captcha and frontier settings', async () => {
+    await api.system.setEgress({
+      impersonate: 'chrome',
+      identityRetries: 3,
+      captchaProvider: 'stub',
+      captchaApiKey: 'CAPTCHA_SECRET',
+      frontierDbUrl: 'libsql://example.turso.io',
+      frontierToken: 'FRONTIER_SECRET',
+    });
+    const s = await api.system.egressSettings();
+    expect(s.impersonate).toBe('chrome');
+    expect(s.identityRetries).toBe(3);
+    expect(s.captchaProvider).toBe('stub');
+    expect(s.captchaKeySet).toBe(true);
+    expect(s.frontierDbUrl).toBe('libsql://example.turso.io');
+    expect(s.frontierTokenSet).toBe(true);
+    // Neither secret is ever returned over the API.
+    expect(JSON.stringify(s)).not.toContain('CAPTCHA_SECRET');
+    expect(JSON.stringify(s)).not.toContain('FRONTIER_SECRET');
+
+    /*
+     * These are server-wide settings on a server shared by every test in this
+     * file, so they are put back: a retry count left at 3 would make a later
+     * test's deliberately-unreachable URL retry with backoff and blow its
+     * timeout. This is the same reason the location tests restore the directory.
+     */
+    await api.system.setEgress({
+      impersonate: '',
+      identityRetries: 0,
+      captchaProvider: '',
+      captchaApiKey: '',
+      frontierDbUrl: '',
+      frontierToken: '',
+    });
+  });
 });
 
 describe('browse resource', () => {

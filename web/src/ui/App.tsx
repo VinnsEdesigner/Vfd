@@ -1946,28 +1946,40 @@ export function App({ initialView = 'overview' }: AppProps) {
                 { success: 'Storage location saved', failure: 'Could not save the location' },
               )
             }
-            egress={
+            siteAccess={
               egressQuery.data
                 ? {
                     cookieConfigured: egressQuery.data.cookieConfigured,
                     cookieNames: egressQuery.data.cookieNames,
                     proxy: egressQuery.data.proxy,
+                    impersonate: egressQuery.data.impersonate,
+                    identityRetries: egressQuery.data.identityRetries,
+                    captchaProvider: egressQuery.data.captchaProvider,
+                    captchaKeySet: egressQuery.data.captchaKeySet,
+                    frontierDbUrl: egressQuery.data.frontierDbUrl,
+                    frontierTokenSet: egressQuery.data.frontierTokenSet,
                   }
                 : null
             }
-            onSaveEgress={(next) => {
+            onSaveSiteAccess={(next) => {
               /* A field left null is unchanged, so a proxy-only save never
                * resends (or clears) the cookies, whose value the console does
                * not even hold. */
               const body: EgressUpdate = {};
-              if (next.cookies !== null) body.cookies = next.cookies;
-              if (next.proxy !== null) body.proxy = next.proxy;
+              if (next.cookies != null) body.cookies = next.cookies;
+              if (next.proxy != null) body.proxy = next.proxy;
+              if (next.impersonate != null) body.impersonate = next.impersonate;
+              if (next.identityRetries != null) body.identityRetries = next.identityRetries;
+              if (next.captchaProvider != null) body.captchaProvider = next.captchaProvider;
+              if (next.captchaApiKey != null) body.captchaApiKey = next.captchaApiKey;
+              if (next.frontierDbUrl != null) body.frontierDbUrl = next.frontierDbUrl;
+              if (next.frontierToken != null) body.frontierToken = next.frontierToken;
               void runAction(
                 'save-egress',
                 async () => {
                   await setEgress.mutateAsync(body);
                 },
-                { success: 'Egress settings saved', failure: 'Could not save egress settings' },
+                { success: 'Site access saved', failure: 'Could not save site access' },
               );
             }}
             onClearCookies={() =>

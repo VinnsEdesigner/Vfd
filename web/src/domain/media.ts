@@ -242,12 +242,24 @@ export interface EgressSettings {
   cookieConfigured: boolean;
   cookieNames: readonly string[];
   proxy: string;
+  impersonate: string;
+  identityRetries: number;
+  captchaProvider: string;
+  captchaKeySet: boolean;
+  frontierDbUrl: string;
+  frontierTokenSet: boolean;
 }
 
 /** A partial update: a field left out is unchanged, an empty string clears it. */
 export interface EgressUpdate {
   cookies?: string;
   proxy?: string;
+  impersonate?: string;
+  identityRetries?: number;
+  captchaProvider?: string;
+  captchaApiKey?: string;
+  frontierDbUrl?: string;
+  frontierToken?: string;
 }
 
 /** Requests the data layer accepts (already domain-shaped). */

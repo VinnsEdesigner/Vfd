@@ -491,10 +491,28 @@ export interface WireEgressCookies {
 export interface WireEgressSettings {
   cookies: WireEgressCookies | null;
   proxy: string | null;
+  /** A yt-dlp / curl_cffi impersonation target, e.g. "chrome". */
+  impersonate?: string | null;
+  /** How many fresh-identity retries a refused download gets. */
+  identity_retries?: number;
+  /** The captcha provider name, or null for the built-in stub. */
+  captcha_provider?: string | null;
+  /** Whether a captcha API key is set. The key itself is never returned. */
+  captcha_key_set?: boolean;
+  /** The shared crawl frontier's database URL. */
+  frontier_db_url?: string | null;
+  /** Whether a frontier token is set. The token itself is never returned. */
+  frontier_token_set?: boolean;
 }
 
 /** A partial update; a field left out is not changed, an empty string clears. */
 export interface WireEgressUpdate {
   cookies?: string;
   proxy?: string;
+  impersonate?: string;
+  identity_retries?: number;
+  captcha_provider?: string;
+  captcha_api_key?: string;
+  frontier_db_url?: string;
+  frontier_token?: string;
 }
