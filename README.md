@@ -21,7 +21,9 @@ volume. Point one at the other with `VITE_API_BASE_URL`.
 
 ```bash
 cd media-ingest-c
-sudo apt-get install -y build-essential libcurl4-openssl-dev ffmpeg
+sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev \
+  libsqlite3-dev zlib1g-dev libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev ffmpeg
 make
 ./build/vyzor serve --host 0.0.0.0 --port 8787 --work-dir ./downloads
 ```
@@ -61,19 +63,38 @@ media-ingest-c/   Vyzor — C11 server, CLI and library
 web/              the console — React + TypeScript
   src/            layered: domain -> rest -> hooks -> ui
   tests/          integration, boundaries, presentation
+docs/             the documentation set
 scripts/          maintenance scripts
 ```
+
+## Documentation
+
+The `docs/` directory documents the app and its capabilities:
+
+| Doc | Covers |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | the two pieces, the module map, the request path |
+| [docs/api.md](docs/api.md) | every HTTP and WebSocket route, with parameters and responses |
+| [docs/cli.md](docs/cli.md) | the `vyzor` command line, end to end |
+| [docs/crawling.md](docs/crawling.md) | the crawler: what it does, its bounds, robots and politeness |
+| [docs/media-pipeline.md](docs/media-pipeline.md) | detection, download, HLS, storage and the CDN |
+| [docs/browser-features.md](docs/browser-features.md) | rendering, live pages, live video, and their limits |
+| [docs/configuration.md](docs/configuration.md) | every flag and `MI_*` environment variable |
+| [docs/operations.md](docs/operations.md) | build, run, deploy, and the failure modes to expect |
 
 ## Requirements
 
 | Piece | Needs |
 |---|---|
-| Vyzor, to build | a C11 compiler, `libcurl` headers, `pkg-config`, GStreamer (`webrtc` plugins from `-bad`) |
+| Vyzor, to build | a C11 compiler, `libcurl`, `sqlite3` and `zlib` headers, `pkg-config`, GStreamer (`webrtc` plugins from `-bad`) |
 | Vyzor, to run | FFmpeg for transcoding; Chromium, Xvfb and fonts for the browser features |
 | Console | Node 20+ |
 
-GStreamer is only needed for live video. Without it Vyzor still builds and
-reports the capability as unavailable, and the console hides the control.
+GStreamer is a build dependency, not an optional one: `mi_rtc.c` is always
+compiled and includes `<gst/gst.h>`, so the GStreamer dev packages must be
+present to build at all. It is only needed *at runtime* for live video — without
+the runtime plugins Vyzor still starts and reports the capability as unavailable,
+and the console hides the control.
 
 On Debian or Ubuntu, one command installs all of it:
 
@@ -129,7 +150,7 @@ Both halves have their own suite, and the console's integration suite drives the
 **real** Vyzor binary over HTTP rather than a mock.
 
 ```bash
-# The server
+# The server — 36 binaries, ~1300 checks
 cd media-ingest-c && make test
 
 # The console (builds nothing, but the integration suite needs the binary)
@@ -138,6 +159,29 @@ cd web && npm run typecheck && npm run lint && npm test
 
 Build Vyzor first, or the integration suite fails with "server binary not
 found" — the harness starts the compiled binary on an ephemeral port.
+
+`make test` compiles every module once per test binary, so a clean run takes
+several minutes on four cores. It rebuilds only what changed.
+
+## Status and known limits
+
+Working, verified against real sites:
+
+- Content-based detection; ranged, resumable downloads; HLS and DASH stitching.
+- Crawl with robots, sitemaps, dedup, browser fallback and a shared frontier.
+- Page rendering, live pages, S3 upload and Cloudflare purge.
+
+Known limits, all site-side or environmental rather than defects in Vyzor:
+
+- **YouTube** resolves (yt-dlp lists its formats) but the final mux fails:
+  googlevideo returns 403 to ffmpeg fetching the CDN URLs directly, because they
+  are bound to the signature of the request that resolved them.
+- **Vimeo** now requires a sign-in for most videos; supply cookies to resolve it.
+- A site whose media is in a container ffmpeg cannot remux into MP4 (for example
+  an AVI with `msmpeg4v2`) is resolved but not converted.
+
+See [docs/operations.md](docs/operations.md) for the failure messages and what
+each one means.
 
 ## Design notes
 

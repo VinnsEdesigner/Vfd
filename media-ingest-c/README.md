@@ -24,15 +24,24 @@ Built for ingesting media you own or are licensed to distribute.
 
 ## Build
 
-Requires a C11 compiler, libcurl development headers, and pthreads.
+Requires a C11 compiler, `pkg-config`, the libcurl, sqlite3 and zlib development
+headers, and the GStreamer development packages (its WebRTC API, from `-bad`).
 
 ```bash
 # Debian/Ubuntu
-sudo apt-get install -y build-essential libcurl4-openssl-dev ffmpeg
+sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev \
+  libsqlite3-dev zlib1g-dev libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev ffmpeg
 
 make            # builds build/vyzor
 make test       # builds + runs the test suite
 ```
+
+GStreamer is a build dependency, not an optional one: `mi_rtc.c` is always
+compiled and includes `<gst/gst.h>`. It is only needed *at runtime* for live
+video.
+
+`../scripts/install-toolchain.sh` installs all of the above in one command.
 
 ## CLI
 
