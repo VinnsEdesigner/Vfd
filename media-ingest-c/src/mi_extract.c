@@ -861,12 +861,23 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
                 const char *vc = mi_json_get_string(f, "vcodec", NULL);
                 const char *ac = mi_json_get_string(f, "acodec", NULL);
                 const char *res = mi_json_get_string(f, "resolution", NULL);
+                const char *vext = mi_json_get_string(f, "video_ext", NULL);
                 const char *aext = mi_json_get_string(f, "audio_ext", NULL);
                 int v_known = vc != NULL;
                 int a_known = ac != NULL;
-                /* Absent means unknown, so the other fields decide. */
+                /*
+                 * Absent means unknown, so the other fields decide. `video_ext`
+                 * counts here for the same reason `audio_ext` does below: a
+                 * format that names a video container carries a picture even
+                 * when the extractor never reported a codec or a height —
+                 * measured on archive.org's AVI entries, which resolve to a
+                 * single format with `video_ext: "avi"` and every other video
+                 * field null. Without it those formats were dropped and the page
+                 * reported "no video stream".
+                 */
                 dst->has_video = v_known ? (vc[0] && strcmp(vc, "none") != 0)
-                                         : (dst->height > 0 || (res && *res));
+                                         : (dst->height > 0 || (res && *res) ||
+                                            (vext && *vext && strcmp(vext, "none") != 0));
                 dst->has_audio = a_known ? (ac[0] && strcmp(ac, "none") != 0)
                                          : (mi_json_get_number(f, "abr", -1) > 0 ||
                                             (aext && *aext && strcmp(aext, "none") != 0));

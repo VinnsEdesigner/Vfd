@@ -1337,8 +1337,19 @@ static int download_manifest(const mi_download_config *cfg, const char *url,
      * them is both faster and lossless. */
     argv[a++] = "-c";
     argv[a++] = "copy";
-    argv[a++] = "-bsf:a";
-    argv[a++] = "aac_adtstoasc";
+    /*
+     * No `-bsf:a aac_adtstoasc` here.
+     *
+     * It was added to turn HLS AAC (ADTS) into MP4 AAC, but it is applied
+     * unconditionally, so any stream whose audio is not AAC makes ffmpeg abort:
+     * "Codec 'ac3' is not supported by the bitstream filter 'aac_adtstoasc'",
+     * exit 234, no output file — measured on Apple's fMP4 example, whose default
+     * variant carries ac-3. ffmpeg's mp4 muxer already applies that conversion
+     * itself when it is needed, so the flag buys nothing and breaks a whole class
+     * of streams. Verified: with it removed the Apple stream muxes to a valid
+     * 1920x1080 h264+ac3 file, and an AAC HLS stream is byte-for-byte the same
+     * size with and without it.
+     */
     /*
      * The output format has to be stated, because the destination's name is not
      * a clue: Vyzor saves the transfer as `source.bin` and identifies it by
@@ -1396,6 +1407,26 @@ static int download_manifest(const mi_download_config *cfg, const char *url,
 }
 
 /*
+ * Which item of a playlist to fetch when the caller asked for "the page".
+ *
+ * Prefers an entry the extractor marks as a size, else the last usable one:
+ * a title-then-quality listing puts its highest rendition last (measured on
+ * archive.org's ElephantsDream, whose entries are an SD `ed_1024.avi` then an
+ * HD `ed_hd.avi`). Entries that are themselves playlists, or that carry no URL,
+ * are skipped — otherwise an archive.org "download all" index page, which links
+ * only other pages, would shadow the files it lists.
+ */
+static const char *pick_entry_url(const mi_extract_result *er) {
+    const char *best = NULL;
+    for (size_t i = 0; i < er->entry_count; i++) {
+        const mi_extract_entry *e = &er->entries[i];
+        if (!e->url || !*e->url || e->is_playlist) continue;
+        best = e->url;
+    }
+    return best;
+}
+
+/*
  * A streaming *page*, resolved to its streams and muxed.
  *
  * A video the extractor can read is not one URL. Measured on a YouTube watch
@@ -1426,6 +1457,33 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
 
     mi_extract_result er;
     if (mi_extract(&ecfg, page_url, &er) != MI_OK) return MI_ERR_NET;
+
+    /*
+     * A page that is a *listing* rather than a video.
+     *
+     * archive.org's `/details/` page is the example: some resolve to a single
+     * video (`BigBuckBunny_124` — `_type: video`, three formats), others to a
+     * playlist of separate files (`ElephantsDream` — `_type: playlist`, two
+     * entries, zero formats), and the second shape reported "the extractor found
+     * no video stream" for a page that plainly has one. When there is no format
+     * but there is a usable entry, resolve that entry instead: it answers with
+     * its own formats, and the rest of this function is unchanged.
+     *
+     * Deliberately one level deep and only when the caller gave no preference:
+     * "the last usable entry" is a defensible default, not a search.
+     */
+    mi_extract_result er2;
+    memset(&er2, 0, sizeof er2);
+    if (er.format_count == 0 && er.entry_count > 0) {
+        const char *entry = pick_entry_url(&er);
+        if (entry && mi_extract(&ecfg, entry, &er2) == MI_OK && er2.format_count > 0) {
+            mi_logf(MI_LOG_INFO, "download: page is a playlist; resolved entry %s", entry);
+            mi_extract_result_free(&er);
+            er = er2; /* the entry's formats replace the listing's, so the rest is unchanged */
+        } else {
+            mi_extract_result_free(&er2);
+        }
+    }
 
     /*
      * The best video and the best audio, chosen by resolution and then bitrate.

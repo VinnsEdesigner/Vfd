@@ -8,6 +8,7 @@
 #
 #   build-essential, pkg-config        compile Vyzor (C11) and find its libs
 #   libcurl4-openssl-dev               Vyzor's downloader and HTTP client
+#   libsqlite3-dev, zlib1g-dev         the frontier store and gzip support
 #   libgstreamer1.0-dev + base/bad     Vyzor's live-video build deps
 #   ca-certificates                    TLS trust store
 #   chromium                           the browser Vyzor renders and drives with
@@ -58,6 +59,7 @@ NO_NPM=0
 NO_BUILD=0
 DRY_RUN=0
 PARTIAL=0
+CACHE_DEBS=1
 
 usage() {
     sed -n '3,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -127,7 +129,7 @@ esac
 # ------------------------------------------------------------------ #
 # Package list                                                       #
 # ------------------------------------------------------------------ #
-BUILD_PKGS="build-essential pkg-config libcurl4-openssl-dev ca-certificates"
+BUILD_PKGS="build-essential pkg-config libcurl4-openssl-dev libsqlite3-dev zlib1g-dev ca-certificates"
 GST_BUILD_PKGS="libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev"
 MEDIA_PKGS="chromium xvfb fonts-liberation fonts-dejavu-core fonts-noto-core fonts-noto-color-emoji \
 gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \

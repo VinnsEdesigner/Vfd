@@ -1384,7 +1384,14 @@ static void process_token(builder *b, token *t) {
                 return;
             }
             if (t->type == TOK_DOCTYPE) return;
-            if (t->type == TOK_START && !strcasecmp(t->name, "html")) { process_token(b, t); return; }
+            if (t->type == TOK_START && !strcasecmp(t->name, "html")) {
+                /* Merge onto the implied <html> with the in-body rules. The
+                 * mode must change too, or the token re-enters this branch
+                 * without end. */
+                b->mode = IM_IN_BODY;
+                process_token(b, t);
+                return;
+            }
             if (t->type == TOK_START && !strcasecmp(t->name, "head")) {
                 b->head = make_element(t);
                 append_child(b->html, b->head);
@@ -1484,8 +1491,11 @@ static void process_token(builder *b, token *t) {
                 !strcasecmp(t->name, "link") || !strcasecmp(t->name, "meta") ||
                 !strcasecmp(t->name, "script") || !strcasecmp(t->name, "style") ||
                 !strcasecmp(t->name, "title") || !strcasecmp(t->name, "template"))) {
-                /* Put it in the head. */
+                /* Put it in the head. The mode must change too: leaving it at
+                 * IM_AFTER_HEAD makes the reprocessed token match this same
+                 * branch again and recurse without end. */
                 stack_push(b, b->head);
+                b->mode = IM_IN_HEAD;
                 process_token(b, t);
                 return;
             }
@@ -1639,6 +1649,10 @@ static void process_token(builder *b, token *t) {
                 }
                 if (!strcasecmp(t->name, "style") || !strcasecmp(t->name, "script") ||
                     !strcasecmp(t->name, "template")) {
+                    /* These are handled in the head, which means switching the
+                     * mode before the reprocess; otherwise the token re-enters
+                     * this branch without end. */
+                    b->mode = IM_IN_HEAD;
                     process_token(b, t);
                     return;
                 }
@@ -1916,7 +1930,9 @@ static void process_token(builder *b, token *t) {
 
         case IM_AFTER_BODY:
             if (t->type == TOK_CHAR && isspace((unsigned char)(t->data ? t->data[0] : ' '))) {
-                process_token(b, t); /* handled as in body */
+                /* Whitespace is handled as in body. Switch the mode *before*
+                 * reprocessing: calling process_token first re-enters this same
+                 * branch and recurses without end. */
                 b->mode = IM_IN_BODY; process_token(b, t); b->mode = IM_AFTER_BODY;
                 return;
             }
