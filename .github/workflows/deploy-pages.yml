@@ -50,7 +50,12 @@ jobs:
         working-directory: media-ingest-c
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
+          # The Makefile links -lsqlite3 -lz and mi_frontier.c includes
+          # <sqlite3.h>, so the sqlite and zlib dev headers are needed too —
+          # without them the build dies on sqlite3.h. Kept in step with
+          # scripts/install-toolchain.sh.
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libsqlite3-dev zlib1g-dev
           make
 
       - name: Verify (typecheck, lint, tests)
