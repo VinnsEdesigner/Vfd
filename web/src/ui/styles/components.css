@@ -5135,3 +5135,171 @@ input[type='range']:focus-visible {
   color: var(--accent);
   vertical-align: 1px;
 }
+
+/* ------------------------------------------------------------------ */
+/* Server log                                                          */
+/*                                                                     */
+/* A console-style block. The level is carried by three things that    */
+/* reinforce each other — a coloured rail, a coloured level chip, and  */
+/* the text colour — so a line is identifiable by more than hue alone  */
+/* (which matters for a colour-blind reader and in a greyscale print). */
+/* Only error fills its row: it is the level that has to be findable.  */
+/* ------------------------------------------------------------------ */
+.log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.log-toolbar__grow {
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+.log-toolbar__spacer {
+  flex: 1 1 auto;
+}
+.log-toolbar__count {
+  align-self: center;
+  font-size: 12.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The level filter as a segmented control: one tap to the level you want,
+   and the count on each so an error is visible without switching. */
+.log-levels {
+  display: inline-flex;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--surface);
+}
+.log-levels__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.log-levels__btn:first-child {
+  border-left: 0;
+}
+.log-levels__btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.log-levels__btn.is-active {
+  background: var(--sel-from);
+  color: var(--text);
+}
+.log-levels__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.log-levels__dot--error { background: var(--log-error); }
+.log-levels__dot--warn { background: var(--log-warn); }
+.log-levels__dot--info { background: var(--log-info); }
+.log-levels__dot--debug { background: var(--log-debug); }
+.log-levels__dot--all { background: var(--text-3); }
+.log-levels__n {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.log-view {
+  max-height: 62vh;
+  overflow-y: auto;
+  background: var(--log-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.log-view__empty {
+  margin: 0;
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--text-3);
+}
+.log-line {
+  display: grid;
+  grid-template-columns: 4px 74px 58px 1fr;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 10px 2px 0;
+  border-bottom: 1px solid var(--border);
+}
+.log-line:last-child {
+  border-bottom: 0;
+}
+/* The rail: the level as a solid bar, the strongest non-colour cue. */
+.log-line__rail {
+  align-self: stretch;
+  border-radius: 0 2px 2px 0;
+}
+.log-line__time {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.log-line__level {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.log-line__text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.log-line--error {
+  background: var(--log-error-bg);
+}
+.log-line--error .log-line__rail { background: var(--log-error); }
+.log-line--error .log-line__level { color: var(--log-error); }
+.log-line--error .log-line__text { color: var(--log-error); }
+
+.log-line--warn {
+  background: var(--log-warn-bg);
+}
+.log-line--warn .log-line__rail { background: var(--log-warn); }
+.log-line--warn .log-line__level { color: var(--log-warn); }
+
+.log-line--info .log-line__rail { background: var(--log-info-rule); }
+.log-line--info .log-line__level { color: var(--log-info); }
+
+.log-line--debug .log-line__rail { background: var(--log-debug-rule); }
+.log-line--debug .log-line__level { color: var(--log-debug); }
+.log-line--debug .log-line__text { color: var(--text-2); }
+
+/* The two-line variant on a narrow screen: the time and level sit above the
+   text rather than squeezing it into a narrow column. */
+@media (max-width: 720px) {
+  .log-line {
+    grid-template-columns: 4px 1fr;
+    gap: 4px 8px;
+    padding: 6px 10px 6px 0;
+  }
+  .log-line__time,
+  .log-line__level {
+    grid-column: 2;
+  }
+  .log-line__text {
+    grid-column: 2;
+  }
+}

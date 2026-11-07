@@ -694,7 +694,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
     }
     if (dup) {
         res->duplicates++;
-        mi_logf(MI_LOG_INFO, "crawl: %s is a near-duplicate; links only", url);
+        mi_logf(MI_LOG_WARN, "crawl: %s is a near-duplicate; links only", url);
     }
     if (cfg->brain && host) free(host);
 
@@ -1242,7 +1242,7 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
                     fetch_robots(cfg, host, next_url);
                 }
                 if (!mi_politeness_allowed(cfg->politeness, host, next_url)) {
-                    mi_logf(MI_LOG_INFO, "crawl: robots.txt disallows %s", next_url);
+                    mi_logf(MI_LOG_WARN, "crawl: robots.txt disallows %s", next_url);
                     free(host);
                     free(next_url);
                     continue;

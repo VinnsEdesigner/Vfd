@@ -1033,7 +1033,7 @@ char *mi_download_fetch_document(const mi_download_config *cfg, const char *url,
             return body;
         }
         free(meta);
-        mi_logf(MI_LOG_INFO, "impersonated fetch failed (%s); falling back to libcurl",
+        mi_logf(MI_LOG_WARN, "impersonated fetch failed (%s); falling back to libcurl",
                 ierr);
     }
 

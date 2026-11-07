@@ -364,7 +364,7 @@ export interface LogLine {
   seq: number;
   /** Epoch milliseconds, for a locale-formatted time. */
   timestamp: number;
-  level: 'error' | 'info' | 'debug';
+  level: 'error' | 'warn' | 'info' | 'debug';
   text: string;
 }
 

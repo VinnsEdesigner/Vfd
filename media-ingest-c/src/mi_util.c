@@ -97,6 +97,7 @@ mi_log_level mi_log_get_level(void) { return g_level; }
 void mi_logf(mi_log_level level, const char *fmt, ...) {
     if (level > g_level) return;
     const char *tag = level == MI_LOG_ERROR ? "error"
+                    : level == MI_LOG_WARN  ? "warn"
                     : level == MI_LOG_INFO  ? "info"
                                             : "debug";
     fprintf(stderr, "[%s] ", tag);

@@ -23,8 +23,25 @@ enum {
  * one place rather than being spelled out in each. */
 #define MI_VYZOR_VERSION "0.1.0"
 
-/* Log levels, controlled by mi_log_set_level(). */
-typedef enum { MI_LOG_QUIET = 0, MI_LOG_ERROR, MI_LOG_INFO, MI_LOG_DEBUG } mi_log_level;
+/* Log levels, controlled by mi_log_set_level().
+ *
+ * Ordered by severity, because the level *filter* is `level > g_level`: a
+ * higher number is more verbose. WARN sits between ERROR and INFO, so a default
+ * level of INFO shows warnings and errors and hides debug.
+ *
+ * WARN exists because a real category of line is neither: "robots.txt disallows
+ * this page", "the impersonated fetch failed, falling back to libcurl", "the
+ * page is a near-duplicate". Those are not failures — the operation continued —
+ * but they are not routine either, and lumping them in with INFO means the one
+ * line that explains a strange result is lost in the chatter.
+ */
+typedef enum {
+    MI_LOG_QUIET = 0,
+    MI_LOG_ERROR = 1,
+    MI_LOG_WARN = 2,
+    MI_LOG_INFO = 3,
+    MI_LOG_DEBUG = 4
+} mi_log_level;
 
 void mi_log_set_level(mi_log_level level);
 mi_log_level mi_log_get_level(void);

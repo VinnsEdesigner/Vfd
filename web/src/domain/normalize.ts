@@ -480,7 +480,14 @@ export function normalizeLogSnapshot(w: WireLogResponse): LogSnapshot {
     lines: (w.lines ?? []).map((l) => ({
       seq: l.seq,
       timestamp: l.ts * 1000,
-      level: l.level === 'error' ? 'error' : l.level === 'debug' ? 'debug' : 'info',
+      level:
+        l.level === 'error'
+          ? 'error'
+          : l.level === 'warn'
+            ? 'warn'
+            : l.level === 'debug'
+              ? 'debug'
+              : 'info',
       text: l.text,
     })),
     latest: w.latest ?? 0,

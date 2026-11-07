@@ -51,6 +51,27 @@
   --warning: #a35c00;
   --warning-soft: #fdf3e3;
 
+  /* ------------------------------------------------------------------
+     Log levels. Four tones, each as a text colour plus a soft tint for the
+     row, so a level reads at a glance without shouting: error is the only
+     one that fills the row, because it is the only one that needs to.
+     ------------------------------------------------------------------ */
+  --log-error: #b91c1c;
+  --log-error-bg: #fef2f2;
+  --log-error-rule: #f0b4b4;
+  --log-warn: #a35c00;
+  --log-warn-bg: #fdf7ec;
+  --log-warn-rule: #e8cf9a;
+  --log-info: #1f4f7a;
+  --log-info-bg: transparent;
+  --log-info-rule: #c9d6e2;
+  --log-debug: #6b6b6b;
+  --log-debug-bg: transparent;
+  --log-debug-rule: #dcdcdc;
+  /* The console the log is drawn on. Kept distinct from --surface so the block
+     reads as terminal output rather than as a card body. */
+  --log-bg: #fafafa;
+
   /* elevation */
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
   --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
@@ -105,6 +126,22 @@
 
   --warning: #fbbf24;
   --warning-soft: #2a2113;
+
+  /* Log levels, dark. Lighter inks on a deeper console so the same four tones
+     read the same way in either theme. */
+  --log-error: #fca5a5;
+  --log-error-bg: #2a1616;
+  --log-error-rule: #6b2b2b;
+  --log-warn: #fbbf24;
+  --log-warn-bg: #241d10;
+  --log-warn-rule: #5c4a1e;
+  --log-info: #93c5fd;
+  --log-info-bg: transparent;
+  --log-info-rule: #2f3a47;
+  --log-debug: #8a8a8a;
+  --log-debug-bg: transparent;
+  --log-debug-rule: #2a2a2a;
+  --log-bg: #111111;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);

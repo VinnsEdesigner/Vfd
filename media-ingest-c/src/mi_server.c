@@ -2996,8 +2996,9 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             mi_json_double(&b, recs[i].ts);
             mi_json_raw(&b, ",\"level\":");
             mi_json_string(&b, recs[i].level == MI_LOG_ERROR  ? "error"
-                              : recs[i].level == MI_LOG_DEBUG ? "debug"
-                                                              : "info");
+                              : recs[i].level == MI_LOG_WARN   ? "warn"
+                              : recs[i].level == MI_LOG_DEBUG  ? "debug"
+                                                               : "info");
             mi_json_raw(&b, ",\"text\":");
             mi_json_string(&b, recs[i].text);
             mi_json_raw(&b, "}");
