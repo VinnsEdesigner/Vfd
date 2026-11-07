@@ -148,7 +148,21 @@ whichever one source was given.
 store rather than continuing anonymously — measured, `could not find chromium
 cookies database`. So it is worth setting only on a host where that browser is
 actually signed in, and the failure is a clear message rather than a silent
-fallback.
+fallback. The browser may be left running: yt-dlp copies the cookie database to
+a temp file before reading it.
+
+**How it reads them.** For a Chromium-family browser, yt-dlp finds the profile's
+`Cookies` SQLite database under the browser's user-data directory, copies it
+aside, and reads the `cookies` table. The values are encrypted at rest, so it
+also derives the decryption key — from the OS keyring (Secret Service / KWallet)
+on Linux, the Keychain on macOS, the DPAPI on Windows — and decrypts each row
+(`v10`/`v11` schemes). For Firefox it reads `cookies.sqlite` directly; those are
+not encrypted. Either way the result is a cookie jar for that one run, which is
+exactly what a `cookies.txt` export would have contained.
+
+That is why it needs the *same machine*: the key lives in that machine's keyring,
+and the profile in that machine's filesystem. A container running Vyzor cannot
+reach the host's browser store unless the profile is mounted into it.
 
 **If it still fails.** Read the Logs tab in the console, or `GET /api/v1/logs`.
 A `403` from a `googlevideo.com` URL is the address refusal; a message naming

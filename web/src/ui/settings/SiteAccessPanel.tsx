@@ -157,8 +157,7 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
             />
             <span className="field__hint">
               For a browser Vyzor&apos;s host is already signed in to. Takes precedence
-              over the export above. The browser must be closed for some stores to be
-              readable.
+              over the export above. The browser may stay open.
             </span>
           </div>
         </div>
