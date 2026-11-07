@@ -241,6 +241,7 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->render_viewport_height = 900;
     cfg->render_browser = NULL;
     cfg->render_profile_root = NULL;
+    cfg->persistent_profile = NULL;
     /* Caching on by default: a render is expensive, and the same page is often
      * looked at twice. 0 means "the built-in default" for each bound. */
     cfg->render_cache_dir = NULL; /* filled from the work dir when serving */
@@ -366,6 +367,36 @@ void mi_server_config_init(mi_server_config *cfg) {
          */
         const char *cb = getenv("MI_COOKIES_FROM_BROWSER");
         if (cb && *cb) cfg->cookies_from_browser = mi_strdup(cb);
+    }
+    /*
+     * A profile the live browser keeps between sessions.
+     *
+     * With this set, a sign-in done once in the live view survives a restart, and
+     * the profile is on disk for the extractor to read as a cookie source — which
+     * is what makes "sign in through Vyzor's own browser, then download" work
+     * without any export at all.
+     */
+    {
+        const char *pp = getenv("MI_PERSISTENT_PROFILE");
+        if (pp && *pp) cfg->persistent_profile = mi_strdup(pp);
+    }
+    /*
+     * A persistent profile is also the cookie source, unless one was named
+     * explicitly.
+     *
+     * The point of keeping the profile is so a sign-in done once in the live view
+     * is usable afterwards; making the operator set *two* variables for that — the
+     * profile and a cookie source pointing at it — would be a trap, and forgetting
+     * the second is a silent "why is it still anonymous". So the extractor is
+     * pointed at the profile here. yt-dlp takes it as `chrome:<path>`, which is
+     * the browser name plus the profile directory.
+     *
+     * "chrome" names the *decryptor*, not a path it searches: the chromium family
+     * shares one on Linux, so chrome/chromium/edge all read the same store.
+     */
+    if (cfg->persistent_profile && *cfg->persistent_profile &&
+        !(cfg->cookies_from_browser && *cfg->cookies_from_browser)) {
+        cfg->cookies_from_browser = mi_asprintf("chrome:%s", cfg->persistent_profile);
     }
     /* NULL means "ffmpeg" from PATH. Named so an operator can point at a build
      * of their own; a distribution's copy can lag. */
@@ -4625,6 +4656,12 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_key(&b, "cookies_from_browser");
         mi_json_string(&b, srv->cfg.cookies_from_browser);
         mi_json_raw(&b, ",");
+        /* The profile the live browser keeps, when there is one. Not a secret —
+         * a directory path. The console uses it to tell the operator that a
+         * sign-in made in the live view is what the extractor will read. */
+        mi_json_key(&b, "persistent_profile");
+        mi_json_string(&b, srv->cfg.persistent_profile);
+        mi_json_raw(&b, ",");
         mi_json_key(&b, "impersonate");
         mi_json_string(&b, srv->cfg.impersonate);
         mi_json_raw(&b, ",");
@@ -5095,6 +5132,7 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
         icfg.user_agent = cfg->user_agent;
         icfg.proxy = cfg->proxy;
         icfg.profile_root = cfg->render_profile_root;
+        icfg.persistent_profile = cfg->persistent_profile;
         if (cfg->interactive_keepalive_ping_seconds > 0)
             icfg.keepalive_ping_seconds = cfg->interactive_keepalive_ping_seconds;
         if (cfg->interactive_keepalive_timeout_seconds > 0)

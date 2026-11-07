@@ -30,6 +30,7 @@ would expose anyway.
 | — | `MI_IMPERSONATE_HELPER` | helper binary for impersonation |
 | — | `MI_COOKIES_FILE` | a path to a Netscape cookie file (a path, not the contents) |
 | — | `MI_COOKIES_FROM_BROWSER` | a browser to read cookies from, e.g. `chrome` (yt-dlp's `--cookies-from-browser`) |
+| `--persistent-profile DIR` | `MI_PERSISTENT_PROFILE` | a profile the live browser keeps between sessions, so a sign-in done there survives — and is the cookie source the extractor reads |
 
 `MI_COOKIES_FILE` is a path so the credential lives in a file the operator
 controls the permissions on, rather than in the process environment where `ps e`

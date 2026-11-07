@@ -58,6 +58,18 @@ typedef struct {
     const char *proxy;
     const char *profile_root;  /* where throwaway profiles are made */
     /*
+     * A profile directory that *survives* a session, so a sign-in done once in
+     * the live view is still there next time — and, more to the point, is on
+     * disk for the extractor to read as a cookie source.
+     *
+     * NULL keeps the old behaviour: a throwaway profile per session, removed on
+     * close. Set, the one directory is reused and never removed, and the browser
+     * is launched with `--password-store=basic` — the fixed-key store, which
+     * yt-dlp can decrypt without a keyring (verified: `chrome+basic:<path>` and
+     * even the plain path both read the cookies back).
+     */
+    const char *persistent_profile;
+    /*
      * Close a session that has had no input and produced no frame for this many
      * seconds. A live browser left open is a leak the size of a browser; this is
      * what stops a forgotten tab from holding one forever. 0 disables it.

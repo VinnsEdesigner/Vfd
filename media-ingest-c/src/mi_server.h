@@ -69,6 +69,12 @@ typedef struct {
     const char *render_browser;   /* explicit Chromium path, else searched */
     const char *render_profile_root; /* where throwaway profiles are made */
     /*
+     * A profile directory the live browser keeps between sessions, so a sign-in
+     * done once in the live view survives — and is on disk for the extractor to
+     * read as a cookie source. NULL is a throwaway profile per session.
+     */
+    const char *persistent_profile;
+    /*
      * Rendered-page cache. NULL `render_cache_dir` turns it off; the budget and
      * TTL bound it, and 0 means the built-in default in each case. It is on by
      * default, under the work dir, because a render is expensive enough that

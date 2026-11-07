@@ -164,6 +164,43 @@ That is why it needs the *same machine*: the key lives in that machine's keyring
 and the profile in that machine's filesystem. A container running Vyzor cannot
 reach the host's browser store unless the profile is mounted into it.
 
+### Signing in through Vyzor's own browser
+
+The tidiest route needs no export and no browser on the host: sign in once
+through the **live page view**, and let Vyzor keep the profile.
+
+```bash
+MI_PERSISTENT_PROFILE=/data/vyzor-profile ./build/vyzor serve \
+  --render --interactive …
+```
+
+With that set:
+
+- the live browser uses that directory as its `--user-data-dir` and **does not
+  delete it** when the session ends (the default is a throwaway profile per
+  session, removed on close);
+- the browser is launched with `--password-store=basic`, so the cookie store is
+  one yt-dlp can decrypt without a system keyring — a headless host usually has
+  none, and a keyring-encrypted store would be unreadable;
+- the extractor is pointed at that profile automatically
+  (`--cookies-from-browser chrome:<dir>`), so there is no second setting to
+  forget.
+
+The flow is then: open a live page, navigate to the site, sign in, close it — and
+the session is on disk for every later resolve and download.
+
+Two details that matter:
+
+- **The browser is closed gracefully.** Chromium buffers its cookie database and
+  writes it on a clean shutdown; a `SIGKILL` loses it. Measured: a graceful
+  `Browser.close` leaves the cookie on disk, a kill does not. So when a
+  persistent profile is configured, Vyzor asks the browser to close and waits
+  (up to ~6 s) before the firm kill. Without this the sign-in would be lost
+  every time.
+- **The profile is a credential.** It holds a live session for every site signed
+  into through it. Put it on the same volume as the downloads, keep it out of
+  version control, and treat it like the cookie file.
+
 **If it still fails.** Read the Logs tab in the console, or `GET /api/v1/logs`.
 A `403` from a `googlevideo.com` URL is the address refusal; a message naming
 `Sign in to confirm you're not a bot` is the session wall. The two need different

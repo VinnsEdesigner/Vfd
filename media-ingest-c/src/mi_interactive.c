@@ -229,6 +229,7 @@ void mi_interactive_config_init(mi_interactive_config *cfg) {
     cfg->user_agent = NULL;
     cfg->proxy = NULL;
     cfg->profile_root = NULL;
+    cfg->persistent_profile = NULL;
     /*
      * The idle window.
      *
@@ -1381,6 +1382,18 @@ static pid_t spawn_browser(const mi_interactive_config *cfg, const char *browser
         av[n++] = "--disable-renderer-backgrounding";
         av[n++] = "--disable-background-timer-throttling";
         av[n++] = "--remote-debugging-pipe";
+        /*
+         * A persistent profile uses the fixed-key password store, not the OS
+         * keyring. Two reasons: a headless host may have no keyring at all (no
+         * Secret Service in a container), and a fixed key is what makes the
+         * store readable by the extractor — yt-dlp decrypts a `basic` store
+         * without a keyring, which a keyring-encrypted one would refuse.
+         * Verified: a cookie written this way reads back as a `v10` cookie
+         * through `--cookies-from-browser chrome:<path>`.
+         */
+        if (cfg->persistent_profile && *cfg->persistent_profile) {
+            av[n++] = "--password-store=basic";
+        }
         if (ua) av[n++] = ua;
         if (px) av[n++] = px;
         if (jsflags) av[n++] = jsflags;
@@ -1409,6 +1422,18 @@ static pid_t spawn_browser(const mi_interactive_config *cfg, const char *browser
 /* ------------------------------------------------------------------ */
 
 static char *make_profile_dir(const mi_interactive_config *cfg, const char *id) {
+    /*
+     * A configured persistent profile is used *as is* — not wiped, not removed on
+     * close — because its whole point is to keep a sign-in between sessions. The
+     * throwaway path keeps the old behaviour: a fresh, empty directory per
+     * session, deleted when it ends.
+     */
+    if (cfg->persistent_profile && *cfg->persistent_profile) {
+        char *dir = mi_strdup(cfg->persistent_profile);
+        if (!dir) return NULL;
+        if (mi_mkdir_p(dir) != 0) { free(dir); return NULL; }
+        return dir;
+    }
     const char *root = (cfg->profile_root && *cfg->profile_root) ? cfg->profile_root : "/tmp";
     char *dir = mi_asprintf("%s/vyzorix-live-%s", root, id);
     if (!dir) return NULL;
@@ -2206,7 +2231,34 @@ void mi_interactive_stop(mi_interactive *it) {
 
 void mi_interactive_close(mi_interactive *it) {
     if (!it) return;
+    int keep_profile = it->pool && it->pool->cfg.persistent_profile &&
+                       *it->pool->cfg.persistent_profile;
     if (it->pid > 0) {
+        /*
+         * A persistent profile is closed *gracefully* first.
+         *
+         * Chromium buffers its cookie database and writes it on a clean
+         * shutdown — measured: a graceful `Browser.close` leaves the cookie on
+         * disk, a SIGKILL does not. That is the difference between a sign-in
+         * surviving and being lost, which is the whole point of keeping the
+         * profile, so the browser is asked to close and given time to flush
+         * before the group is killed.
+         *
+         * A throwaway profile skips this: nothing in it is worth the wait, and
+         * the old path is kept for it.
+         */
+        if (keep_profile) {
+            cdp_command(it, "Browser.close", NULL);
+            struct timespec grace = {.tv_sec = 0, .tv_nsec = 150 * 1000 * 1000};
+            int status = 0;
+            for (int i = 0; i < 60; i++) { /* up to ~6 s for the flush */
+                pid_t got = waitpid(it->pid, &status, WNOHANG);
+                if (got == it->pid || (got < 0 && errno != EINTR)) break;
+                nanosleep(&grace, NULL);
+            }
+            /* If it is still up, the flush has had its chance; fall through to
+             * the firm path below. */
+        }
         /* Kill the whole group: politely, then firmly, then reap. Chromium's
          * helpers would otherwise reparent and, in a container, never be
          * reaped. */
@@ -2223,7 +2275,14 @@ void mi_interactive_close(mi_interactive *it) {
     }
     if (it->wfd >= 0) close(it->wfd);
     if (it->rfd >= 0) close(it->rfd);
-    if (it->profile) mi_rm_rf(it->profile);
+    /*
+     * A throwaway profile is removed; a persistent one is kept, because the
+     * sign-in it holds is the whole point of it and the extractor reads it by
+     * path afterwards.
+     */
+    if (it->profile) {
+        if (!keep_profile) mi_rm_rf(it->profile);
+    }
     free(it->profile);
     free(it->rbuf);
     free(it->wbuf);
