@@ -18,6 +18,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mi_extract.h"
+
 typedef struct {
     char *url;      /* absolute */
     char *filename; /* the name a save should use */
@@ -27,6 +29,20 @@ typedef struct {
     char *title;
     char *mime;     /* guessed from the extension; may be "" */
     int64_t bytes;  /* -1 when the source did not say */
+    /*
+     * 1 when a media extractor resolved this item rather than the page's own
+     * markup yielding it.
+     *
+     * The distinction matters to a caller. An extracted item's URL is the
+     * *page*, not a stream URL: a stream URL is signed and expires within hours,
+     * so a browse result that carried one would be dead by the time it was
+     * clicked — the download path re-resolves the page instead. And an extracted
+     * item is the only one that is actually playable on a page built by
+     * JavaScript, whose markup references no media at all.
+     */
+    int resolved;
+    /* A poster for the item, when the extractor reported one. NULL otherwise. */
+    char *thumbnail;
 } mi_browse_item;
 
 /*
@@ -62,6 +78,30 @@ void mi_browse_result_free(mi_browse_result *res);
  */
 int mi_browse_url(const char *url, const char *user_agent, mi_browse_filter filter,
                   mi_browse_result *out);
+
+/*
+ * A configuration for a browse that may also ask a media extractor.
+ *
+ * Everything a browse needs beyond the URL: the egress and identity settings the
+ * rest of the server uses, so a page behind a sign-in or a refusal is read the
+ * same way a download would read it. All fields may be left NULL.
+ */
+typedef struct {
+    const char *user_agent;
+    const char *cookies_text;
+    const char *proxy;
+    const char *impersonate;
+    const char *extractor_path;
+    const char *gallery_extractor_path;
+    /* When non-zero, a page whose markup references no playable media is asked
+     * of the extractor, which is the only way a JavaScript-built page (a video
+     * watch page) yields its media at all. */
+    int use_extractor;
+} mi_browse_config;
+
+/* The same as mi_browse_url, with the settings above. */
+int mi_browse_url_ext(const mi_browse_config *cfg, const char *url,
+                      mi_browse_filter filter, mi_browse_result *out);
 
 /*
  * The same, over bytes already in hand. Exposed so the extraction can be tested

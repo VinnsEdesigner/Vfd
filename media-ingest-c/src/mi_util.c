@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <dirent.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,80 @@
 #include <unistd.h>
 
 static mi_log_level g_level = MI_LOG_INFO;
+
+/* ------------------------------------------------------------------ */
+/* The log ring                                                        */
+/*                                                                    */
+/* The lines the server has logged lately, so an API can serve them.   */
+/* A fixed array used as a ring: bounded memory, and an old line is    */
+/* overwritten rather than the buffer growing. Guarded by one mutex,   */
+/* because log lines come from every worker thread.                    */
+/* ------------------------------------------------------------------ */
+#define LOG_RING_CAP 500
+
+static struct {
+    pthread_mutex_t lock;
+    int enabled;
+    uint64_t next_seq; /* the seq the next line will get; 1-based */
+    size_t count;      /* how many slots hold a line */
+    size_t head;       /* where the next line is written */
+    mi_log_record rec[LOG_RING_CAP];
+} g_ring = {.lock = PTHREAD_MUTEX_INITIALIZER};
+
+void mi_log_ring_enable(int on) {
+    pthread_mutex_lock(&g_ring.lock);
+    g_ring.enabled = on != 0;
+    /* A fresh start: keeping lines from before the toggle would make the seq
+     * the caller last saw ambiguous. */
+    g_ring.count = 0;
+    g_ring.head = 0;
+    pthread_mutex_unlock(&g_ring.lock);
+}
+
+int mi_log_ring_enabled(void) {
+    pthread_mutex_lock(&g_ring.lock);
+    int on = g_ring.enabled;
+    pthread_mutex_unlock(&g_ring.lock);
+    return on;
+}
+
+static void ring_append(int level, const char *text) {
+    if (!g_ring.enabled) return;
+    pthread_mutex_lock(&g_ring.lock);
+    mi_log_record *r = &g_ring.rec[g_ring.head];
+    r->seq = ++g_ring.next_seq;
+    r->ts = (double)time(NULL);
+    r->level = level;
+    /* Truncate, because some lines carry a signed URL thousands of bytes long. */
+    snprintf(r->text, sizeof r->text, "%s", text);
+    g_ring.head = (g_ring.head + 1) % LOG_RING_CAP;
+    if (g_ring.count < LOG_RING_CAP) g_ring.count++;
+    pthread_mutex_unlock(&g_ring.lock);
+}
+
+size_t mi_log_snapshot(uint64_t since, mi_log_record **out) {
+    if (out) *out = NULL;
+    pthread_mutex_lock(&g_ring.lock);
+    /* Count first, so the array is sized exactly and no realloc is needed. */
+    size_t n = 0;
+    for (size_t i = 0; i < g_ring.count; i++) {
+        size_t idx = (g_ring.head + LOG_RING_CAP - g_ring.count + i) % LOG_RING_CAP;
+        if (g_ring.rec[idx].seq > since) n++;
+    }
+    mi_log_record *arr = n ? mi_malloc(n * sizeof *arr) : NULL;
+    size_t w = 0;
+    if (arr) {
+        for (size_t i = 0; i < g_ring.count; i++) {
+            size_t idx = (g_ring.head + LOG_RING_CAP - g_ring.count + i) % LOG_RING_CAP;
+            if (g_ring.rec[idx].seq > since) arr[w++] = g_ring.rec[idx];
+        }
+    }
+    pthread_mutex_unlock(&g_ring.lock);
+    if (out) *out = arr;
+    return arr ? w : 0;
+}
+
+void mi_log_snapshot_free(mi_log_record *p) { free(p); }
 
 void mi_log_set_level(mi_log_level level) { g_level = level; }
 mi_log_level mi_log_get_level(void) { return g_level; }
@@ -30,6 +105,20 @@ void mi_logf(mi_log_level level, const char *fmt, ...) {
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fputc('\n', stderr);
+
+    /*
+     * The same line into the ring, so an API can serve it. Formatted separately
+     * rather than captured from the stderr write, because stderr is a FILE the
+     * caller may have redirected and this must work regardless.
+     */
+    if (g_ring.enabled) {
+        char buf[MI_LOG_LINE_CAP];
+        va_list ap2;
+        va_start(ap2, fmt);
+        vsnprintf(buf, sizeof buf, fmt, ap2);
+        va_end(ap2);
+        ring_append(level, buf);
+    }
 }
 
 void *mi_malloc(size_t n) { return malloc(n ? n : 1); }

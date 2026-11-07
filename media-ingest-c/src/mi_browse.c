@@ -8,6 +8,7 @@
 #include <strings.h>
 
 #include "mi_download.h"
+#include "mi_extract.h"
 #include "mi_json.h"
 #include "mi_util.h"
 
@@ -250,6 +251,7 @@ void mi_browse_result_free(mi_browse_result *res) {
         free(res->items[i].filename);
         free(res->items[i].title);
         free(res->items[i].mime);
+        free(res->items[i].thumbnail);
     }
     free(res->items);
     free(res->title);
@@ -323,6 +325,10 @@ static void offer(mi_browse_result *out, const char *base, const char *ref,
     it->title = title && *title ? mi_strdup(title) : NULL;
     it->mime = mi_strdup(mime_for_name(name));
     it->bytes = size_hint;
+    /* The realloc'd slot is uninitialised, so every field the struct has must be
+     * set here — a field left out is a garbage pointer the JSON writer follows. */
+    it->resolved = 0;
+    it->thumbnail = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -653,18 +659,112 @@ int mi_browse_parse(const char *body, size_t len, const char *base,
 
 int mi_browse_url(const char *url, const char *user_agent, mi_browse_filter filter,
                   mi_browse_result *out) {
+    mi_browse_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.user_agent = user_agent;
+    return mi_browse_url_ext(&cfg, url, filter, out);
+}
+
+/*
+ * Ask the extractor what media the page is, and offer that as one item.
+ *
+ * This is the fix for a JavaScript-built page. A watch page's markup references
+ * no media at all — its own `<video>` src is set by script after load — so the
+ * HTML pass finds only the site's chrome: favicons, a touch icon, a logo. The
+ * extractor knows the page's media because it understands the site, so when the
+ * markup yields nothing playable it is asked, and its answer is added as a
+ * `resolved` item.
+ *
+ * The item's URL is the *page*, not the stream the extractor reported. A stream
+ * URL is signed and expires within hours, so carrying it would produce a result
+ * that 404s by the time it is clicked; the download path re-resolves the page
+ * instead. `filename` is built from the title, so the card reads as the video
+ * rather than as a URL.
+ *
+ * Only offered when the markup found nothing playable, so a plain gallery is not
+ * second-guessed, and only under MI_BROWSE_MEDIA — "everything the page
+ * references" is a question about the markup, and the extractor's answer is not
+ * part of that.
+ */
+static void offer_extracted(const mi_browse_config *cfg, const char *url,
+                            mi_browse_result *out) {
+    mi_extract_config ecfg;
+    mi_extract_config_init(&ecfg);
+    ecfg.binary = cfg->extractor_path;
+    ecfg.gallery_binary = cfg->gallery_extractor_path;
+    ecfg.cookies_text = cfg->cookies_text;
+    ecfg.proxy = cfg->proxy;
+    ecfg.impersonate = cfg->impersonate;
+
+    /* Gallery hosts are gallery-dl's job and their markup already lists the
+     * images, so only a video site is asked. */
+    if (mi_extract_pick(&ecfg, url) == MI_EXTRACT_GALLERY) return;
+
+    mi_extract_result er;
+    if (mi_extract(&ecfg, url, &er) != MI_OK) return;
+
+    /* A video the extractor resolved: a title, and formats that say it is real
+     * media rather than a page it merely recognised. */
+    int has_media = er.format_count > 0;
+    if (!has_media && er.entry_count == 0) {
+        mi_extract_result_free(&er);
+        return;
+    }
+
+    if (out->count >= MAX_ITEMS) {
+        mi_extract_result_free(&er);
+        return;
+    }
+    mi_browse_item *grown = mi_realloc(out->items, (out->count + 1) * sizeof *grown);
+    if (!grown) {
+        mi_extract_result_free(&er);
+        return;
+    }
+    out->items = grown;
+    mi_browse_item *it = &out->items[out->count++];
+
+    const char *title = (er.title && *er.title) ? er.title : "media";
+    it->url = mi_strdup(url);
+    it->title = mi_strdup(title);
+    it->mime = mi_strdup("video/mp4");
+    it->bytes = -1;
+    it->resolved = 1;
+    it->thumbnail = er.thumbnail ? mi_strdup(er.thumbnail) : NULL;
+    /* A filename the OS can open: the title with a video extension. */
+    {
+        size_t tl = strlen(title);
+        char *name = mi_calloc(tl + 6, 1);
+        if (name) {
+            memcpy(name, title, tl);
+            memcpy(name + tl, ".mp4", 5);
+            it->filename = name;
+        } else {
+            it->filename = mi_strdup("media.mp4");
+        }
+    }
+
+    mi_extract_result_free(&er);
+}
+
+int mi_browse_url_ext(const mi_browse_config *cfg, const char *url,
+                      mi_browse_filter filter, mi_browse_result *out) {
     if (!url || !out) return MI_ERR_ARG;
     result_init(out);
 
-    mi_download_config cfg;
-    mi_download_config_init(&cfg);
+    mi_download_config dcfg;
+    mi_download_config_init(&dcfg);
     /* A listing page is not itself media, so the media check must not apply. */
-    cfg.require_media = 0;
+    dcfg.require_media = 0;
     /* Some hosts refuse a request that does not look like a browser, so the
      * operator can say what Vyzor should call itself. */
-    cfg.user_agent = user_agent;
+    dcfg.user_agent = cfg ? cfg->user_agent : NULL;
+    if (cfg) {
+        dcfg.cookies_text = cfg->cookies_text;
+        dcfg.proxy = cfg->proxy;
+        dcfg.impersonate = cfg->impersonate;
+    }
 
-    char *body = mi_download_fetch_text(&cfg, url, MAX_BODY);
+    char *body = mi_download_fetch_text(&dcfg, url, MAX_BODY);
     if (!body) return MI_ERR_NET;
 
     /* Extract against the URL as given: redirects are followed by the fetcher,
@@ -672,5 +772,25 @@ int mi_browse_url(const char *url, const char *user_agent, mi_browse_filter filt
      * have shown, which is the final URL. */
     int rc = mi_browse_parse(body, strlen(body), url, filter, out);
     free(body);
-    return rc;
+    if (rc != MI_OK) return rc;
+
+    /*
+     * A page whose markup yielded no playable media, under MEDIA mode, is asked
+     * of the extractor: the only way a JavaScript-built page (a watch page)
+     * yields its media at all. A page that already listed media is left as it is.
+     */
+    if (cfg && cfg->use_extractor && filter == MI_BROWSE_MEDIA) {
+        int playable = 0;
+        for (size_t i = 0; i < out->count; i++) {
+            const char *m = out->items[i].mime;
+            if (m && (!strncmp(m, "video/", 6) || !strncmp(m, "audio/", 6) ||
+                      !strcmp(m, "application/vnd.apple.mpegurl") ||
+                      !strcmp(m, "application/dash+xml"))) {
+                playable = 1;
+                break;
+            }
+        }
+        if (!playable) offer_extracted(cfg, url, out);
+    }
+    return MI_OK;
 }

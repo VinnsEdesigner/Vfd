@@ -994,8 +994,47 @@ static int prefers_over(const mi_crawl_hit *a, const mi_crawl_hit *b) {
  * robots.txt must not take a site off the web, and it must not be re-fetched on
  * every page.
  */
-static void fetch_robots(const mi_crawl_config *cfg, const char *host) {
-    char *url = mi_asprintf("https://%s/robots.txt", host);
+/* The scheme of a URL ("http" or "https"), defaulting to https. */
+static const char *scheme_of(const char *url) {
+    if (url && !strncasecmp(url, "http://", 7)) return "http";
+    return "https";
+}
+
+/*
+ * The authority of a URL: host and port, without userinfo, path or query.
+ *
+ * Distinct from mi_antibot_host_of, which strips the port because it is used as
+ * an identity key. A *request* needs the port back: building
+ * `http://<host>/robots.txt` from the port-stripped host sent the fetch to port
+ * 80, so a site on any other port — every test server, and real sites on :8080 —
+ * never had its robots.txt read at all.
+ */
+static char *authority_of(const char *url) {
+    if (!url) return NULL;
+    const char *p = strstr(url, "://");
+    p = p ? p + 3 : url;
+    const char *at = strchr(p, '@');
+    const char *slash = strchr(p, '/');
+    if (at && (!slash || at < slash)) p = at + 1;
+    const char *end = p;
+    while (*end && *end != '/' && *end != '?' && *end != '#') end++;
+    if (end == p) return NULL;
+    return mi_strndup(p, (size_t)(end - p));
+}
+
+/*
+ * Fetch a host's robots.txt, once.
+ *
+ * robots.txt is served over the same scheme and authority as the page being
+ * walked, so both are taken from the page URL rather than assumed. `host` is the
+ * port-stripped key the rules are stored under (the same key the politeness
+ * check uses); `page_url` is where the robots.txt lives.
+ */
+static void fetch_robots(const mi_crawl_config *cfg, const char *host, const char *page_url) {
+    char *authority = authority_of(page_url);
+    if (!authority) return;
+    char *url = mi_asprintf("%s://%s/robots.txt", scheme_of(page_url), authority);
+    free(authority);
     if (!url) return;
     mi_download_config dcfg;
     mi_download_config_init(&dcfg);
@@ -1166,7 +1205,7 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
         char *shost = mi_antibot_host_of(site_url);
         if (shost) {
             if (!mi_politeness_have_robots(cfg->politeness, shost))
-                fetch_robots(cfg, shost);
+                fetch_robots(cfg, shost, site_url);
             int n = seed_from_sitemaps(cfg, f, shost, max_pages);
             if (n > 0) mi_logf(MI_LOG_INFO, "crawl: seeded %d url(s) from sitemaps", n);
             free(shost);
@@ -1196,7 +1235,7 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
         if (host && cfg->politeness) {
             if (cfg->obey_robots) {
                 if (!mi_politeness_have_robots(cfg->politeness, host)) {
-                    fetch_robots(cfg, host);
+                    fetch_robots(cfg, host, next_url);
                 }
                 if (!mi_politeness_allowed(cfg->politeness, host, next_url)) {
                     mi_logf(MI_LOG_INFO, "crawl: robots.txt disallows %s", next_url);

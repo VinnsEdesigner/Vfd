@@ -31,6 +31,47 @@ mi_log_level mi_log_get_level(void);
 void mi_logf(mi_log_level level, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 
+/*
+ * A bounded in-memory ring of recent log lines.
+ *
+ * Vyzor logs to stderr, which a console cannot see — so a user watching a crawl
+ * or a download fail is blind to the reason. This keeps the last few hundred
+ * lines in memory so an API can serve them, which is what makes a "what
+ * happened" view possible. It is a *ring*, not a file: bounded, so a long-running
+ * server cannot fill a disk, and lost on restart, which is the right lifetime for
+ * "what just happened".
+ *
+ * A line is truncated to MI_LOG_LINE_CAP bytes. That is a deliberate bound —
+ * some of Vyzor's own log lines carry a signed stream URL several kilobytes long,
+ * and keeping those whole would make the ring's memory unbounded in practice.
+ */
+#define MI_LOG_LINE_CAP 512
+
+typedef struct {
+    /* Monotonic, so a caller can ask for only what it has not seen. */
+    uint64_t seq;
+    /* Unix epoch seconds, for display. */
+    double ts;
+    /* One of mi_log_level. */
+    int level;
+    /* The message, truncated to MI_LOG_LINE_CAP - 1 bytes. */
+    char text[MI_LOG_LINE_CAP];
+} mi_log_record;
+
+/* Start (or stop) capturing lines into the ring. Off until asked. */
+void mi_log_ring_enable(int on);
+int mi_log_ring_enabled(void);
+
+/*
+ * Copy the records with `seq` greater than `since` into an owned array, oldest
+ * first. `*out` receives the array (NULL when there are none) and the return
+ * value is the count. Free with mi_log_snapshot_free.
+ *
+ * `since` 0 returns everything the ring holds.
+ */
+size_t mi_log_snapshot(uint64_t since, mi_log_record **out);
+void mi_log_snapshot_free(mi_log_record *p);
+
 /* xmalloc family: abort-on-OOM is avoided; callers check for NULL. */
 void *mi_malloc(size_t n);
 void *mi_calloc(size_t n, size_t sz);

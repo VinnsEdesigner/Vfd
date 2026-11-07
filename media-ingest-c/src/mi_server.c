@@ -25,6 +25,7 @@
 #include "mi_detect.h"
 #include "mi_extract.h"
 #include "mi_captcha.h"
+#include "mi_impersonate.h"
 #include "mi_extract_rows.h"
 #include "mi_politeness.h"
 #include "mi_download.h"
@@ -2920,7 +2921,57 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         return;
     }
 
-    /* GET /api/v1/capabilities */
+    /*
+     * GET /api/v1/logs?since=N — recent server log lines.
+     *
+     * The server logs to stderr, which a console cannot see, so a user watching
+     * a crawl or a download fail is blind to the reason. This serves the bounded
+     * in-memory ring instead: the caller passes the highest `seq` it has seen and
+     * gets only what is newer, so polling is incremental and cheap.
+     *
+     * The lines are the server's own — the same text that goes to stderr — so a
+     * console view and a terminal tail show the same thing.
+     */
+    if (!strcmp(req->path, "/api/v1/logs") && !strcmp(req->method, "GET")) {
+        uint64_t since = 0;
+        char *s = query_str(req->query, "since");
+        if (s && *s) since = (uint64_t)strtoull(s, NULL, 10);
+        free(s);
+
+        mi_log_record *recs = NULL;
+        size_t n = mi_log_snapshot(since, &recs);
+
+        mi_json_buf b;
+        mi_json_init(&b);
+        mi_json_raw(&b, "{\"lines\":[");
+        uint64_t latest = since;
+        for (size_t i = 0; i < n; i++) {
+            if (i) mi_json_raw(&b, ",");
+            mi_json_raw(&b, "{\"seq\":");
+            mi_json_int(&b, (int64_t)recs[i].seq);
+            mi_json_raw(&b, ",\"ts\":");
+            mi_json_double(&b, recs[i].ts);
+            mi_json_raw(&b, ",\"level\":");
+            mi_json_string(&b, recs[i].level == MI_LOG_ERROR  ? "error"
+                              : recs[i].level == MI_LOG_DEBUG ? "debug"
+                                                              : "info");
+            mi_json_raw(&b, ",\"text\":");
+            mi_json_string(&b, recs[i].text);
+            mi_json_raw(&b, "}");
+            if (recs[i].seq > latest) latest = recs[i].seq;
+        }
+        mi_json_raw(&b, "],\"latest\":");
+        mi_json_int(&b, (int64_t)latest);
+        mi_json_raw(&b, ",\"enabled\":");
+        mi_json_bool(&b, mi_log_ring_enabled());
+        mi_json_raw(&b, "}");
+        send_json(fd, 200, "OK", &b, cors);
+        mi_json_free(&b);
+        mi_log_snapshot_free(recs);
+        return;
+    }
+
+/* GET /api/v1/capabilities */
     if (!strcmp(req->path, "/api/v1/capabilities") && !strcmp(req->method, "GET")) {
         mi_json_buf b;
         mi_json_init(&b);
@@ -3500,7 +3551,14 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
          * robots.txt and pace are learned once. */
         ccfg.brain = srv->brain;
         ccfg.politeness = srv->politeness;
-        ccfg.obey_robots = srv->cfg.obey_robots;
+        /*
+         * robots.txt is honoured by default — a crawl is a guest on someone
+         * else's host. A caller may override it per request, for a host it owns
+         * or is authorised to walk; the server's own setting is the floor, so
+         * `obey_robots: false` is the only thing the request can change, never
+         * the reverse.
+         */
+        ccfg.obey_robots = srv->cfg.obey_robots && mi_json_get_bool(in, "obey_robots", 1);
         int depth = (int)mi_json_get_number(in, "depth", 0);
         int pages = (int)mi_json_get_number(in, "max_pages", 0);
         int budget = (int)mi_json_get_number(in, "budget_seconds", 0);
@@ -3663,7 +3721,21 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             (want && !strcasecmp(want, "all")) ? MI_BROWSE_ALL : MI_BROWSE_MEDIA;
 
         mi_browse_result res;
-        int rc = mi_browse_url(url, srv->cfg.user_agent, filter, &res);
+        mi_browse_config bcfg;
+        memset(&bcfg, 0, sizeof bcfg);
+        bcfg.user_agent = srv->cfg.user_agent;
+        bcfg.cookies_text = srv->cfg.cookies_text;
+        bcfg.proxy = srv->cfg.proxy;
+        bcfg.impersonate = srv->cfg.impersonate;
+        bcfg.extractor_path = srv->cfg.extractor_path;
+        bcfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
+        /* Ask the extractor when the markup yields no playable media: a page
+         * built by JavaScript (a video watch page) references none, so without
+         * this the listing is only the site's chrome — favicons and a logo. The
+         * caller can turn it off; it is off under the "all" filter, which is a
+         * question about the markup. */
+        bcfg.use_extractor = mi_json_get_bool(in, "use_extractor", 1);
+        int rc = mi_browse_url_ext(&bcfg, url, filter, &res);
         if (rc != MI_OK) {
             mi_browse_result_free(&res);
             send_error(fd, 502, "Bad Gateway", "could not fetch that page", cors);
@@ -3691,6 +3763,10 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             mi_json_string(&b, it->mime);
             mi_json_raw(&b, ",\"bytes\":");
             mi_json_int(&b, it->bytes);
+            mi_json_raw(&b, ",\"resolved\":");
+            mi_json_bool(&b, it->resolved);
+            mi_json_raw(&b, ",\"thumbnail\":");
+            mi_json_string(&b, it->thumbnail);
             mi_json_raw(&b, "}");
         }
         mi_json_raw(&b, "],\"count\":");
@@ -4553,6 +4629,27 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         }
         mi_json_raw(&b, "]");
         mi_json_raw(&b, ",");
+        /*
+         * The impersonation targets this host can actually offer, so the console
+         * shows a picker rather than a text box a user has to spell correctly —
+         * "Chrome131" is refused where "chrome131" is accepted, and the failure
+         * is silent. Asked of the helper, which knows the installed curl_cffi's
+         * list; a short static list stands in when it cannot answer.
+         */
+        mi_json_key(&b, "impersonate_targets");
+        {
+            mi_impersonate_config icfg;
+            memset(&icfg, 0, sizeof icfg);
+            icfg.helper_path = NULL;
+            char *targets = mi_impersonate_list_targets(&icfg);
+            if (targets) {
+                mi_json_raw(&b, targets);
+                free(targets);
+            } else {
+                mi_json_raw(&b, "[\"chrome\",\"firefox\",\"safari\",\"edge\"]");
+            }
+        }
+        mi_json_raw(&b, ",");
         mi_json_key(&b, "frontier_db_url");
         mi_json_string(&b, srv->cfg.frontier_db_url);
         mi_json_raw(&b, ",");
@@ -5080,6 +5177,10 @@ int mi_server_run(mi_server *srv) {
 }
 
 int mi_server_start(mi_server *srv) {
+    /* Capture log lines from here on, so the console's log view has something to
+     * show. Enabled at start rather than always, because the ring is only useful
+     * to a server and a CLI run should not pay for it. */
+    mi_log_ring_enable(1);
     if (mi_server_listen(srv) != MI_OK) return MI_ERR;
     return mi_server_run(srv);
 }

@@ -3,7 +3,9 @@
 
 #include <ctype.h>
 #include <curl/curl.h>
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1407,6 +1409,256 @@ static int download_manifest(const mi_download_config *cfg, const char *url,
 }
 
 /*
+ * Copy a file's bytes, for the one case `rename` cannot handle: a destination on
+ * a different filesystem. The extractor's temp file is written beside the
+ * destination, so this is a safety net rather than the common path.
+ *
+ * Returns 0 on success, non-zero on failure.
+ */
+static int copy_file_bytes(const char *src, const char *dst) {
+    int in = open(src, O_RDONLY);
+    if (in < 0) return -1;
+    int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out < 0) { close(in); return -1; }
+    char buf[65536];
+    int rc = 0;
+    for (;;) {
+        ssize_t n = read(in, buf, sizeof buf);
+        if (n < 0) { if (errno == EINTR) continue; rc = -1; break; }
+        if (n == 0) break;
+        ssize_t off = 0;
+        while (off < n) {
+            ssize_t w = write(out, buf + off, (size_t)(n - off));
+            if (w < 0) { if (errno == EINTR) continue; rc = -1; break; }
+            off += w;
+        }
+        if (rc != 0) break;
+    }
+    close(in);
+    if (close(out) != 0) rc = -1;
+    return rc;
+}
+
+/*
+ * Fetch a streaming page with the extractor's own downloader.
+ *
+ * Why this exists, and why it is tried first.
+ *
+ * Resolving a page and then handing the resulting URLs to ffmpeg works only when
+ * those URLs are plain files the host can fetch. On YouTube they are not: the
+ * media URLs are signed and bound to the request that resolved them, so ffmpeg's
+ * separate fetch is refused — measured, `Server returned 403 Forbidden` on the
+ * googlevideo URL, for every format, even with `--force-ipv4` and with no IPv6 on
+ * the host. yt-dlp's own downloader does not have that problem, because it makes
+ * the request the URL was signed for.
+ *
+ * So the extractor is asked to download, not just to resolve. yt-dlp already
+ * understands every site it can resolve — the formats, the audio/video pairing,
+ * HLS and DASH — so this replaces a hand-rolled mux with the tool built for it,
+ * and carries the cookies, proxy and impersonation the resolve used.
+ *
+ * The one thing it cannot do is write to Vyzor's `source.bin` and be identified
+ * afterwards: yt-dlp writes a real container. So the destination is a temp file
+ * with the container's extension, and the result is moved onto `dest` — which is
+ * also what makes the content-detection below see the true bytes rather than a
+ * name.
+ *
+ * Returns MI_OK, or MI_ERR_NET when the extractor could not do it (so the caller
+ * falls back to the ffmpeg mux, which still works for the sites ffmpeg can
+ * reach).
+ */
+static int download_via_extractor(const mi_download_config *cfg, const char *page_url,
+                                  const char *dest, mi_progress_fn on_progress, void *user,
+                                  mi_download_result *out) {
+    const char *binary = (cfg->extractor_path && *cfg->extractor_path)
+                             ? cfg->extractor_path
+                             : "yt-dlp";
+
+    /* A temp path the extractor can write, with an extension it recognises as a
+     * container, in the destination's own directory so the move is a rename. */
+    char *tmp = mi_asprintf("%s.extract.%%(ext)s", dest);
+    if (!tmp) return MI_ERR_NOMEM;
+
+    const char *argv[40];
+    int a = 0;
+    argv[a++] = binary;
+    argv[a++] = "--no-playlist";
+    argv[a++] = "--no-warnings";
+    argv[a++] = "--no-progress";
+    /* Never resume a stale partial from a previous attempt: the destination is
+     * Vyzor's own file and a resumed one would be stitched to the wrong bytes. */
+    argv[a++] = "--no-continue";
+    argv[a++] = "-o";
+    argv[a++] = tmp;
+    /*
+     * The chosen quality, when the caller named one. yt-dlp's own selector
+     * language, so "360p" becomes a height ceiling the tool understands. Left
+     * unset, yt-dlp takes its own default (best video + best audio).
+     */
+    char *fmt = NULL;
+    if (cfg->preferred_height > 0) {
+        fmt = mi_asprintf("bv*[height<=%d]+ba/b[height<=%d]/bv*+ba/b",
+                          cfg->preferred_height, cfg->preferred_height);
+        if (fmt) {
+            argv[a++] = "-f";
+            argv[a++] = fmt;
+        }
+    }
+    /* Cookies: a path, or the inline text written to a temp file, exactly as the
+     * resolve path does it. */
+    char *cookie_tmp = NULL;
+    if (cfg->cookies_text && *cfg->cookies_text) {
+        if (mi_extract_write_cookies_file(cfg->cookies_text, &cookie_tmp) == 0) {
+            argv[a++] = "--cookies";
+            argv[a++] = cookie_tmp;
+        }
+    }
+    if (cfg->proxy && *cfg->proxy) {
+        argv[a++] = "--proxy";
+        argv[a++] = cfg->proxy;
+    }
+    char *imp = mi_extract_normalize_impersonate(cfg->impersonate);
+    if (imp) {
+        argv[a++] = "--impersonate";
+        argv[a++] = imp;
+    }
+    argv[a++] = "--";
+    argv[a++] = page_url;
+    argv[a] = NULL;
+
+    mi_logf(MI_LOG_INFO, "download: fetching the page with %s", binary);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        free(fmt);
+        free(imp);
+        if (cookie_tmp) { unlink(cookie_tmp); free(cookie_tmp); }
+        free(tmp);
+        return MI_ERR_IO;
+    }
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+        }
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+
+    int status = 0;
+    for (;;) {
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) break;
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            free(fmt); free(imp);
+            if (cookie_tmp) { unlink(cookie_tmp); free(cookie_tmp); }
+            free(tmp);
+            return MI_ERR_IO;
+        }
+        /* Honour a pause/cancel the same way the ffmpeg path does. */
+        if (cfg->control && cfg->control->stop && cfg->control->stop(cfg->control->user)) {
+            kill(pid, SIGTERM);
+            struct timespec grace = {.tv_sec = 2, .tv_nsec = 0};
+            nanosleep(&grace, NULL);
+            if (waitpid(pid, &status, WNOHANG) != pid) kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            free(fmt); free(imp);
+            if (cookie_tmp) { unlink(cookie_tmp); free(cookie_tmp); }
+            free(tmp);
+            return MI_ERR_ABORTED;
+        }
+        if (on_progress) {
+            mi_progress p;
+            memset(&p, 0, sizeof p);
+            p.total_bytes = -1;
+            p.downloaded_bytes = 0;
+            on_progress(&p, user);
+        }
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 500 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    free(fmt);
+    free(imp);
+    if (cookie_tmp) { unlink(cookie_tmp); free(cookie_tmp); }
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        mi_logf(MI_LOG_INFO, "the extractor downloader failed (exit %d)",
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        free(tmp);
+        return MI_ERR_NET;
+    }
+
+    /*
+     * The extractor wrote `<dest>.extract.<ext>`, possibly with a second file
+     * (a separate audio track it muxed). Find the largest such file, which is
+     * the result, and move it onto `dest`.
+     *
+     * The directory is the destination's own — Vyzor always writes into a
+     * per-download directory, so a separator is present — and the prefix is the
+     * destination's basename plus the marker.
+     */
+    char *produced = NULL;
+    {
+        char *slash = strrchr(dest, '/');
+        char *dir = slash ? mi_strndup(dest, (size_t)(slash - dest)) : mi_strdup(".");
+        char *base = mi_strdup(slash ? slash + 1 : dest);
+        if (dir && base) {
+            char *prefix = mi_asprintf("%s.extract.", base);
+            if (prefix) {
+                DIR *d = opendir(dir);
+                if (d) {
+                    int64_t best_size = -1;
+                    struct dirent *ent;
+                    while ((ent = readdir(d)) != NULL) {
+                        if (strncmp(ent->d_name, prefix, strlen(prefix)) != 0) continue;
+                        char *full = mi_path_join(dir, ent->d_name);
+                        if (!full) continue;
+                        int64_t sz = mi_file_size(full);
+                        if (sz > best_size) {
+                            best_size = sz;
+                            free(produced);
+                            produced = full;
+                        } else {
+                            free(full);
+                        }
+                    }
+                    closedir(d);
+                }
+                free(prefix);
+            }
+        }
+        free(dir);
+        free(base);
+    }
+    free(tmp);
+
+    if (!produced) {
+        mi_logf(MI_LOG_INFO, "the extractor reported success but wrote no file");
+        return MI_ERR_NET;
+    }
+    if (rename(produced, dest) != 0) {
+        /* A cross-device rename fails; fall back to copying the bytes. */
+        int rc = copy_file_bytes(produced, dest);
+        unlink(produced);
+        if (rc != 0) {
+            free(produced);
+            return MI_ERR_IO;
+        }
+    }
+    free(produced);
+
+    int64_t written = mi_file_size(dest);
+    if (written <= 0) return MI_ERR_IO;
+    out->bytes_written = written;
+    mi_detect_file(dest, MI_HEADER_SNIFF, &out->media);
+    return MI_OK;
+}
+
+/*
  * Which item of a playlist to fetch when the caller asked for "the page".
  *
  * Prefers an entry the extractor marks as a size, else the last usable one:
@@ -1442,6 +1694,27 @@ static const char *pick_entry_url(const mi_extract_result *er) {
 static int download_stream_page(const mi_download_config *cfg, const char *page_url,
                                 const char *dest, mi_progress_fn on_progress, void *user,
                                 mi_download_result *out) {
+    /*
+     * First attempt: let the extractor download the page itself.
+     *
+     * It is the only path that works when the media URLs are bound to the request
+     * that resolved them (YouTube), and it handles HLS/DASH and the video/audio
+     * pairing the ffmpeg path below reimplements. So it is tried first, and the
+     * resolve-then-mux path is the fallback for the sites it cannot serve.
+     *
+     * Only for a video site: a gallery host is gallery-dl's job and the ffmpeg
+     * path does not apply to it either, but yt-dlp has no downloader for it.
+     */
+    mi_extract_config pick_cfg;
+    mi_extract_config_init(&pick_cfg);
+    pick_cfg.binary = cfg->extractor_path;
+    pick_cfg.gallery_binary = cfg->gallery_extractor_path;
+    if (mi_extract_pick(&pick_cfg, page_url) != MI_EXTRACT_GALLERY) {
+        int via = download_via_extractor(cfg, page_url, dest, on_progress, user, out);
+        if (via == MI_OK) return MI_OK;
+        if (via == MI_ERR_ABORTED) return MI_ERR_ABORTED; /* a pause/cancel, not a failure */
+    }
+
     mi_extract_config ecfg;
     mi_extract_config_init(&ecfg);
     ecfg.binary = cfg->extractor_path;
@@ -1502,6 +1775,17 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
      * offered is taken rather than nothing.
      */
     int want = cfg->preferred_height;
+    /*
+     * The pick, with a tie-break: at the same height, a format that can actually
+     * be fetched beats one that cannot.
+     *
+     * YouTube lists its highest renditions as HLS variants (protocol
+     * `m3u8_native`), and choosing by height alone picked exactly those — a URL
+     * that is a playlist, not media. Preferring a direct format at equal height
+     * costs nothing where both exist and avoids the unfetchable one where they
+     * do not. It only decides a *tie*; a taller direct format still wins on
+     * height, and a direct format is never chosen over a taller one.
+     */
     for (size_t i = 0; i < er.format_count; i++) {
         const mi_extract_format *f = &er.formats[i];
         if (f->has_video && f->has_audio) {
@@ -1511,7 +1795,10 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
                 if (!muxed) muxed = f;
                 else if (f->height <= want && f->height > muxed->height) muxed = f;
                 else if (muxed->height > want && f->height < muxed->height) muxed = f;
+                else if (f->height == muxed->height && f->direct && !muxed->direct) muxed = f;
             } else if (!muxed || f->height > muxed->height) {
+                muxed = f;
+            } else if (f->height == muxed->height && f->direct && !muxed->direct) {
                 muxed = f;
             }
         } else if (f->has_video) {
@@ -1521,7 +1808,10 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
                 else if (f->height <= want && f->height > video->height) video = f;
                 /* Nothing small enough yet: take the smallest above it. */
                 else if (video->height > want && f->height < video->height) video = f;
+                else if (f->height == video->height && f->direct && !video->direct) video = f;
             } else if (!video || f->height > video->height) {
+                video = f;
+            } else if (f->height == video->height && f->direct && !video->direct) {
                 video = f;
             }
         } else if (f->has_audio) {

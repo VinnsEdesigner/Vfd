@@ -50,6 +50,24 @@ typedef struct {
      * as-is. A video-only or audio-only format needs the two muxed. */
     int has_video;
     int has_audio;
+    /*
+     * The extractor's transfer protocol, e.g. "https" or "m3u8_native".
+     *
+     * It decides whether the URL can be fetched at all. A direct protocol is a
+     * file a downloader can range; "m3u8_native" is an HLS *variant* — a
+     * playlist, not media — and handing it to a plain fetcher fetches the
+     * playlist. NULL when the extractor did not say.
+     */
+    char *protocol;
+    /*
+     * 1 when this format is a direct fetch (http/https), 0 when it is a
+     * manifest a reader must follow (m3u8, m3u8_native, dash, mhtml).
+     *
+     * Used to prefer a format that can actually be fetched: YouTube lists its
+     * highest renditions as HLS variants, and choosing one by height alone
+     * picked a URL no plain downloader can use.
+     */
+    int direct;
 } mi_extract_format;
 
 /* One item in a playlist, channel or search result. */
@@ -237,6 +255,30 @@ void mi_extract_config_init(mi_extract_config *cfg);
  * Returns an owned string the caller frees, or NULL when there is nothing usable.
  */
 char *mi_extract_cookies_for_ffmpeg(const char *text);
+
+/*
+ * An impersonation target in the form yt-dlp and curl_cffi accept.
+ *
+ * Both reject a display name or a separator — curl_cffi wants `chrome131` and
+ * refuses `Chrome131` or `chrome-131`, which is what a settings box collects —
+ * so a target is lowercased with `-`, `_` and spaces removed. A bare family
+ * ("chrome") is returned unchanged.
+ *
+ * Returns an owned string the caller frees, or NULL when there is nothing.
+ */
+char *mi_extract_normalize_impersonate(const char *target);
+
+/*
+ * Write Netscape cookie text to a 0600 temp file and return its path.
+ *
+ * yt-dlp takes cookies as a path, so a caller holding them inline (a server
+ * with a user's credential in memory) needs one. The file is the caller's to
+ * unlink; it holds a credential, so it should be removed the moment the child
+ * that needed it has exited.
+ *
+ * Returns 0 on success, non-zero on failure (out_path untouched).
+ */
+int mi_extract_write_cookies_file(const char *text, char **out_path);
 
 /*
  * The extractor to use for a URL, honouring an explicit choice.

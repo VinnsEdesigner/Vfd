@@ -532,6 +532,10 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
 
+    /* Capture log lines from here on, so the console's log view has something to
+     * show. Enabled at serve, not for a one-shot CLI run. */
+    mi_log_ring_enable(1);
+
     /* Emit the actual bound port on stdout so a supervisor can read it. */
     printf("{\"listening\":\"%s\",\"port\":%d,\"work_dir\":\"%s\"}\n",
            cfg.host, mi_server_port(srv), cfg.work_dir);

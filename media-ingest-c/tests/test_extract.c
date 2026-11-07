@@ -217,9 +217,37 @@ static void test_cookies_for_ffmpeg(void) {
           "a malformed line yields no cookie");
 }
 
+/*
+ * An impersonation target is normalised to the form the tools accept.
+ *
+ * curl_cffi and yt-dlp both refuse a target with a capital or a separator —
+ * "Chrome131" is "Impersonating Chrome131 is not supported" — and a settings box
+ * collects exactly that. The failure is silent (the fetch falls back to libcurl),
+ * so the spelling is pinned here.
+ */
+static void test_normalize_impersonate(void) {
+    struct { const char *in; const char *want; } CASES[] = {
+        {"Chrome131", "chrome131"},
+        {"chrome-131", "chrome131"},
+        {"chrome_131", "chrome131"},
+        {"Chrome 131", "chrome131"},
+        {"chrome", "chrome"},       /* a bare family is left alone */
+        {"Firefox", "firefox"},
+        {"Chrome-136", "chrome136"},
+    };
+    for (size_t i = 0; i < sizeof CASES / sizeof CASES[0]; i++) {
+        char *got = mi_extract_normalize_impersonate(CASES[i].in);
+        CHECK(got && !strcmp(got, CASES[i].want), "a target is normalised to the accepted form");
+        free(got);
+    }
+    CHECK(mi_extract_normalize_impersonate(NULL) == NULL, "NULL normalises to NULL");
+    CHECK(mi_extract_normalize_impersonate("") == NULL, "an empty target normalises to NULL");
+}
+
 int main(void) {
     test_pick_by_host();
     test_cookies_for_ffmpeg();
+    test_normalize_impersonate();
     test_extract_needs_a_url_or_a_search();
     test_video_resolve();
     test_gallery_resolve();

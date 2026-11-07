@@ -18,6 +18,7 @@
 #include "mi_extract.h"
 
 #include <errno.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
@@ -74,6 +75,7 @@ void mi_extract_result_free(mi_extract_result *res) {
         free(res->formats[i].vcodec);
         free(res->formats[i].acodec);
         free(res->formats[i].mime);
+        free(res->formats[i].protocol);
     }
     free(res->formats);
     for (size_t i = 0; i < res->entry_count; i++) {
@@ -203,6 +205,12 @@ static int write_temp_cookies(const char *text, char **out_path) {
     return *out_path ? 0 : -1;
 }
 
+/* The public spelling of the above: the download path needs it too, to give
+ * yt-dlp the same cookies the resolve used. */
+int mi_extract_write_cookies_file(const char *text, char **out_path) {
+    return write_temp_cookies(text, out_path);
+}
+
 /*
  * Hosts gallery-dl handles that yt-dlp does not, as host *fragments*.
  *
@@ -298,6 +306,36 @@ static const char *find_js_runtime(void) {
 }
 
 /*
+ * The impersonation target, spelled the way the tools accept it.
+ *
+ * Both yt-dlp and curl_cffi reject a target that carries a browser's display
+ * name or a separator: curl_cffi wants `chrome131`, and answers
+ * `Impersonating Chrome131 is not supported` for `Chrome131` or `chrome-131`.
+ * A human typing into a settings box writes exactly those, and the failure is
+ * silent — the fetch falls back to plain libcurl — so the value is normalised
+ * here rather than left to the caller: lowercased, and with `-`, `_` and spaces
+ * removed.
+ *
+ * A bare family ("chrome") is returned unchanged; both tools expand it to their
+ * newest supported version themselves, and that is the form the docs use.
+ *
+ * Returns an owned string, or NULL when there is nothing to normalise.
+ */
+char *mi_extract_normalize_impersonate(const char *target) {
+    if (!target || !*target) return NULL;
+    char *out = mi_strdup(target);
+    if (!out) return NULL;
+    size_t w = 0;
+    for (size_t r = 0; out[r]; r++) {
+        char c = out[r];
+        if (c == '-' || c == '_' || c == ' ') continue;
+        out[w++] = (char)tolower((unsigned char)c);
+    }
+    out[w] = '\0';
+    return out;
+}
+
+/*
  * Run an extractor and return its stdout, or NULL.
  *
  * `probe_only` adds the flags that make it resolve without downloading, and is
@@ -327,6 +365,9 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
     /* Inline cookies are written to a temp file for yt-dlp, which takes a path;
      * unlinked on every exit path below. */
     char *cookie_tmp = NULL;
+    /* The normalised impersonation target, when one was given. Owned here and
+     * freed on every exit path, like the cookie temp. */
+    char *imp_tmp = NULL;
     int a = 0;
     argv[a++] = binary;
     if (probe_only) {
@@ -430,10 +471,15 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
          * Impersonation, when a site fingerprints the client. yt-dlp wears the
          * named browser's TLS/JA3 fingerprint; without this the request is
          * plainly libcurl and a fingerprinting site refuses it.
+         *
+         * Normalised, because yt-dlp rejects a target with a separator or a
+         * capital — "Chrome131" is an error, "chrome131" is not — and that error
+         * aborts the whole resolve rather than being ignored.
          */
         if (cfg && cfg->impersonate && *cfg->impersonate) {
+            imp_tmp = mi_extract_normalize_impersonate(cfg->impersonate);
             argv[a++] = "--impersonate";
-            argv[a++] = cfg->impersonate;
+            argv[a++] = imp_tmp ? imp_tmp : cfg->impersonate;
         }
         /*
          * The discovery filters.
@@ -482,6 +528,7 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
     if (pid < 0) {
         close(pipefd[0]);
         close(pipefd[1]);
+        free(imp_tmp);
         free(argv);
         return NULL;
     }
@@ -565,6 +612,7 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
         unlink(cookie_tmp);
         free(cookie_tmp);
     }
+    free(imp_tmp);
     free(argv);
     if (timed_out) {
         free(buf);
@@ -841,6 +889,29 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
                 dst->filesize = (int64_t)mi_json_get_number(f, "filesize", -1);
                 if (dst->filesize < 0) {
                     dst->filesize = (int64_t)mi_json_get_number(f, "filesize_approx", -1);
+                }
+                /*
+                 * Whether the URL is a file or a manifest.
+                 *
+                 * yt-dlp reports `protocol`; a direct one ("https", "http") is a
+                 * file a downloader can range, while "m3u8_native"/"m3u8" is an
+                 * HLS variant and "mhtml" a storyboard. Only the direct ones can
+                 * be handed to a plain fetcher; the rest need a reader, and
+                 * choosing one by height alone picked exactly the ones a plain
+                 * fetch cannot use.
+                 *
+                 * Absent protocol means "assume direct": most extractors do not
+                 * report it, and the ones that do report it for every format.
+                 */
+                dst->protocol = dup_string(f, "protocol");
+                dst->direct = 1;
+                if (dst->protocol && *dst->protocol) {
+                    if (!strncasecmp(dst->protocol, "m3u8", 4) ||
+                        !strcasecmp(dst->protocol, "dash") ||
+                        !strcasecmp(dst->protocol, "mhtml") ||
+                        !strcasecmp(dst->protocol, "rtmp")) {
+                        dst->direct = 0;
+                    }
                 }
                 dst->bitrate = mi_json_get_number(f, "tbr", -1);
                 dst->height = (int)mi_json_get_number(f, "height", 0);

@@ -27,8 +27,8 @@ import sys
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="fetch-impersonate")
-    ap.add_argument("--url", required=True)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--url", default="")
+    ap.add_argument("--out", default="")
     ap.add_argument("--meta-out", default="")
     ap.add_argument("--impersonate", default="chrome")
     ap.add_argument("--timeout", type=float, default=30.0)
@@ -36,6 +36,10 @@ def main() -> int:
     ap.add_argument("--proxy", default="")
     ap.add_argument("--user-agent", default="")
     ap.add_argument("--cookies-file", default="")
+    # A list mode, so a caller (the console's identity picker) can offer the
+    # browsers this host can actually imitate rather than asking a user to type a
+    # name and guess. It contacts nothing and prints one JSON array.
+    ap.add_argument("--list-targets", action="store_true")
     args = ap.parse_args()
 
     try:
@@ -43,6 +47,30 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 - the message is the point
         print(f"curl_cffi is not installed: {exc}", file=sys.stderr)
         return 3
+
+    if args.list_targets:
+        import json
+
+        try:
+            from curl_cffi.requests import BrowserType
+
+            # BrowserType is a `str` enum, so `dir()` also yields str's own
+            # methods (capitalize, count, …). Keep only the browser families, or
+            # the picker fills with things that are not targets at all.
+            prefixes = ("chrome", "firefox", "safari", "edge", "tor")
+            names = sorted(
+                n
+                for n in dir(BrowserType)
+                if not n.startswith("_") and n.lower().startswith(prefixes)
+            )
+        except Exception:  # noqa: BLE001
+            names = []
+        print(json.dumps(names))
+        return 0
+
+    if not args.url or not args.out:
+        print("--url and --out are required", file=sys.stderr)
+        return 2
 
     # "chrome" is a family; curl_cffi wants a concrete version. If the operator
     # named a family, take the newest the installed curl_cffi knows, so the

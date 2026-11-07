@@ -620,6 +620,51 @@ static void test_crawl_rejects_a_bad_url(void) {
           "a NULL result is refused");
 }
 
+static void test_crawl_obey_robots_can_be_overridden(void) {
+    /*
+     * A host that disallows everything. With robots honoured the walk reads
+     * nothing; with it turned off — the per-request override for a host the
+     * caller owns — the same walk reads the page and finds the file. This is the
+     * behaviour the console's "Respect robots.txt" switch drives.
+     */
+    static const route routes[] = {
+        {"/robots.txt", "User-Agent: *\nDisallow: /\n"},
+        {"/", "<html><body><a href='/data.pdf'>the file</a></body></html>"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 2, &pid);
+    CHECK(port > 0, "site started");
+    if (!port) return;
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 0;
+    cfg.use_browser_fallback = 0;
+    cfg.obey_robots = 1;
+    cfg.politeness = mi_politeness_new();
+    CHECK(cfg.politeness != NULL, "politeness state");
+
+    mi_crawl_result res;
+    CHECK(mi_crawl(&cfg, url, "data", &res) == MI_OK, "crawl ran with robots honoured");
+    CHECK(res.hit_count == 0, "robots.txt disallowing everything yields nothing");
+    mi_crawl_result_free(&res);
+
+    /* The same host, with robots turned off. */
+    cfg.obey_robots = 0;
+    CHECK(mi_crawl(&cfg, url, "data", &res) == MI_OK, "crawl ran with robots off");
+    CHECK(res.hit_count == 1, "the file is found once robots is off");
+    if (res.hit_count > 0) {
+        CHECK(strstr(res.hits[0].filename, "data.pdf") != NULL, "and it is the file");
+    }
+    mi_crawl_result_free(&res);
+
+    mi_politeness_free(cfg.politeness);
+    stop_site(pid);
+}
+
 int main(void) {
     test_score();
     test_crawl_finds_and_ranks();
@@ -635,6 +680,7 @@ int main(void) {
     test_crawl_ranks_a_resolved_hit_first();
     test_crawl_unreachable_site_is_not_an_error();
     test_crawl_rejects_a_bad_url();
+    test_crawl_obey_robots_can_be_overridden();
 
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

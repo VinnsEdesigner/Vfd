@@ -79,6 +79,86 @@ static char *read_file_capped(const char *path, size_t max_bytes, size_t *len_ou
     return buf;
 }
 
+/*
+ * The impersonation targets this host can actually offer.
+ *
+ * The list is the helper's — it is the one that imports curl_cffi and knows what
+ * the installed version supports — asked with `--list-targets`, which contacts
+ * nothing and prints one JSON array. Returns an owned string (the array, as the
+ * helper printed it), or NULL when the helper is absent or fails, so the caller
+ * can fall back to a short static list.
+ */
+char *mi_impersonate_list_targets(const mi_impersonate_config *cfg) {
+    char *helper = NULL;
+    if (!mi_impersonate_available(cfg, &helper)) return NULL;
+
+    const char *py = is_python(helper) ? "python3" : NULL;
+    const char *argv[4];
+    int a = 0;
+    if (py) argv[a++] = py;
+    argv[a++] = helper;
+    argv[a++] = "--list-targets";
+    argv[a] = NULL;
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        free(helper);
+        return NULL;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        free(helper);
+        return NULL;
+    }
+    if (pid == 0) {
+        dup2(pipefd[1], STDOUT_FILENO);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) dup2(devnull, STDERR_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        if (py) execvp(py, (char *const *)argv);
+        else execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    close(pipefd[1]);
+
+    char *buf = NULL;
+    size_t len = 0, cap = 0;
+    for (;;) {
+        char chunk[4096];
+        ssize_t n = read(pipefd[0], chunk, sizeof chunk);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (n == 0) break;
+        if (len + (size_t)n > 64 * 1024) break;
+        if (len + (size_t)n + 1 > cap) {
+            size_t want = (len + (size_t)n + 1) * 2;
+            char *grown = mi_realloc(buf, want);
+            if (!grown) break;
+            buf = grown;
+            cap = want;
+        }
+        memcpy(buf + len, chunk, (size_t)n);
+        len += (size_t)n;
+    }
+    close(pipefd[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    free(helper);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        free(buf);
+        return NULL;
+    }
+    if (buf) {
+        while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) buf[--len] = '\0';
+    }
+    return buf;
+}
+
 char *mi_impersonate_fetch(const mi_impersonate_config *cfg, const char *url,
                            size_t max_bytes, char **meta_out, char *err, size_t errcap) {
     if (err && errcap) err[0] = '\0';

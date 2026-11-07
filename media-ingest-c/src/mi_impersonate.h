@@ -54,4 +54,14 @@ int mi_impersonate_available(const mi_impersonate_config *cfg, char **resolved);
 char *mi_impersonate_fetch(const mi_impersonate_config *cfg, const char *url,
                            size_t max_bytes, char **meta_out, char *err, size_t errcap);
 
+/*
+ * The impersonation targets this host can offer, as a JSON array string (owned by
+ * the caller), or NULL when the helper is absent or fails.
+ *
+ * Asked of the helper, which is the one that imports curl_cffi and so knows what
+ * the installed version supports. The caller can then offer a list rather than
+ * asking a user to type a target and guess.
+ */
+char *mi_impersonate_list_targets(const mi_impersonate_config *cfg);
+
 #endif
