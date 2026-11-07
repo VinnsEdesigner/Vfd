@@ -50,12 +50,16 @@ jobs:
         working-directory: media-ingest-c
         run: |
           sudo apt-get update
-          # The Makefile links -lsqlite3 -lz and mi_frontier.c includes
-          # <sqlite3.h>, so the sqlite and zlib dev headers are needed too —
-          # without them the build dies on sqlite3.h. Kept in step with
-          # scripts/install-toolchain.sh.
+          # The full build dependency set, matching scripts/install-toolchain.sh.
+          #   libsqlite3-dev, zlib1g-dev   the Makefile links -lsqlite3 -lz and
+          #                                mi_frontier.c includes <sqlite3.h>
+          #   libgstreamer*-dev, pkg-config  mi_rtc.c includes <gst/gst.h> and
+          #                                the Makefile asks pkg-config for its
+          #                                cflags; the WebRTC API is in "bad"
           sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libsqlite3-dev zlib1g-dev
+            pkg-config libcurl4-openssl-dev libsqlite3-dev zlib1g-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev
           make
 
       - name: Verify (typecheck, lint, tests)
