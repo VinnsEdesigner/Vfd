@@ -108,7 +108,7 @@ export function StorageSkeleton() {
                   <Skeleton height={34} width={34} radius="6px" />
                   <div style={{ flex: 1 }}>
                     <Skeleton height={13} width="46%" />
-                    <div style={{ height: 18 }} />
+                    <div style={{ height: 6 }} />
                     <Skeleton height={11} width="30%" />
                   </div>
                 </div>
@@ -169,7 +169,7 @@ export function IngestSkeleton() {
         </div>
         <div className="card__body">
           <Skeleton height={38} width="100%" radius="6px" />
-          <div style={{ height: 54 }} />
+          <div style={{ height: 18 }} />
           <SkeletonLines lines={3} />
         </div>
       </div>

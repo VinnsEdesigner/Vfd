@@ -215,7 +215,7 @@ export function NewIngestPage(props: NewIngestPageProps) {
             <label
               style={{
                 display: 'block',
-                fontSize: 39,
+                fontSize: 13,
                 fontWeight: 500,
                 marginBottom: 8,
               }}
