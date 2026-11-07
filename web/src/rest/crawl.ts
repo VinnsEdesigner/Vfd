@@ -45,6 +45,9 @@ export function createCrawlResource(client: ApiClient): CrawlResource {
         max_pages: query.maxPages,
         use_browser: query.useBrowser,
         max_browser_pages: query.maxBrowserPages,
+        // robots.txt is honoured unless the caller turned it off for a host it
+        // is authorised to walk.
+        obey_robots: query.obeyRobots,
         // A crawl is the one request worth waiting on, so the server's own
         // budget is what bounds it. Sending it explicitly means the two agree
         // rather than the server guessing from its default.

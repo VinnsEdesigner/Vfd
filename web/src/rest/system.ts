@@ -6,6 +6,7 @@ import type { ApiClient } from '../api-client';
 import {
   normalizeCapabilities,
   normalizeEgressSettings,
+  normalizeLogSnapshot,
   normalizeStorageConfig,
   normalizeSystemStorage,
 } from '../domain/normalize';
@@ -13,6 +14,7 @@ import type {
   Capabilities,
   EgressSettings,
   EgressUpdate,
+  LogSnapshot,
   StorageConfig,
   SystemStorage,
 } from '../domain/media';
@@ -21,6 +23,7 @@ import type {
   WireEgressSettings,
   WireEgressUpdate,
   WireSetLocationResult,
+  WireLogResponse,
   WireStorageConfig,
   WireSystemStorage,
 } from '../domain/wire';
@@ -37,6 +40,14 @@ export interface SystemResource {
   egressSettings(signal?: AbortSignal): Promise<EgressSettings>;
   /** Set cookies and/or proxy. A field left out is unchanged. */
   setEgress(next: EgressUpdate, signal?: AbortSignal): Promise<EgressSettings>;
+  /**
+   * Recent server log lines, newer than `since`.
+   *
+   * The server logs to stderr, which the console cannot see, so this is how a
+   * user finds out why a crawl or a download failed. Polling with the highest
+   * seq seen makes it incremental.
+   */
+  logs(since: number, signal?: AbortSignal): Promise<LogSnapshot>;
 }
 
 export function createSystemResource(client: ApiClient): SystemResource {
@@ -121,6 +132,15 @@ export function createSystemResource(client: ApiClient): SystemResource {
         ...(signal ? { signal } : {}),
       });
       return normalizeEgressSettings(wire);
+    },
+
+    async logs(since, signal) {
+      const wire = await client.transport.request<WireLogResponse>({
+        method: 'GET',
+        path: `/api/v1/logs?since=${since}`,
+        ...(signal ? { signal } : {}),
+      });
+      return normalizeLogSnapshot(wire);
     },
   };
 }

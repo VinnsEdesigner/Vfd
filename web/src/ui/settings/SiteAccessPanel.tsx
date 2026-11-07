@@ -30,6 +30,8 @@ export interface SiteAccessValue {
   proxy: string;
   /** A yt-dlp / curl_cffi impersonation target, e.g. "chrome". */
   impersonate: string;
+  /** The targets this host can offer, so a user picks rather than types. */
+  impersonateTargets: readonly string[];
   /** How many fresh-identity retries a refused download gets. */
   identityRetries: number;
   /** The captcha provider name, or '' for the built-in stub. */
@@ -87,6 +89,12 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
   const [frontierToken, setFrontierToken] = useState('');
   const effectiveProxy = proxy ?? value?.proxy ?? '';
   const effectiveImpersonate = impersonate ?? value?.impersonate ?? '';
+  /* The host's own list, or a short fallback so the picker is never empty. A
+   * family name ("chrome") is included first: both tools expand it to their
+   * newest version, and it is the spelling the docs use. */
+  const impersonateTargets = value?.impersonateTargets?.length
+    ? value.impersonateTargets
+    : ['chrome', 'firefox', 'safari', 'edge'];
   const effectiveRetries = retries ?? String(value?.identityRetries ?? 0);
   const effectiveCaptchaProvider = captchaProvider ?? value?.captchaProvider ?? '';
   const effectiveCaptchaBaseUrl = captchaBaseUrl ?? value?.captchaBaseUrl ?? '';
@@ -167,13 +175,26 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
       <Card title="Client identity">
         <div className="form">
           <div className="field field--full">
-            <Field
+            <Select
               label="Impersonate"
-              value={effectiveImpersonate}
-              onChange={setImpersonate}
-              placeholder="chrome, chrome131, firefox…"
-              hint="A site that fingerprints TLS sees libcurl; naming a real browser makes the extractor's request look like one."
+              value={effectiveImpersonate || 'chrome'}
+              onChange={(v) => setImpersonate(v)}
+              searchable
+              searchPlaceholder="Search browsers…"
+              options={[
+                /* A family expands to the newest version the host supports, so
+                 * it is offered first and is the safe default. */
+                { value: 'chrome', label: 'chrome', detail: 'newest supported Chrome' },
+                ...impersonateTargets
+                  .filter((t) => t !== 'chrome')
+                  .map((t) => ({ value: t, label: t })),
+              ]}
             />
+            <span className="field__hint">
+              A site that fingerprints TLS sees libcurl; naming a browser makes the
+              extractor&apos;s request look like one. The list is what this host can
+              imitate.
+            </span>
           </div>
           <div className="field field--full">
             <Field

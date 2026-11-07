@@ -126,3 +126,5 @@ export { useStorageStore, effectiveCredentials } from '../stores/storage-store';
 export type { StorageState } from '../stores/storage-store';
 export { useDownloadFormStore, DEFAULT_DOWNLOAD_DRAFT } from '../stores/download-form-store';
 export type { DownloadFormState } from '../stores/download-form-store';
+export { useLogs } from './use-logs';
+export type { LogsView, LogLine } from './use-logs';

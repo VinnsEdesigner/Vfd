@@ -28,6 +28,7 @@ import {
   NewIngestPage,
   StoragePage,
   BrowsePage,
+  LogsPage,
   SettingsPage,
   type StorageTab,
   type SettingsTab,
@@ -48,6 +49,7 @@ import {
   useDownloads,
   useDownloadViewsWithPipeline,
   useSystemStorage,
+  useLogs,
   useCapabilities,
   useBrowse,
   useBrowseUrl,
@@ -108,7 +110,14 @@ import {
   type DownloadView,
 } from '../hooks/view-models';
 
-export type ViewId = 'overview' | 'downloads' | 'browse' | 'ingest' | 'storage' | 'settings';
+export type ViewId =
+  | 'overview'
+  | 'downloads'
+  | 'browse'
+  | 'ingest'
+  | 'storage'
+  | 'logs'
+  | 'settings';
 
 const VIEW_TITLES: Record<ViewId, [string, string]> = {
   overview: ['Overview', 'Pipeline health and recent activity'],
@@ -116,6 +125,7 @@ const VIEW_TITLES: Record<ViewId, [string, string]> = {
   browse: ['Browse', 'Find open media, then preview or keep it'],
   ingest: ['New download', 'Queue a source to fetch, transcode and deliver'],
   storage: ['Storage', 'Downloaded files, object storage and delivery'],
+  logs: ['Logs', 'What the server has been doing, without a terminal'],
   settings: ['Settings', 'Connection, storage location and Vyzor capabilities'],
 };
 
@@ -338,6 +348,8 @@ export function App({ initialView = 'overview' }: AppProps) {
 
   const downloadsQuery = useDownloads();
   const systemStorageQuery = useSystemStorage();
+  /* Only poll the server log while its view is on screen. */
+  const logsView = useLogs(view === 'logs');
   const capabilitiesQuery = useCapabilities();
   const capabilities = capabilitiesQuery.data ?? null;
   const setStorageLocation = useSetStorageLocation();
@@ -914,6 +926,7 @@ export function App({ initialView = 'overview' }: AppProps) {
     { id: 'browse', label: 'Browse', icon: <IconSearch /> },
     { id: 'ingest', label: 'New download', icon: <IconPlus /> },
     { id: 'storage', label: 'Storage', icon: <IconDatabase /> },
+    { id: 'logs', label: 'Logs', icon: <IconList /> },
     { id: 'settings', label: 'Settings', icon: <IconSettings /> },
   ];
 
@@ -1099,6 +1112,7 @@ export function App({ initialView = 'overview' }: AppProps) {
     term: '',
     depth: 2,
     useBrowser: true,
+    obeyRobots: true,
   });
   /** The hits from the last walk, or null before one has run. */
   const [crawlHits, setCrawlHits] = useState<CrawlHit[] | null>(null);
@@ -1133,6 +1147,7 @@ export function App({ initialView = 'overview' }: AppProps) {
         // A few pages may be driven through the browser; each costs seconds, so
         // the number is bounded rather than the crawl left open-ended.
         maxBrowserPages: 3,
+        obeyRobots: siteSearch.obeyRobots,
         signal: controller.signal,
       });
       setCrawlHits(result.hits);
@@ -1842,6 +1857,16 @@ export function App({ initialView = 'overview' }: AppProps) {
           />
           ))}
 
+        {view === 'logs' && (
+          <LogsPage
+            lines={logsView.lines}
+            enabled={logsView.enabled}
+            loaded={logsView.loaded}
+            error={logsView.error}
+            onClear={logsView.clear}
+          />
+        )}
+
         {view === 'settings' &&
           (isLoading ? (
             <SettingsSkeleton />
@@ -1953,6 +1978,7 @@ export function App({ initialView = 'overview' }: AppProps) {
                     cookieNames: egressQuery.data.cookieNames,
                     proxy: egressQuery.data.proxy,
                     impersonate: egressQuery.data.impersonate,
+                    impersonateTargets: egressQuery.data.impersonateTargets,
                     identityRetries: egressQuery.data.identityRetries,
                     captchaProvider: egressQuery.data.captchaProvider,
                     captchaProviders: egressQuery.data.captchaProviders,

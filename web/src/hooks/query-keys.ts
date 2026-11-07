@@ -10,6 +10,8 @@ export const queryKeys = {
   /** The cookies and proxy Vyzor uses to reach a refusing host. */
   egressSettings: () => ['settings', 'egress'] as const,
   systemStorage: () => ['storage', 'system'] as const,
+  /** Recent server log lines, polled incrementally. */
+  logs: () => ['logs'] as const,
   downloads: () => ['downloads'] as const,
   downloadList: () => [...queryKeys.downloads(), 'list'] as const,
   download: (id: string) => [...queryKeys.downloads(), 'detail', id] as const,

@@ -404,4 +404,11 @@ export interface CrawlQuery {
    * counting rather than by guessing which page needs one.
    */
   maxBrowserPages: number;
+  /**
+   * Whether the walk honours robots.txt.
+   *
+   * On by default. Off only for a host the caller owns or is authorised to walk:
+   * a site that answers `Disallow: /` has asked not to be crawled.
+   */
+  obeyRobots: boolean;
 }

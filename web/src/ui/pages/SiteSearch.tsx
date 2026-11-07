@@ -37,6 +37,14 @@ export interface SiteSearchValue {
   depth: number;
   /** Whether a page with no match may be re-read through the browser. */
   useBrowser: boolean;
+  /**
+   * Whether the walk honours robots.txt.
+   *
+   * On by default. Turning it off is only right for a host you own or are
+   * authorised to crawl; a site that answers `Disallow: /` has asked not to be
+   * crawled.
+   */
+  obeyRobots: boolean;
 }
 
 export interface SiteSearchProps {
@@ -122,6 +130,14 @@ export function SiteSearch({
               }
               checked={value.useBrowser && canUseBrowser}
               onChange={(useBrowser) => set({ useBrowser })}
+            />
+          </div>
+          <div className="field field--full">
+            <SwitchRow
+              name="Respect robots.txt"
+              description="Leave on unless you own or are authorised to crawl this host — a site that disallows crawling has asked not to be walked"
+              checked={value.obeyRobots}
+              onChange={(obeyRobots) => set({ obeyRobots })}
             />
           </div>
         </div>

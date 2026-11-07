@@ -172,6 +172,14 @@ export interface WireCrawlRequest {
   /** CSS selectors to click before reading, for a listing behind an interaction. */
   click_selectors?: string[];
   settle_seconds?: number;
+  /**
+   * Whether the walk honours robots.txt.
+   *
+   * On by default, and off only for a host the caller owns or is authorised to
+   * walk — a crawl is a guest on someone else's server, and a site that answers
+   * `Disallow: /` has asked not to be crawled.
+   */
+  obey_robots?: boolean;
 }
 
 /** One rendition of a resolved stream. */
@@ -493,6 +501,8 @@ export interface WireEgressSettings {
   proxy: string | null;
   /** A yt-dlp / curl_cffi impersonation target, e.g. "chrome". */
   impersonate?: string | null;
+  /** The impersonation targets this host can offer, for a picker. */
+  impersonate_targets?: string[];
   /** How many fresh-identity retries a refused download gets. */
   identity_retries?: number;
   /** The captcha provider name, or null for the built-in stub. */
@@ -523,4 +533,23 @@ export interface WireEgressUpdate {
   frontier_db_url?: string;
   frontier_db_path?: string;
   frontier_token?: string;
+}
+
+/** One server log line, as /api/v1/logs serves it. */
+export interface WireLogLine {
+  /** Monotonic; pass the highest back as `since` to poll incrementally. */
+  seq: number;
+  /** Unix epoch seconds. */
+  ts: number;
+  /** "error" | "info" | "debug". */
+  level: string;
+  text: string;
+}
+
+export interface WireLogResponse {
+  lines: WireLogLine[];
+  /** The highest seq in the ring, so a caller can advance without the lines. */
+  latest: number;
+  /** Whether the server is capturing lines at all. */
+  enabled: boolean;
 }

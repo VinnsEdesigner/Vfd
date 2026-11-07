@@ -15,6 +15,7 @@ import type {
   ProbeResult,
   StorageConfig,
   EgressSettings,
+  LogSnapshot,
 } from './media';
 import {
   browseKindFor,
@@ -38,6 +39,7 @@ import type {
   WireMedia,
   WireProbeResult,
   WireStorageConfig,
+  WireLogResponse,
 } from './wire';
 
 /** The host of a URL, for naming where a result came from. The domain's own
@@ -423,6 +425,7 @@ export function normalizeEgressSettings(w: WireEgressSettings): EgressSettings {
     cookieNames: w.cookies?.names ?? [],
     proxy: w.proxy ?? '',
     impersonate: w.impersonate ?? '',
+    impersonateTargets: w.impersonate_targets ?? [],
     identityRetries: w.identity_retries ?? 0,
     captchaProvider: w.captcha_provider ?? '',
     captchaProviders: w.captcha_providers ?? ['stub'],
@@ -468,5 +471,18 @@ export function normalizeSystemStorage(w: WireSystemStorage): SystemStorage {
       failed: w.downloads?.failed ?? 0,
       bytesTransferred: w.downloads?.bytes_transferred ?? 0,
     },
+  };
+}
+
+export function normalizeLogSnapshot(w: WireLogResponse): LogSnapshot {
+  return {
+    lines: (w.lines ?? []).map((l) => ({
+      seq: l.seq,
+      timestamp: l.ts * 1000,
+      level: l.level === 'error' ? 'error' : l.level === 'debug' ? 'debug' : 'info',
+      text: l.text,
+    })),
+    latest: w.latest ?? 0,
+    enabled: Boolean(w.enabled),
   };
 }

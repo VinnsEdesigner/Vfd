@@ -243,6 +243,7 @@ export interface EgressSettings {
   cookieNames: readonly string[];
   proxy: string;
   impersonate: string;
+  impersonateTargets: readonly string[];
   identityRetries: number;
   captchaProvider: string;
   captchaProviders: readonly string[];
@@ -353,4 +354,21 @@ export interface SystemStorage {
   filesystem: FsStats | null;
   library: LibraryUsage;
   downloads: DownloadCounts;
+}
+
+/** One server log line, as the console shows it. */
+export interface LogLine {
+  seq: number;
+  /** Epoch milliseconds, for a locale-formatted time. */
+  timestamp: number;
+  level: 'error' | 'info' | 'debug';
+  text: string;
+}
+
+export interface LogSnapshot {
+  lines: readonly LogLine[];
+  /** The highest seq seen, to pass back as `since` on the next poll. */
+  latest: number;
+  /** Whether the server is capturing lines. False means the view is empty. */
+  enabled: boolean;
 }

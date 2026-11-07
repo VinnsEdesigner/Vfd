@@ -17,6 +17,8 @@ export type {
   VyzorFacts,
   DeliveryCredentialsValue,
 } from './SettingsPage';
+export { LogsPage } from './LogsPage';
+export type { LogsPageProps } from './LogsPage';
 export { BrowsePage } from './BrowsePage';
 export type { BrowsePageProps, BrowseMode } from './BrowsePage';
 export { InteractiveView } from './InteractiveView';
