@@ -49,6 +49,7 @@ void mi_extract_config_init(mi_extract_config *cfg) {
     cfg->timeout_seconds = 60.0;
     cfg->cookies_file = NULL;
     cfg->cookies_text = NULL;
+    cfg->cookies_from_browser = NULL;
     cfg->proxy = NULL;
     cfg->impersonate = NULL;
     cfg->enumerate = 0;
@@ -209,6 +210,38 @@ static int write_temp_cookies(const char *text, char **out_path) {
  * yt-dlp the same cookies the resolve used. */
 int mi_extract_write_cookies_file(const char *text, char **out_path) {
     return write_temp_cookies(text, out_path);
+}
+
+/*
+ * Append the cookie arguments yt-dlp should use, in priority order.
+ *
+ * One helper rather than the same block in both the gallery and the video paths,
+ * because the order is the subtle part: `--cookies-from-browser` wins over
+ * `--cookies` inside yt-dlp, so passing both makes the file silently
+ * ineffective. The browser is therefore named only when no file or text was
+ * given, and the three are exclusive by construction.
+ *
+ * `*tmp` receives an owned temp path when inline text had to be written for
+ * yt-dlp (which takes a path, not a string); the caller unlinks it. It is left
+ * untouched otherwise.
+ *
+ * Returns the number of argv slots appended.
+ */
+static int append_cookie_args(const mi_extract_config *cfg, const char **argv, int a,
+                              char **tmp) {
+    if (cfg && cfg->cookies_file && *cfg->cookies_file) {
+        argv[a++] = "--cookies";
+        argv[a++] = cfg->cookies_file;
+    } else if (cfg && cfg->cookies_text && *cfg->cookies_text) {
+        if (write_temp_cookies(cfg->cookies_text, tmp) == 0) {
+            argv[a++] = "--cookies";
+            argv[a++] = *tmp;
+        }
+    } else if (cfg && cfg->cookies_from_browser && *cfg->cookies_from_browser) {
+        argv[a++] = "--cookies-from-browser";
+        argv[a++] = cfg->cookies_from_browser;
+    }
+    return a;
 }
 
 /*
@@ -384,22 +417,9 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
         argv[a++] = "-j";
         argv[a++] = "--no-download";
         argv[a++] = "--no-colors";
-        /*
-         * Cookies, from a file or from memory.
-         *
-         * yt-dlp takes a path, so inline cookies are written to a 0600 temp file
-         * for the length of the resolve and removed straight after. The file is
-         * created here and unlinked by the caller below.
-         */
-        if (cfg && cfg->cookies_file && *cfg->cookies_file) {
-            argv[a++] = "--cookies";
-            argv[a++] = cfg->cookies_file;
-        } else if (cfg && cfg->cookies_text && *cfg->cookies_text) {
-            if (write_temp_cookies(cfg->cookies_text, &cookie_tmp) == 0) {
-                argv[a++] = "--cookies";
-                argv[a++] = cookie_tmp;
-            }
-        }
+        /* Cookies: a file, inline text, or a browser's own store. One helper,
+         * because the precedence between them is the subtle part. */
+        a = append_cookie_args(cfg, argv, a, &cookie_tmp);
         if (cfg && cfg->proxy && *cfg->proxy) {
             argv[a++] = "--proxy";
             argv[a++] = cfg->proxy;
@@ -445,20 +465,16 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
         int list = (cfg && (cfg->enumerate || (cfg->search_term && *cfg->search_term)));
         if (list) argv[a++] = "--flat-playlist";
         else argv[a++] = "--no-playlist";
-        if (cfg && cfg->cookies_file && *cfg->cookies_file) {
-            argv[a++] = "--cookies";
-            argv[a++] = cfg->cookies_file;
-        } else if (cfg && cfg->cookies_text && *cfg->cookies_text) {
-            /* The same from-memory cookies the gallery path takes: yt-dlp wants
-             * a path, so they are written to a 0600 temp file for the resolve
-             * and removed by the caller below. Without this the video extractor
-             * resolved anonymously and a site behind a sign-in answered with a
-             * wall. */
-            if (write_temp_cookies(cfg->cookies_text, &cookie_tmp) == 0) {
-                argv[a++] = "--cookies";
-                argv[a++] = cookie_tmp;
-            }
-        }
+        /*
+         * Cookies, from whichever source the caller gave.
+         *
+         * A file or inline text is the usual case; a browser's own store
+         * (`--cookies-from-browser`) is the one that needs no export at all —
+         * yt-dlp reads a session the operator is already signed in to. The
+         * helper keeps them exclusive, because yt-dlp lets the browser flag win
+         * over the file and the file would then be silently ignored.
+         */
+        a = append_cookie_args(cfg, argv, a, &cookie_tmp);
         /*
          * The proxy, when the host's own address is refused. yt-dlp resolves
          * *and* the media fetch that follows both go through it.

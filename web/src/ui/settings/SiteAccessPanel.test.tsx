@@ -17,6 +17,7 @@ const base: SiteAccessValue = {
   cookieConfigured: false,
   cookieNames: [],
   proxy: '',
+  cookiesFromBrowser: '',
   impersonate: '',
   impersonateTargets: ['chrome131', 'firefox133', 'safari180'],
   identityRetries: 0,
@@ -66,5 +67,15 @@ describe('SiteAccessPanel identity picker', () => {
     fireEvent.click(screen.getByRole('combobox', { name: 'Impersonate' }));
     // The fallback always includes the bare families both tools expand.
     expect(screen.getByRole('option', { name: /firefox/ })).toBeDefined();
+  });
+
+  it('offers reading cookies from a browser, and saves the choice', () => {
+    const { onSave } = setup();
+    fireEvent.click(screen.getByRole('combobox', { name: 'Or read cookies from a browser' }));
+    fireEvent.click(screen.getByRole('option', { name: 'firefox' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save browser cookies' }));
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ cookiesFromBrowser: 'firefox' }),
+    );
   });
 });

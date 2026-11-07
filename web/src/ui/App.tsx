@@ -1977,6 +1977,7 @@ export function App({ initialView = 'overview' }: AppProps) {
                     cookieConfigured: egressQuery.data.cookieConfigured,
                     cookieNames: egressQuery.data.cookieNames,
                     proxy: egressQuery.data.proxy,
+                    cookiesFromBrowser: egressQuery.data.cookiesFromBrowser,
                     impersonate: egressQuery.data.impersonate,
                     impersonateTargets: egressQuery.data.impersonateTargets,
                     identityRetries: egressQuery.data.identityRetries,

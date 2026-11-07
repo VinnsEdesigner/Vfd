@@ -297,6 +297,7 @@ void mi_server_config_init(mi_server_config *cfg) {
      * process environment where `ps e` or a core dump can expose it.
      */
     cfg->cookies_text = NULL;
+    cfg->cookies_from_browser = NULL;
     cfg->proxy = NULL;
     {
         const char *px = getenv("MI_PROXY");
@@ -355,6 +356,16 @@ void mi_server_config_init(mi_server_config *cfg) {
                 }
             }
         }
+        /*
+         * Read cookies from a browser's own store instead of an export.
+         *
+         * An operator who is already signed in to the site in a browser on this
+         * host does not have to make an export at all — yt-dlp reads the
+         * profile. Only the extractor can do this, so it covers the resolve and
+         * the extractor's own downloader, not ffmpeg's mux.
+         */
+        const char *cb = getenv("MI_COOKIES_FROM_BROWSER");
+        if (cb && *cb) cfg->cookies_from_browser = mi_strdup(cb);
     }
     /* NULL means "ffmpeg" from PATH. Named so an operator can point at a build
      * of their own; a distribution's copy can lag. */
@@ -1592,6 +1603,7 @@ static void *download_worker(void *arg) {
     dcfg.extractor_path = srv->cfg.extractor_path;
     dcfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
     dcfg.cookies_text = srv->cfg.cookies_text;
+        dcfg.cookies_from_browser = srv->cfg.cookies_from_browser;
     /*
      * The viewer's quality choice, when they made one.
      *
@@ -3086,6 +3098,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ecfg.binary = srv->cfg.extractor_path;
         ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
         ecfg.cookies_text = srv->cfg.cookies_text;
+        ecfg.cookies_from_browser = srv->cfg.cookies_from_browser;
         ecfg.proxy = srv->cfg.proxy;
         ecfg.impersonate = srv->cfg.impersonate;
         mi_json_raw(&b, ",\"extract\":");
@@ -3213,6 +3226,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ecfg.binary = srv->cfg.extractor_path;
         ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
         ecfg.cookies_text = srv->cfg.cookies_text;
+        ecfg.cookies_from_browser = srv->cfg.cookies_from_browser;
         ecfg.proxy = srv->cfg.proxy;
         ecfg.impersonate = srv->cfg.impersonate;
         double timeout = mi_json_get_number(in, "timeout_seconds", 0);
@@ -3408,6 +3422,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             dcfg.proxy = srv->cfg.proxy;
             dcfg.impersonate = srv->cfg.impersonate;
             dcfg.cookies_text = srv->cfg.cookies_text;
+        dcfg.cookies_from_browser = srv->cfg.cookies_from_browser;
             dcfg.brain = srv->brain;
             dcfg.timeout_seconds = 30;
             page = mi_download_fetch_document(&dcfg, url, 8 * 1024 * 1024, NULL);
@@ -3528,6 +3543,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ccfg.extractor_path = srv->cfg.extractor_path;
         ccfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
         ccfg.cookies_text = srv->cfg.cookies_text;
+        ccfg.cookies_from_browser = srv->cfg.cookies_from_browser;
         ccfg.proxy = srv->cfg.proxy;
         ccfg.impersonate = srv->cfg.impersonate;
         /*
@@ -3725,6 +3741,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         memset(&bcfg, 0, sizeof bcfg);
         bcfg.user_agent = srv->cfg.user_agent;
         bcfg.cookies_text = srv->cfg.cookies_text;
+        bcfg.cookies_from_browser = srv->cfg.cookies_from_browser;
         bcfg.proxy = srv->cfg.proxy;
         bcfg.impersonate = srv->cfg.impersonate;
         bcfg.extractor_path = srv->cfg.extractor_path;
@@ -4603,6 +4620,11 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_key(&b, "proxy");
         mi_json_string(&b, srv->cfg.proxy);
         mi_json_raw(&b, ",");
+        /* The browser the extractor reads cookies from, if any. Not a secret —
+         * it names a browser, not a value. */
+        mi_json_key(&b, "cookies_from_browser");
+        mi_json_string(&b, srv->cfg.cookies_from_browser);
+        mi_json_raw(&b, ",");
         mi_json_key(&b, "impersonate");
         mi_json_string(&b, srv->cfg.impersonate);
         mi_json_raw(&b, ",");
@@ -4681,8 +4703,9 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         const mi_json *furl_v = mi_json_get(in, "frontier_db_url");
         const mi_json *ftok_v = mi_json_get(in, "frontier_token");
         const mi_json *fpath_v = mi_json_get(in, "frontier_db_path");
+        const mi_json *cfb_v = mi_json_get(in, "cookies_from_browser");
         if (!cookies_v && !proxy_v && !impersonate_v && !retries_v && !cprov_v &&
-            !ckey_v && !cbase_v && !furl_v && !ftok_v && !fpath_v) {
+            !ckey_v && !cbase_v && !furl_v && !ftok_v && !fpath_v && !cfb_v) {
             send_error(fd, 400, "Bad Request", "nothing to set", cors);
             mi_json_value_free(in);
             return;
@@ -4690,6 +4713,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         const char *cookies = NULL, *proxy = NULL, *impersonate = NULL;
         const char *cprov = NULL, *ckey = NULL, *cbase = NULL;
         const char *furl = NULL, *ftok = NULL, *fpath = NULL;
+        const char *cfb = NULL;
         int retries = -1;
         if (cookies_v) {
             if (cookies_v->type != MI_JSON_STRING && cookies_v->type != MI_JSON_NULL) {
@@ -4714,6 +4738,15 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                 return;
             }
             proxy = proxy_v->string;
+        }
+        if (cfb_v) {
+            if (cfb_v->type != MI_JSON_STRING && cfb_v->type != MI_JSON_NULL) {
+                send_error(fd, 400, "Bad Request",
+                           "cookies_from_browser must be a string", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            cfb = cfb_v->string;
         }
         if (impersonate_v) {
             if (impersonate_v->type != MI_JSON_STRING && impersonate_v->type != MI_JSON_NULL) {
@@ -4809,6 +4842,10 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
              */
             mi_render_pool_set_proxy(srv->renderer, srv->cfg.proxy);
             mi_interactive_pool_set_proxy(srv->driver, srv->cfg.proxy);
+        }
+        if (cfb_v) {
+            free((char *)srv->cfg.cookies_from_browser);
+            srv->cfg.cookies_from_browser = (cfb && *cfb) ? mi_strdup(cfb) : NULL;
         }
         if (impersonate_v) {
             free((char *)srv->cfg.impersonate);

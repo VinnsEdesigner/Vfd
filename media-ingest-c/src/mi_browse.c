@@ -693,6 +693,7 @@ static void offer_extracted(const mi_browse_config *cfg, const char *url,
     ecfg.binary = cfg->extractor_path;
     ecfg.gallery_binary = cfg->gallery_extractor_path;
     ecfg.cookies_text = cfg->cookies_text;
+    ecfg.cookies_from_browser = cfg->cookies_from_browser;
     ecfg.proxy = cfg->proxy;
     ecfg.impersonate = cfg->impersonate;
 
@@ -760,6 +761,7 @@ int mi_browse_url_ext(const mi_browse_config *cfg, const char *url,
     dcfg.user_agent = cfg ? cfg->user_agent : NULL;
     if (cfg) {
         dcfg.cookies_text = cfg->cookies_text;
+        dcfg.cookies_from_browser = cfg->cookies_from_browser;
         dcfg.proxy = cfg->proxy;
         dcfg.impersonate = cfg->impersonate;
     }

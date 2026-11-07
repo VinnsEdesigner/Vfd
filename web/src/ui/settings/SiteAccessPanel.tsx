@@ -28,6 +28,8 @@ export interface SiteAccessValue {
   cookieNames: readonly string[];
   /** The proxy URL, or '' when direct. Not secret. */
   proxy: string;
+  /** A browser to read cookies from, e.g. "chrome"; '' for none. */
+  cookiesFromBrowser: string;
   /** A yt-dlp / curl_cffi impersonation target, e.g. "chrome". */
   impersonate: string;
   /** The targets this host can offer, so a user picks rather than types. */
@@ -53,6 +55,7 @@ export interface SiteAccessValue {
 /** A partial update: a field set to null is left unchanged by the server. */
 export interface SiteAccessSave {
   cookies?: string | null;
+  cookiesFromBrowser?: string | null;
   proxy?: string | null;
   impersonate?: string | null;
   identityRetries?: number | null;
@@ -79,6 +82,7 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
    * seeded from the server and edited in place. */
   const [cookies, setCookies] = useState('');
   const [proxy, setProxy] = useState<string | null>(null);
+  const [cookiesFromBrowser, setCookiesFromBrowser] = useState<string | null>(null);
   const [impersonate, setImpersonate] = useState<string | null>(null);
   const [retries, setRetries] = useState<string | null>(null);
   const [captchaProvider, setCaptchaProvider] = useState<string | null>(null);
@@ -88,6 +92,7 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
   const [frontierPath, setFrontierPath] = useState<string | null>(null);
   const [frontierToken, setFrontierToken] = useState('');
   const effectiveProxy = proxy ?? value?.proxy ?? '';
+  const effectiveCookiesFromBrowser = cookiesFromBrowser ?? value?.cookiesFromBrowser ?? '';
   const effectiveImpersonate = impersonate ?? value?.impersonate ?? '';
   /* The host's own list, or a short fallback so the picker is never empty. A
    * family name ("chrome") is included first: both tools expand it to their
@@ -126,8 +131,47 @@ export function SiteAccessPanel({ value, saving, onSave, onClearCookies }: SiteA
               sites that refuse an anonymous request.
             </span>
           </div>
+          {/*
+            * Or read the session straight from a browser on Vyzor's host, with no
+            * export at all. It is the extractor that does this, so it covers the
+            * resolve and the download it performs — not ffmpeg, which fetches the
+            * segments itself. Named here rather than typed, because yt-dlp aborts
+            * the whole run for a browser it does not know.
+            */}
+          <div className="field field--full">
+            <Select
+              label="Or read cookies from a browser"
+              value={effectiveCookiesFromBrowser}
+              onChange={(v) => setCookiesFromBrowser(v)}
+              options={[
+                { value: '', label: 'None (use the export above)' },
+                { value: 'chrome', label: 'chrome' },
+                { value: 'chromium', label: 'chromium' },
+                { value: 'firefox', label: 'firefox' },
+                { value: 'edge', label: 'edge' },
+                { value: 'brave', label: 'brave' },
+                { value: 'opera', label: 'opera' },
+                { value: 'vivaldi', label: 'vivaldi' },
+                { value: 'safari', label: 'safari' },
+              ]}
+            />
+            <span className="field__hint">
+              For a browser Vyzor&apos;s host is already signed in to. Takes precedence
+              over the export above. The browser must be closed for some stores to be
+              readable.
+            </span>
+          </div>
         </div>
         <div className="form-actions">
+          <Button
+            variant="primary"
+            loading={saving}
+            onClick={() =>
+              onSave({ cookiesFromBrowser: effectiveCookiesFromBrowser, proxy: null })
+            }
+          >
+            Save browser cookies
+          </Button>
           <Button
             variant="primary"
             loading={saving}

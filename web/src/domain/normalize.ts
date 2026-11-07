@@ -424,6 +424,7 @@ export function normalizeEgressSettings(w: WireEgressSettings): EgressSettings {
     cookieConfigured: Boolean(w.cookies?.configured),
     cookieNames: w.cookies?.names ?? [],
     proxy: w.proxy ?? '',
+    cookiesFromBrowser: w.cookies_from_browser ?? '',
     impersonate: w.impersonate ?? '',
     impersonateTargets: w.impersonate_targets ?? [],
     identityRetries: w.identity_retries ?? 0,

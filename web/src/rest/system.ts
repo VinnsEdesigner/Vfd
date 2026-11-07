@@ -117,6 +117,9 @@ export function createSystemResource(client: ApiClient): SystemResource {
       const body: WireEgressUpdate = {};
       if (next.cookies !== undefined) body.cookies = next.cookies;
       if (next.proxy !== undefined) body.proxy = next.proxy;
+      if (next.cookiesFromBrowser !== undefined) {
+        body.cookies_from_browser = next.cookiesFromBrowser;
+      }
       if (next.impersonate !== undefined) body.impersonate = next.impersonate;
       if (next.identityRetries !== undefined) body.identity_retries = next.identityRetries;
       if (next.captchaProvider !== undefined) body.captcha_provider = next.captchaProvider;

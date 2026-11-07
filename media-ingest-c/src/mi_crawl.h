@@ -211,6 +211,9 @@ typedef struct {
      * NULL sends none. A credential, so it is never logged.
      */
     const char *cookies_text;
+    /* A browser whose own cookie store the extractor should read
+     * (`--cookies-from-browser`), e.g. "chrome". NULL or "" is off. */
+    const char *cookies_from_browser;
     /*
      * A proxy every request the walk makes goes through, e.g.
      * "http://host:port" or "socks5://host:port".

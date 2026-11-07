@@ -103,6 +103,17 @@ typedef struct {
      */
     const char *cookies_text;
     /*
+     * A browser whose own cookie store the extractor should read, e.g. "chrome"
+     * or "firefox" (yt-dlp's `--cookies-from-browser`). NULL or "" is off.
+     *
+     * The alternative to an export the operator makes by hand: on a host where
+     * they are already signed in to the site in a browser, the session is read
+     * directly. Only the extractor can do this — ffmpeg, which fetches the
+     * segments, cannot — so a caller that relies on it is relying on the
+     * extractor's own downloader, not on the mux.
+     */
+    const char *cookies_from_browser;
+    /*
      * A live cookie jar, or NULL.
      *
      * When set, the request's `Cookie` header is built from the jar and every

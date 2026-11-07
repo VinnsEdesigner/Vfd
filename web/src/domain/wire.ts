@@ -499,6 +499,8 @@ export interface WireEgressCookies {
 export interface WireEgressSettings {
   cookies: WireEgressCookies | null;
   proxy: string | null;
+  /** A browser to read cookies from, e.g. "chrome"; null for none. */
+  cookies_from_browser?: string | null;
   /** A yt-dlp / curl_cffi impersonation target, e.g. "chrome". */
   impersonate?: string | null;
   /** The impersonation targets this host can offer, for a picker. */
@@ -524,6 +526,7 @@ export interface WireEgressSettings {
 /** A partial update; a field left out is not changed, an empty string clears. */
 export interface WireEgressUpdate {
   cookies?: string;
+  cookies_from_browser?: string;
   proxy?: string;
   impersonate?: string;
   identity_retries?: number;

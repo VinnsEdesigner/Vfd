@@ -142,6 +142,16 @@ typedef struct {
      */
     const char *cookies_text;
     /*
+     * A browser whose own cookie store the extractor should read, e.g. "chrome"
+     * or "firefox" (yt-dlp's `--cookies-from-browser`). NULL or "" is off.
+     *
+     * The alternative to an export the operator makes by hand: on a host where
+     * they are already signed in, the session is read straight from the browser.
+     * Only the extractor can do this, so it reaches the resolve and the
+     * extractor's own downloader, not ffmpeg.
+     */
+    const char *cookies_from_browser;
+    /*
      * A proxy every outbound request goes through, e.g. "http://host:port" or
      * "socks5://host:port".
      *

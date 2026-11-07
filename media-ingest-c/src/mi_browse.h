@@ -89,6 +89,8 @@ int mi_browse_url(const char *url, const char *user_agent, mi_browse_filter filt
 typedef struct {
     const char *user_agent;
     const char *cookies_text;
+    /* A browser whose own cookie store the extractor should read. NULL is off. */
+    const char *cookies_from_browser;
     const char *proxy;
     const char *impersonate;
     const char *extractor_path;

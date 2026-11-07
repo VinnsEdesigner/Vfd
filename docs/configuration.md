@@ -29,6 +29,7 @@ would expose anyway.
 | `--identity-retries N` | `MI_IDENTITY_RETRIES` | how many identities to try |
 | — | `MI_IMPERSONATE_HELPER` | helper binary for impersonation |
 | — | `MI_COOKIES_FILE` | a path to a Netscape cookie file (a path, not the contents) |
+| — | `MI_COOKIES_FROM_BROWSER` | a browser to read cookies from, e.g. `chrome` (yt-dlp's `--cookies-from-browser`) |
 
 `MI_COOKIES_FILE` is a path so the credential lives in a file the operator
 controls the permissions on, rather than in the process environment where `ps e`

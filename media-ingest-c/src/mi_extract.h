@@ -172,6 +172,22 @@ typedef struct {
      */
     const char *cookies_text;
     /*
+     * Load cookies straight from an installed browser's profile instead of a
+     * file, as yt-dlp's `--cookies-from-browser` (e.g. "chrome", "firefox",
+     * "chromium"). NULL or "" is off.
+     *
+     * This is the alternative to an export the operator has to make by hand: on
+     * a machine where the operator is already signed in to the site in a
+     * browser, yt-dlp reads that session directly. It is deliberately *not* a
+     * fallback — yt-dlp aborts the whole run when the named browser has no
+     * cookie store, rather than continuing anonymously — so it is used only when
+     * a caller asks for it by name.
+     *
+     * Takes precedence over the file and text above, because yt-dlp gives it
+     * precedence: naming both would make the other silently ineffective.
+     */
+    const char *cookies_from_browser;
+    /*
      * A proxy the extractor should send its requests through, e.g.
      * "http://host:port" or "socks5://host:port".
      *

@@ -242,6 +242,8 @@ export interface EgressSettings {
   cookieConfigured: boolean;
   cookieNames: readonly string[];
   proxy: string;
+  /** A browser to read cookies from, e.g. "chrome"; '' for none. */
+  cookiesFromBrowser: string;
   impersonate: string;
   impersonateTargets: readonly string[];
   identityRetries: number;
@@ -257,6 +259,7 @@ export interface EgressSettings {
 /** A partial update: a field left out is unchanged, an empty string clears it. */
 export interface EgressUpdate {
   cookies?: string;
+  cookiesFromBrowser?: string;
   proxy?: string;
   impersonate?: string;
   identityRetries?: number;

@@ -59,6 +59,7 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->extractor_path = NULL;
     cfg->gallery_extractor_path = NULL;
     cfg->cookies_text = NULL;
+    cfg->cookies_from_browser = NULL;
     cfg->proxy = NULL;
     cfg->impersonate = NULL;
     cfg->brain = NULL;
@@ -565,6 +566,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
      * falls back to libcurl on its own if the helper is missing. */
     dcfg.impersonate = cfg->impersonate;
     dcfg.cookies_text = cfg->cookies_text;
+    dcfg.cookies_from_browser = cfg->cookies_from_browser;
     /* A crawl fetches many pages; a single slow one must not consume the whole
      * budget, so each fetch gets a fraction of it. */
     dcfg.timeout_seconds = 15;
@@ -788,6 +790,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         ecfg.binary = cfg->extractor_path;
         ecfg.gallery_binary = cfg->gallery_extractor_path;
         ecfg.cookies_text = cfg->cookies_text;
+        ecfg.cookies_from_browser = cfg->cookies_from_browser;
         ecfg.proxy = cfg->proxy;
         ecfg.impersonate = cfg->impersonate;
         if (mi_extract_available(&ecfg)) {
@@ -1093,6 +1096,7 @@ static int seed_from_sitemaps(const mi_crawl_config *cfg, frontier *f,
     dcfg.proxy = cfg->proxy;
     dcfg.impersonate = cfg->impersonate;
     dcfg.cookies_text = cfg->cookies_text;
+    dcfg.cookies_from_browser = cfg->cookies_from_browser;
     dcfg.timeout_seconds = 15;
 
     int pushed = 0;

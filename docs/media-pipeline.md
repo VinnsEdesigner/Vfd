@@ -132,6 +132,24 @@ credential must reach both: yt-dlp takes `--cookies`, and ffmpeg — which fetch
 the segments — takes `-cookies`. Vyzor passes the same export to both, so a
 cookie set once covers the resolve, the extractor's own downloader and the mux.
 
+**Three ways to give Vyzor the cookies**, in precedence order:
+
+| Source | Setting | Notes |
+|---|---|---|
+| A browser on Vyzor's host | `MI_COOKIES_FROM_BROWSER=chrome`, or Settings → Egress | no export to make: yt-dlp reads the profile. The extractor does this, so it covers the resolve and the extractor's downloader — not ffmpeg |
+| A Netscape file | `MI_COOKIES_FILE=/path/cookies.txt` | the path, not the contents, so the credential lives in a file you can `chmod 600` |
+| Pasted into the console | Settings → Egress → Cookies | held in memory for the session; never written to disk |
+
+They are exclusive, not layered: yt-dlp lets `--cookies-from-browser` win over
+`--cookies`, so naming both would make the file silently ineffective. Vyzor sends
+whichever one source was given.
+
+`--cookies-from-browser` **aborts the run** when the named browser has no cookie
+store rather than continuing anonymously — measured, `could not find chromium
+cookies database`. So it is worth setting only on a host where that browser is
+actually signed in, and the failure is a clear message rather than a silent
+fallback.
+
 **If it still fails.** Read the Logs tab in the console, or `GET /api/v1/logs`.
 A `403` from a `googlevideo.com` URL is the address refusal; a message naming
 `Sign in to confirm you're not a bot` is the session wall. The two need different

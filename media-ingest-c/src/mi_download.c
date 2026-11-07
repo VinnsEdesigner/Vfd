@@ -1277,6 +1277,7 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->extractor_path = NULL;
     cfg->gallery_extractor_path = NULL;
     cfg->cookies_text = NULL;
+    cfg->cookies_from_browser = NULL;
     cfg->jar = NULL;
     cfg->proxy = NULL;
     cfg->impersonate = NULL;
@@ -1512,6 +1513,9 @@ static int download_via_extractor(const mi_download_config *cfg, const char *pag
             argv[a++] = "--cookies";
             argv[a++] = cookie_tmp;
         }
+    } else if (cfg->cookies_from_browser && *cfg->cookies_from_browser) {
+        argv[a++] = "--cookies-from-browser";
+        argv[a++] = cfg->cookies_from_browser;
     }
     if (cfg->proxy && *cfg->proxy) {
         argv[a++] = "--proxy";
@@ -1723,6 +1727,7 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
      * media are two requests to the same host, and a site that needs a sign-in
      * needs it for both. */
     ecfg.cookies_text = cfg->cookies_text;
+    ecfg.cookies_from_browser = cfg->cookies_from_browser;
     /* The same egress the transfer uses: the resolve is a request to the same
      * host, so a proxy that got the fetch past a refusal must carry it too. */
     ecfg.proxy = cfg->proxy;
