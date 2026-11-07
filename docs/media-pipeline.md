@@ -91,6 +91,52 @@ Wasabi.
 Credentials live in memory for the session and travel as request headers. They
 are never written to disk or logged.
 
+## Why YouTube fails, and what fixes it
+
+A YouTube watch page resolves fine — yt-dlp lists its formats — but the fetch of
+the media itself can fail with a `403`, or with a `Sign in to confirm you're not
+a bot` wall. This is not a defect in Vyzor, and it is worth understanding because
+the fix is a setting, not a code change.
+
+**What is happening.** YouTube decides whether to serve the media bytes by two
+things, and either can refuse:
+
+1. **The address the request comes from.** A datacenter range (a cloud VM, a
+   container host) is treated as suspicious, and the media URL is refused even
+   though the metadata endpoint answered.
+2. **Whether the request looks like a real, signed-in session.** YouTube has been
+   moving to PO-token and SABR checks that bind a stream to a proof of origin.
+   Against these the IP is not the deciding factor; a genuine session is.
+
+**The two levers, and how they differ.**
+
+| Lever | Setting | Fixes |
+|---|---|---|
+| A session's cookies | `MI_COOKIES_FILE`, or the console's Settings → Egress cookies | the bot wall, and a PO-token challenge — works from any address |
+| A residential or mobile address | `MI_PROXY`, or run Vyzor on the device | the address-reputation refusal only |
+
+Cookies are the reliable lever, because they do not depend on the host's address
+being trusted. A proxy helps when the refusal is about reputation, but it is the
+same *kind* of signal as the address itself, so it can work today and stop
+working when the checks tighten.
+
+**There is no "use the device's IP".** Vyzor's browser is a Chromium on Vyzor's
+own host — the same machine, the same network, the same egress address as the
+downloader. It is not a phone, and an IP is not something one process can read
+out of another and borrow. The only ways to change the egress are to run Vyzor
+where that address is (on the device), or to route it through a proxy that has
+it. Both are configuration.
+
+**Where the cookies go.** A resolve and a download are two requests, so the
+credential must reach both: yt-dlp takes `--cookies`, and ffmpeg — which fetches
+the segments — takes `-cookies`. Vyzor passes the same export to both, so a
+cookie set once covers the resolve, the extractor's own downloader and the mux.
+
+**If it still fails.** Read the Logs tab in the console, or `GET /api/v1/logs`.
+A `403` from a `googlevideo.com` URL is the address refusal; a message naming
+`Sign in to confirm you're not a bot` is the session wall. The two need different
+fixes, and the log says which one you have.
+
 ## Failure modes
 
 Each of these has a specific cause; none is a silent success.
@@ -101,7 +147,8 @@ Each of these has a specific cause; none is a silent success.
 | `the page could not be resolved to media, and it is not a file` | the URL probed as a page, the extractor was asked, and it could not resolve — the media is not available |
 | `ffmpeg could not mux the streams (exit 234)` | a codec that cannot be copied into MP4, or a source ffmpeg cannot seek over HTTP |
 | `ffmpeg could not read the stream` | the manifest or its segments were refused by the host |
-| a `403` from a CDN in ffmpeg's output | the stream URL is bound to the signature of the request that resolved it (YouTube's googlevideo does this) |
+| a `403` from a CDN in ffmpeg's output | the stream URL is bound to the signature of the request that resolved it, or the host refuses this address (YouTube's googlevideo does both) |
+| `Sign in to confirm you're not a bot` | YouTube's session wall; set cookies. See the section above |
 
 A URL with real bytes still falls through after an extractor failure: the
 extractor not knowing a site says nothing about a URL that is plainly a file.

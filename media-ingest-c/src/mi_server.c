@@ -4794,6 +4794,21 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         if (proxy_v) {
             free((char *)srv->cfg.proxy);
             srv->cfg.proxy = (proxy && *proxy) ? mi_strdup(proxy) : NULL;
+            /*
+             * The browser pools hold their own copy, and must be told.
+             *
+             * They were built with `rcfg.proxy = cfg->proxy` — a *borrowed*
+             * pointer — so replacing the string here would leave them pointing at
+             * freed memory. Pushing the new value in also means a proxy set in the
+             * console reaches the browser without a restart, which is the point:
+             * the renderer and the downloader should share one egress.
+             *
+             * A render picks it up on its next run (the browser is forked per
+             * render); a live session keeps the browser it started with, so the
+             * change applies to the next session.
+             */
+            mi_render_pool_set_proxy(srv->renderer, srv->cfg.proxy);
+            mi_interactive_pool_set_proxy(srv->driver, srv->cfg.proxy);
         }
         if (impersonate_v) {
             free((char *)srv->cfg.impersonate);

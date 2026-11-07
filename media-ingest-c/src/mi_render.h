@@ -146,6 +146,15 @@ int mi_render_pool_caching(const mi_render_pool *pool);
 int mi_render_pool_idle(const mi_render_pool *pool);
 
 /*
+ * Change the proxy the browser uses, at runtime.
+ *
+ * The browser is forked per render, so the next render uses the new value; a
+ * render already running is not disturbed. NULL or "" is a direct connection.
+ * Safe to call while renders run.
+ */
+void mi_render_pool_set_proxy(mi_render_pool *pool, const char *proxy);
+
+/*
  * Render `url` into `out`. Takes a slot for the duration; returns MI_RENDER_BUSY
  * immediately when none is free rather than queueing, because a queue would
  * grow without bound behind a slow page.

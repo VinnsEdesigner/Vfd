@@ -88,6 +88,14 @@ int mi_interactive_pool_limit(const mi_interactive_pool *pool);
 /* How many sessions are live right now, for reporting. */
 int mi_interactive_pool_active(const mi_interactive_pool *pool);
 
+/*
+ * Change the proxy the *next* live session's browser uses, at runtime.
+ *
+ * A session already open keeps the browser it started with, so the change
+ * applies to the next one. NULL or "" is a direct connection.
+ */
+void mi_interactive_pool_set_proxy(mi_interactive_pool *pool, const char *proxy);
+
 /* ------------------------------------------------------------------ */
 /* A session                                                           */
 /* ------------------------------------------------------------------ */

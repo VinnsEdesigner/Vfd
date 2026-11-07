@@ -61,6 +61,12 @@ static const char *const BROWSERS[] = {
 struct mi_interactive_pool {
     mi_interactive_config cfg;
     char *browser;
+    /*
+     * The proxy, owned by the pool rather than borrowed from the config — the
+     * same reason the render pool owns its own: the setting can change at
+     * runtime, and a borrowed pointer would be freed underneath a session.
+     */
+    char *proxy_owned;
     pthread_mutex_t lock;
     int in_use;
     pthread_mutex_t reap_lock;
@@ -306,6 +312,12 @@ mi_interactive_pool *mi_interactive_pool_new(const mi_interactive_config *cfg) {
     if (pool->cfg.startup_timeout_seconds <= 0) pool->cfg.startup_timeout_seconds = 15;
     if (pool->cfg.keepalive_ping_seconds <= 0) pool->cfg.keepalive_ping_seconds = 20;
     if (pool->cfg.keepalive_timeout_seconds <= 0) pool->cfg.keepalive_timeout_seconds = 300;
+    /* Own the proxy from the start: `cfg.proxy` must never be a borrowed pointer,
+     * because the server replaces its own string when the setting changes. */
+    if (cfg->proxy && *cfg->proxy) {
+        pool->proxy_owned = mi_strdup(cfg->proxy);
+        pool->cfg.proxy = pool->proxy_owned;
+    }
     pool->browser = find_browser(cfg->chromium_path);
     if (!pool->browser) {
         mi_logf(MI_LOG_INFO, "interactive: no browser found; live sessions are unavailable");
@@ -327,9 +339,28 @@ void mi_interactive_pool_free(mi_interactive_pool *pool) {
     }
     pthread_mutex_unlock(&pool->lock);
     free(pool->browser);
+    free(pool->proxy_owned);
     pthread_mutex_destroy(&pool->lock);
     pthread_mutex_destroy(&pool->reap_lock);
     free(pool);
+}
+
+/*
+ * Change the proxy new live sessions use.
+ *
+ * A session already open keeps the browser it started with: its proxy is fixed
+ * for the life of that browser, and swapping it mid-session would need a restart
+ * the user did not ask for. So the change applies to the *next* session, which is
+ * what "I fixed my proxy, try again" means in practice.
+ */
+void mi_interactive_pool_set_proxy(mi_interactive_pool *pool, const char *proxy) {
+    if (!pool) return;
+    pthread_mutex_lock(&pool->lock);
+    char *next = (proxy && *proxy) ? mi_strdup(proxy) : NULL;
+    free(pool->proxy_owned);
+    pool->proxy_owned = next;
+    pool->cfg.proxy = pool->proxy_owned;
+    pthread_mutex_unlock(&pool->lock);
 }
 
 int mi_interactive_pool_available(const mi_interactive_pool *pool) {

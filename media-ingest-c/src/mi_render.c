@@ -181,6 +181,17 @@ static char *find_browser(const char *hint) {
 struct mi_render_pool {
     mi_render_config cfg;
     char *browser;
+    /*
+     * The proxy, owned by the pool rather than borrowed from the config.
+     *
+     * `cfg.proxy` points at the caller's string, which is fine while the server
+     * only reads it at startup. It is not fine once the proxy can be *changed* at
+     * runtime (Settings → Egress): the server would have to keep the old string
+     * alive too, and freeing one while a render read the other is a use-after-free.
+     * So a change copies the new value here, under the lock, and `cfg.proxy` is
+     * pointed at the copy.
+     */
+    char *proxy_owned;
     /* Rendered pages, keyed by URL and mode. NULL when caching is off. */
     mi_cache *cache;
     /* A counting semaphore as a mutex + condition: the free count is explicit,
@@ -256,6 +267,13 @@ mi_render_pool *mi_render_pool_new(const mi_render_config *cfg) {
     if (pool->cfg.viewport_height <= 0) pool->cfg.viewport_height = 900;
     if (pool->cfg.v8_heap_mb <= 0) pool->cfg.v8_heap_mb = 256;
     if (pool->cfg.max_output_bytes == 0) pool->cfg.max_output_bytes = 8 * 1024 * 1024;
+    /* Take ownership of the proxy from the start, so `cfg.proxy` is never a
+     * borrowed pointer — the server may replace or free its own string at any
+     * time (Settings → Egress), and a borrow would dangle. */
+    if (cfg->proxy && *cfg->proxy) {
+        pool->proxy_owned = mi_strdup(cfg->proxy);
+        pool->cfg.proxy = pool->proxy_owned;
+    }
 
     pool->browser = find_browser(cfg->chromium_path);
     if (!pool->browser) {
@@ -296,6 +314,7 @@ void mi_render_pool_free(mi_render_pool *pool) {
     pthread_mutex_unlock(&pool->lock);
     mi_cache_free(pool->cache);
     free(pool->browser);
+    free(pool->proxy_owned);
     pthread_mutex_destroy(&pool->lock);
     pthread_cond_destroy(&pool->free_slot);
     pthread_mutex_destroy(&pool->reap_lock);
@@ -330,6 +349,22 @@ int mi_render_pool_idle(const mi_render_pool *pool) {
     int idle = pool->in_use < pool->cfg.max_concurrent;
     pthread_mutex_unlock((pthread_mutex_t *)&pool->lock);
     return idle;
+}
+
+void mi_render_pool_set_proxy(mi_render_pool *pool, const char *proxy) {
+    if (!pool) return;
+    /*
+     * The browser is forked per render, so a change here is picked up by the next
+     * one — no restart, and no need to touch a browser already running (which
+     * would be a live session's). Held under the lock so a render starting at the
+     * same moment reads one pointer or the other, never a freed one.
+     */
+    pthread_mutex_lock(&pool->lock);
+    char *next = (proxy && *proxy) ? mi_strdup(proxy) : NULL;
+    free(pool->proxy_owned);
+    pool->proxy_owned = next;
+    pool->cfg.proxy = pool->proxy_owned;
+    pthread_mutex_unlock(&pool->lock);
 }
 
 /* ------------------------------------------------------------------ */
