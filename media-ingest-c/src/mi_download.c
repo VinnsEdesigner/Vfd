@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <curl/curl.h>
 #include <dirent.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -42,6 +43,143 @@ static void curl_global_setup(void) {
 static int ensure_curl(void) {
     pthread_once(&g_curl_once, curl_global_setup);
     return g_curl_ready ? 0 : -1;
+}
+
+/*
+ * Running an external tool with its output *relayed into Vyzor's log*.
+ *
+ * Every fetcher here shells out — ffmpeg for a manifest, yt-dlp for a page,
+ * aria2 for a torrent — and every one of them used to have its output sent to
+ * `/dev/null`. That made the log useless for exactly the case it is needed for:
+ * a transfer that produces no bytes prints its reason on the tool's output, so
+ * discarding it left "0 bytes for 100 seconds" with no explanation, and a stalled
+ * transfer was indistinguishable from a slow one.
+ *
+ * **Both** streams are captured, on one pipe. That is not belt-and-braces: the
+ * tools disagree about which stream they use. ffmpeg and yt-dlp write their
+ * diagnostics to *stderr*, while **aria2 writes its notices and progress to
+ * stdout** — measured: `aria2c ... 2>err` leaves `err` empty and puts "[NOTICE]
+ * Downloading 1 item(s)", "[ERROR] Download aborted" and the progress summary on
+ * stdout. Capturing only stderr relayed nothing at all from aria2, which is why
+ * this takes both.
+ *
+ * A redrawn progress bar is the one thing worth avoiding, and it is avoided at
+ * the source instead: aria2 is told `--summary-interval` so it prints a line
+ * periodically rather than repainting, and ffmpeg is told `-loglevel error`.
+ */
+#define RELAY_PREFIX "tool: "
+
+/** Spawn `argv`, with the child's stdout *and* stderr on `*out_fd`
+ *  (non-blocking). Returns the pid, or -1. The caller drains and closes it. */
+static pid_t spawn_relayed(const char *const *argv, int *out_fd) {
+    int p[2];
+    if (out_fd) *out_fd = -1;
+    if (pipe(p) != 0) return -1;
+    /* Non-blocking, so a drain never stalls the poll loop that reports progress
+     * — a silent child is exactly the case the relay exists to notice. */
+    int fl = fcntl(p[0], F_GETFL, 0);
+    if (fl >= 0) fcntl(p[0], F_SETFL, fl | O_NONBLOCK);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(p[0]);
+        close(p[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        dup2(p[1], STDOUT_FILENO);
+        dup2(p[1], STDERR_FILENO);
+        close(p[0]);
+        close(p[1]);
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    close(p[1]);
+    if (out_fd) *out_fd = p[0];
+    else close(p[0]);
+    return pid;
+}
+
+/** Map a tool's own severity tag onto Vyzor's level. */
+static mi_log_level relay_level_for(const char *line) {
+    if (strstr(line, "[ERROR]") || strstr(line, "ERROR:") ||
+        strstr(line, "Exception:") || strstr(line, "errorCode=")) {
+        return MI_LOG_ERROR;
+    }
+    if (strstr(line, "[WARN") || strstr(line, "WARNING:")) return MI_LOG_WARN;
+    return MI_LOG_INFO;
+}
+
+/** Emit one complete line, with the tool's severity preserved. */
+static void relay_emit(const char *line) {
+    if (!*line) return;
+    /*
+     * Keep the tool's own severity rather than flattening it.
+     *
+     * The tools tag their lines ("[ERROR] ...", "WARNING: ..."), and mapping
+     * that onto Vyzor's levels is what lets the console's level filter work on
+     * them: an aria2 "[ERROR] Download aborted" should be an error, not
+     * something hidden among the notices.
+     */
+    mi_logf(relay_level_for(line), RELAY_PREFIX "%s", line);
+}
+
+/*
+ * Drain whatever the child has said, one log line per message.
+ *
+ * The partial tail of a line is *carried over*, not emitted. A pipe delivers
+ * bytes, not messages: a long line arrives in two reads, and logging each read
+ * would split one message into two entries — the tail losing the "[ERROR]" tag
+ * that made it an error. The carry buffer is per-call and `carry`/`carrylen`
+ * belong to the caller, so successive drains reassemble the line. Anything still
+ * buffered when the child exits is flushed by passing `flush = 1`.
+ */
+static size_t relay_drain(int fd, char *carry, size_t *carrylen, size_t carrycap,
+                          int flush) {
+    if (fd < 0) return 0;
+    size_t total = 0;
+    char chunk[512];
+    for (;;) {
+        ssize_t n = read(fd, chunk, sizeof chunk - 1);
+        if (n <= 0) break;
+        total += (size_t)n;
+        size_t off = 0;
+        while (off < (size_t)n) {
+            /* Take up to the next newline, or the rest of the chunk. */
+            char *nl = memchr(chunk + off, '\n', (size_t)n - off);
+            size_t take = nl ? (size_t)(nl - (chunk + off)) : (size_t)n - off;
+            /* Append to the carry, bounded so a pathological line cannot grow
+             * without limit; a line longer than the cap is logged truncated. */
+            size_t room = carrycap - 1 - *carrylen;
+            size_t put = take < room ? take : room;
+            memcpy(carry + *carrylen, chunk + off, put);
+            *carrylen += put;
+            if (nl) {
+                carry[*carrylen] = '\0';
+                relay_emit(carry);
+                *carrylen = 0;
+            }
+            off += take + (nl ? 1 : 0);
+            if (!nl) break;
+        }
+    }
+    if (flush && *carrylen > 0) {
+        carry[*carrylen] = '\0';
+        relay_emit(carry);
+        *carrylen = 0;
+    }
+    return total;
+}
+
+/*
+ * The simple form, for callers that do not care about line boundaries: drains
+ * and emits each read as its own line. Used where the output is short and
+ * already newline-terminated (a probe, a `--version`).
+ */
+static size_t relay_child_output(int fd) {
+    char carry[MI_LOG_LINE_CAP];
+    size_t carrylen = 0;
+    return relay_drain(fd, carry, &carrylen, sizeof carry, 1);
 }
 
 typedef struct {
@@ -662,6 +800,22 @@ static int download_ranged(const mi_download_config *cfg, const char *url,
     int pending = 0;
     for (int i = 0; i < count; i++) if (!ranges[i].done) pending++;
 
+    /*
+     * Say what the transfer actually is, up front.
+     *
+     * Without this the log held nothing between "download started" and the
+     * outcome, so a slow transfer and a stalled one looked identical. The line
+     * names the shape of the work: how many connections, how much is left, and
+     * whether any of it was resumed from a partial.
+     */
+    mi_logf(MI_LOG_INFO,
+            "download: ranged transfer — %d connection%s, %d of %d chunk%s left, "
+            "%lld of %lld bytes already on disk%s",
+            pending, pending == 1 ? "" : "s",
+            pending, count, count == 1 ? "" : "s",
+            (long long)base, (long long)total,
+            resumed ? " (resuming)" : "");
+
     range_job *jobs = mi_calloc((size_t)(pending ? pending : 1), sizeof(range_job));
     pthread_t *threads = mi_calloc((size_t)(pending ? pending : 1), sizeof(pthread_t));
     if (!jobs || !threads) {
@@ -1279,6 +1433,9 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->torrent_extractor_path = NULL;
     cfg->torrent_site = NULL;
     cfg->magnet_downloader_path = NULL;
+    cfg->torrent_bytes = NULL;
+    cfg->torrent_len = 0;
+    cfg->torrent_timeout_seconds = 0;
     cfg->magnet_files = NULL;
     cfg->magnet_file_count = 0;
     cfg->cookies_text = NULL;
@@ -1370,22 +1527,33 @@ static int download_manifest(const mi_download_config *cfg, const char *url,
     argv[a++] = dest;
     argv[a] = NULL;
 
-    pid_t pid = fork();
+    mi_logf(MI_LOG_INFO, "download: reading the manifest with %s", ffmpeg);
+    int child_err = -1;
+    pid_t pid = spawn_relayed((const char *const *)argv, &child_err);
     if (pid < 0) return MI_ERR_IO;
-    if (pid == 0) {
-        execvp(argv[0], (char *const *)argv);
-        _exit(127);
-    }
 
     int status = 0;
     /* Poll rather than wait, so progress is reported while it runs: a stream
      * takes minutes and a frozen bar reads as a hang. */
+    int64_t last_reported = -1;
     for (;;) {
         pid_t r = waitpid(pid, &status, WNOHANG);
         if (r == pid) break;
         if (r < 0) {
             if (errno == EINTR) continue;
+            if (child_err >= 0) close(child_err);
             return MI_ERR_IO;
+        }
+        /* The tool's own words, so a failure to read the stream is explained
+         * rather than only counted. */
+        relay_child_output(child_err);
+        int64_t on_disk = mi_file_size(dest);
+        /* Only log when it moves; a line every half-second for an unchanged
+         * figure is noise, and the change is the interesting event. */
+        if (on_disk > 0 && on_disk != last_reported) {
+            mi_logf(MI_LOG_INFO, "download: manifest %lld bytes written so far",
+                    (long long)on_disk);
+            last_reported = on_disk;
         }
         if (on_progress) {
             mi_progress p;
@@ -1397,6 +1565,9 @@ static int download_manifest(const mi_download_config *cfg, const char *url,
         struct timespec ts = {.tv_sec = 0, .tv_nsec = 500 * 1000 * 1000};
         nanosleep(&ts, NULL);
     }
+    /* The last of the child's output, before its exit is judged. */
+    relay_child_output(child_err);
+    if (child_err >= 0) close(child_err);
 
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         mi_logf(MI_LOG_ERROR, "ffmpeg could not read the stream (exit %d)",
@@ -1407,6 +1578,7 @@ static int download_manifest(const mi_download_config *cfg, const char *url,
     int64_t written = mi_file_size(dest);
     if (written <= 0) return MI_ERR_IO;
     out->bytes_written = written;
+    mi_logf(MI_LOG_INFO, "download: the manifest produced %lld bytes", (long long)written);
 
     /* Identify what was produced, so the caller knows it has real video rather
      * than another playlist. */
@@ -1537,22 +1709,14 @@ static int download_via_extractor(const mi_download_config *cfg, const char *pag
 
     mi_logf(MI_LOG_INFO, "download: fetching the page with %s", binary);
 
-    pid_t pid = fork();
+    int child_err = -1;
+    pid_t pid = spawn_relayed((const char *const *)argv, &child_err);
     if (pid < 0) {
         free(fmt);
         free(imp);
         if (cookie_tmp) { unlink(cookie_tmp); free(cookie_tmp); }
         free(tmp);
         return MI_ERR_IO;
-    }
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-        }
-        execvp(argv[0], (char *const *)argv);
-        _exit(127);
     }
 
     int status = 0;
@@ -1564,10 +1728,14 @@ static int download_via_extractor(const mi_download_config *cfg, const char *pag
             kill(pid, SIGKILL);
             waitpid(pid, &status, 0);
             free(fmt); free(imp);
+            if (child_err >= 0) close(child_err);
             if (cookie_tmp) { unlink(cookie_tmp); free(cookie_tmp); }
             free(tmp);
             return MI_ERR_IO;
         }
+        /* The downloader's own progress and errors: yt-dlp prints "has already
+         * been downloaded", the destination it chose, and any refusal here. */
+        relay_child_output(child_err);
         /* Honour a pause/cancel the same way the ffmpeg path does. */
         if (cfg->control && cfg->control->stop && cfg->control->stop(cfg->control->user)) {
             kill(pid, SIGTERM);
@@ -1576,6 +1744,7 @@ static int download_via_extractor(const mi_download_config *cfg, const char *pag
             if (waitpid(pid, &status, WNOHANG) != pid) kill(pid, SIGKILL);
             waitpid(pid, &status, 0);
             free(fmt); free(imp);
+            if (child_err >= 0) close(child_err);
             if (cookie_tmp) { unlink(cookie_tmp); free(cookie_tmp); }
             free(tmp);
             return MI_ERR_ABORTED;
@@ -1590,6 +1759,8 @@ static int download_via_extractor(const mi_download_config *cfg, const char *pag
         struct timespec ts = {.tv_sec = 0, .tv_nsec = 500 * 1000 * 1000};
         nanosleep(&ts, NULL);
     }
+    relay_child_output(child_err);
+    if (child_err >= 0) close(child_err);
     free(fmt);
     free(imp);
     if (cookie_tmp) { unlink(cookie_tmp); free(cookie_tmp); }
@@ -1892,14 +2063,13 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
     argv[a++] = dest;
     argv[a] = NULL;
 
-    pid_t pid = fork();
+    mi_logf(MI_LOG_INFO, "download: muxing %zu stream%s with ffmpeg",
+            er.format_count, er.format_count == 1 ? "" : "s");
+    int child_err = -1;
+    pid_t pid = spawn_relayed((const char *const *)argv, &child_err);
     if (pid < 0) {
         mi_extract_result_free(&er);
         return MI_ERR_IO;
-    }
-    if (pid == 0) {
-        execvp(argv[0], (char *const *)argv);
-        _exit(127);
     }
 
     int status = 0;
@@ -1908,9 +2078,14 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
         if (r == pid) break;
         if (r < 0) {
             if (errno == EINTR) continue;
+            if (child_err >= 0) close(child_err);
             mi_extract_result_free(&er);
             return MI_ERR_IO;
         }
+        /* ffmpeg's own reading of the stream — the muxer's warnings and the
+         * reason a copy failed ("Codec 'ac3' is not supported by the bitstream
+         * filter", "Invalid data found when processing input") are all here. */
+        relay_child_output(child_err);
         /* A pause must be honoured here too: ffmpeg is doing the transfer, so
          * the downloader's own stop callback never runs. The child is killed and
          * the partial file discarded — a muxed stream cannot resume. */
@@ -1920,6 +2095,7 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
             nanosleep(&grace, NULL);
             if (waitpid(pid, &status, WNOHANG) != pid) kill(pid, SIGKILL);
             waitpid(pid, &status, 0);
+            if (child_err >= 0) close(child_err);
             mi_extract_result_free(&er);
             unlink(dest);
             return MI_ERR_ABORTED;
@@ -1934,6 +2110,8 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
         struct timespec ts = {.tv_sec = 0, .tv_nsec = 500 * 1000 * 1000};
         nanosleep(&ts, NULL);
     }
+    relay_child_output(child_err);
+    if (child_err >= 0) close(child_err);
     mi_extract_result_free(&er);
 
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
@@ -1946,6 +2124,51 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
     out->bytes_written = written;
     mi_detect_file(dest, MI_HEADER_SNIFF, &out->media);
     return MI_OK;
+}
+
+/*
+ * Sum the bytes of every regular file under `dir`, recursively, and remember the
+ * largest.
+ *
+ * A torrent is written into a *directory named after the torrent* (multi-file)
+ * or as a single file beside the work dir, so the scan must descend — a flat
+ * readdir of the work dir sees one subdirectory and reports zero bytes, which is
+ * exactly the bug this fixes.
+ *
+ * `largest` is the biggest file found, which is the media for a media torrent.
+ * `*.aria2` control files are skipped: they are the client's bookkeeping, not
+ * content.
+ */
+static int64_t scan_torrent_dir(const char *dir, char **largest) {
+    int64_t total = 0;
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        size_t n = strlen(ent->d_name);
+        if (n > 6 && strcmp(ent->d_name + n - 6, ".aria2") == 0) continue;
+        char *full = mi_path_join(dir, ent->d_name);
+        if (!full) continue;
+        struct stat st;
+        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
+            int64_t sub = scan_torrent_dir(full, largest);
+            total += sub;
+            free(full);
+            continue;
+        }
+        if (stat(full, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) {
+            total += st.st_size;
+            if (largest && st.st_size > mi_file_size(*largest ? *largest : "")) {
+                free(*largest);
+                *largest = full;
+                continue;
+            }
+        }
+        free(full);
+    }
+    closedir(d);
+    return total;
 }
 
 /*
@@ -1986,11 +2209,23 @@ static int download_magnet(const mi_download_config *cfg, const char *magnet,
     const char *argv[32];
     int a = 0;
     argv[a++] = aria2;
-    /* No progress bars or console output: Vyzor reports progress itself, and the
-     * client's own rendering would be interleaved into the log. */
-    argv[a++] = "--quiet=true";
-    argv[a++] = "--summary-interval=0";
-    argv[a++] = "--console-log-level=warn";
+    /*
+     * aria2's own events are *relayed into Vyzor's log*, not discarded.
+     *
+     * Silencing the client completely made a stalled torrent indistinguishable
+     * from a working one: the only evidence was a byte count that never moved,
+     * with nothing saying whether peers had been found, whether metadata had
+     * arrived, or whether the tracker had refused. So the notices are kept and
+     * read off the relay pipe below.
+     *
+     * `--quiet` is deliberately NOT set: it suppresses the console output
+     * entirely (measured — with it, nothing at all is emitted), which would leave
+     * the relay with nothing to relay. `--summary-interval` gives a progress line
+     * every few seconds instead of a repainted bar, and the log level keeps it to
+     * lines worth reading.
+     */
+    argv[a++] = "--summary-interval=5";
+    argv[a++] = "--console-log-level=notice";
     /* Stop as soon as the first file is complete, then seed nothing. A media
      * torrent's first file is the video; waiting for the rest is minutes of
      * upload for no benefit to the caller. */
@@ -2023,27 +2258,68 @@ static int download_magnet(const mi_download_config *cfg, const char *magnet,
             argv[a++] = select_buf;
         }
     }
+    /*
+     * The `.torrent` bytes, written to a file for the client.
+     *
+     * A `.torrent` is handed over as a *file*, not as a magnet, because it
+     * carries the webseeds (`url-list`) and the piece hashes — and an archive.org
+     * torrent, for one, has no peers at all and downloads only from its webseed.
+     * Converting it to a magnet (which has neither) fetched zero bytes while the
+     * file itself fetched the whole thing. So the file is what the client gets;
+     * the magnet is only what the record shows.
+     */
+    char *torrent_path = NULL;
+    if (cfg->torrent_bytes && cfg->torrent_len > 0) {
+        torrent_path = mi_asprintf("%s/in.torrent", work);
+        if (torrent_path) {
+            FILE *tf = fopen(torrent_path, "wb");
+            if (tf) {
+                if (fwrite(cfg->torrent_bytes, 1, cfg->torrent_len, tf) != cfg->torrent_len) {
+                    fclose(tf);
+                    free(torrent_path);
+                    torrent_path = NULL;
+                } else {
+                    fclose(tf);
+                }
+            } else {
+                free(torrent_path);
+                torrent_path = NULL;
+            }
+        }
+    }
+
     argv[a++] = "--dir";
     argv[a++] = work;
-    argv[a++] = magnet;
+    argv[a++] = torrent_path ? torrent_path : magnet;
     argv[a] = NULL;
 
-    mi_logf(MI_LOG_INFO, "download: fetching the magnet with %s", aria2);
+    mi_logf(MI_LOG_INFO, "download: fetching the torrent with %s (%s)", aria2,
+            torrent_path ? "from the .torrent file" : "from the magnet");
+    mi_logf(MI_LOG_INFO,
+            "download: %s; %s; budget %.0fs; work dir %s",
+            cfg->torrent_bytes && cfg->torrent_len > 0
+                ? "the .torrent file was handed to the client (webseeds included)"
+                : "a magnet was handed to the client (no webseeds in a magnet)",
+            cfg->magnet_files && cfg->magnet_file_count > 0
+                ? "a file selection was requested"
+                : "the whole torrent was requested",
+            cfg->torrent_timeout_seconds > 0 ? cfg->torrent_timeout_seconds : 900.0,
+            work);
 
-    pid_t pid = fork();
+    /*
+     * A pipe on the child's stderr, so aria2's own events reach Vyzor's log.
+     *
+     * Its stdout is dropped (it prints nothing useful there) but stderr carries
+     * the lines that explain a stall — "download aborted", "no peer", a tracker
+     * error. Reading them is what turns "0 bytes for 100 seconds" into a reason.
+     */
+    int errpipe = -1;
+    pid_t pid = spawn_relayed((const char *const *)argv, &errpipe);
     if (pid < 0) {
         mi_rm_rf(work);
         free(work);
+        free(torrent_path);
         return MI_ERR_IO;
-    }
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-        }
-        execvp(argv[0], (char *const *)argv);
-        _exit(127);
     }
 
     /*
@@ -2052,8 +2328,22 @@ static int download_magnet(const mi_download_config *cfg, const char *magnet,
      * metadata, but it is a deadline: a magnet with no peers must fail rather
      * than hold a worker forever.
      */
-    double deadline = mi_now() + (cfg->timeout_seconds > 0 ? cfg->timeout_seconds : 900.0);
+    /*
+     * The swarm deadline, which is its own clock.
+     *
+     * A torrent may spend a minute finding peers before a byte arrives, so the
+     * HTTP timeout (30 s) is wrong here — reusing it made every torrent fail at
+     * 30 seconds. A torrent gets its own, generous by default.
+     */
+    double torrent_budget = cfg->torrent_timeout_seconds > 0
+                                ? cfg->torrent_timeout_seconds
+                                : 900.0;
+    double deadline = mi_now() + torrent_budget;
     int64_t seen_bytes = 0;
+    /* Carries a partial line between drains, so a long aria2 line is not split
+     * into two log entries (see relay_drain). */
+    char relay_carry[MI_LOG_LINE_CAP];
+    size_t relay_carrylen = 0;
     int status = 0;
     int rc = MI_OK;
     int finished = 0;
@@ -2075,8 +2365,8 @@ static int download_magnet(const mi_download_config *cfg, const char *magnet,
             break;
         }
         if (mi_now() > deadline) {
-            mi_logf(MI_LOG_INFO, "download: the magnet did not finish in %.0fs",
-                    cfg->timeout_seconds > 0 ? cfg->timeout_seconds : 900.0);
+            mi_logf(MI_LOG_INFO, "download: the torrent did not finish in %.0fs",
+                    torrent_budget);
             kill(pid, SIGTERM);
             struct timespec grace = {.tv_sec = 2, .tv_nsec = 0};
             nanosleep(&grace, NULL);
@@ -2087,29 +2377,26 @@ static int download_magnet(const mi_download_config *cfg, const char *magnet,
         }
 
         /*
-         * Report progress from the bytes on disk: aria2's own output is silenced,
-         * so the directory's growth is the only honest signal. Completion is not
-         * detected here — the file scan below is what judges it — so this only
-         * sums what is present.
+         * Relay whatever aria2 has said since the last turn.
+         *
+         * This is the whole point: a torrent that finds no peers prints "no peer
+         * found" and a tracker error, and those lines are the difference between
+         * "0 bytes" and a reason. Read non-blocking so the loop keeps its cadence.
          */
-        int64_t total = 0;
-        DIR *d = opendir(work);
-        if (d) {
-            struct dirent *ent;
-            while ((ent = readdir(d)) != NULL) {
-                if (ent->d_name[0] == '.') continue;
-                size_t n = strlen(ent->d_name);
-                /* The control file and the metadata are not results. */
-                if (n > 6 && strcmp(ent->d_name + n - 6, ".aria2") == 0) continue;
-                char *full = mi_path_join(work, ent->d_name);
-                if (!full) continue;
-                int64_t sz = mi_file_size(full);
-                if (sz > 0) total += sz;
-                free(full);
-            }
-            closedir(d);
+        relay_drain(errpipe, relay_carry, &relay_carrylen, sizeof relay_carry, 0);
+
+        /*
+         * Report progress from the bytes on disk. The scan descends, because a
+         * multi-file torrent is written into a subdirectory named after it, and
+         * only logs when the figure *changes* — a line a second for an unchanged
+         * count is noise, and the interesting event is the change.
+         */
+        int64_t now_bytes = scan_torrent_dir(work, NULL);
+        if (now_bytes != seen_bytes) {
+            mi_logf(MI_LOG_INFO, "download: torrent %lld bytes on disk so far",
+                    (long long)now_bytes);
+            seen_bytes = now_bytes;
         }
-        seen_bytes = total;
         if (on_progress) {
             mi_progress p;
             memset(&p, 0, sizeof p);
@@ -2121,57 +2408,81 @@ static int download_magnet(const mi_download_config *cfg, const char *magnet,
         nanosleep(&ts, NULL);
     }
 
+    /* Flush: the child has exited, so a partial line is complete now. */
+    relay_drain(errpipe, relay_carry, &relay_carrylen, sizeof relay_carry, 1);
+    if (errpipe >= 0) close(errpipe);
+
     if (rc == MI_OK && finished) {
         if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-            mi_logf(MI_LOG_INFO, "download: %s exited %d on the magnet", aria2,
+            mi_logf(MI_LOG_INFO, "download: %s exited %d on the torrent", aria2,
                     WIFEXITED(status) ? WEXITSTATUS(status) : -1);
             rc = MI_ERR_NET;
         }
     }
 
     /*
-     * The largest file the client wrote, which is the media for a media torrent.
-     * Chosen whether the client exited cleanly or was stopped on completion: a
-     * `--seed-time=0` client exits by itself, but a slow shutdown must not lose a
-     * file that is already whole.
+     * How complete is it? aria2 writes **one** control file per *torrent*, named
+     * `<torrent-name>.aria2` and placed *inside* the download directory — not one
+     * per file, and not beside the directory. So completeness is a torrent-level
+     * fact, and the test is: is there any `*.aria2` file still in the work dir?
      */
-    char *produced = NULL;
+    int control_gone = 1;
     {
-        int64_t best = -1;
         DIR *d = opendir(work);
         if (d) {
             struct dirent *ent;
             while ((ent = readdir(d)) != NULL) {
-                if (ent->d_name[0] == '.') continue;
                 size_t n = strlen(ent->d_name);
-                if (n > 6 && strcmp(ent->d_name + n - 6, ".aria2") == 0) continue;
-                char *full = mi_path_join(work, ent->d_name);
-                if (!full) continue;
-                int64_t sz = mi_file_size(full);
-                /* A file still growing has its `.aria2` control file beside it;
-                 * a complete one does not. That is the completeness test. */
-                char *ctl = mi_asprintf("%s.aria2", full);
-                int complete = ctl && !mi_path_exists(ctl);
-                free(ctl);
-                if (complete && sz > best) {
-                    best = sz;
-                    free(produced);
-                    produced = full;
-                } else {
-                    free(full);
+                if (n > 6 && strcmp(ent->d_name + n - 6, ".aria2") == 0) {
+                    control_gone = 0;
+                    break;
                 }
             }
             closedir(d);
         }
     }
 
+    /*
+     * The largest file the client wrote, which is the media for a media torrent.
+     * Found by a *recursive* scan: a multi-file torrent is written into a
+     * subdirectory named after the torrent, so a flat readdir of the work dir
+     * would see only that directory and pick nothing.
+     */
+    char *produced = NULL;
+    scan_torrent_dir(work, &produced);
+
     if (!produced) {
-        mi_logf(MI_LOG_ERROR, "download: the magnet produced no complete file "
+        mi_logf(MI_LOG_ERROR, "download: the magnet produced no file "
                               "(no peers, or the torrent is not a single file)");
         mi_rm_rf(work);
         free(work);
+        free(torrent_path);
         return rc == MI_OK ? MI_ERR_NET : rc;
     }
+
+    /*
+     * A partial file is not a result.
+     *
+     * Completeness is judged by the *control file*, not by the exit code: aria2
+     * removes `<torrent>.aria2` only once every wanted piece has arrived and
+     * verified, so its presence means the bytes on disk are incomplete. This is
+     * checked whatever `rc` is — a client killed at the deadline exits non-zero
+     * *and* leaves the control file, and delivering its partial bytes as success
+     * is the failure this guards against. The partial data is left in place so a
+     * retry resumes rather than restarts.
+     */
+    if (!control_gone) {
+        mi_logf(MI_LOG_ERROR,
+                "download: the torrent is still incomplete (%lld bytes so far, "
+                "control file present) — no peers, or the swarm is slow",
+                (long long)mi_file_size(produced));
+        free(produced);
+        mi_rm_rf(work);
+        free(work);
+        free(torrent_path);
+        return MI_ERR_NET;
+    }
+
 
     if (rename(produced, dest) != 0) {
         int crc = copy_file_bytes(produced, dest);
@@ -2180,12 +2491,14 @@ static int download_magnet(const mi_download_config *cfg, const char *magnet,
             free(produced);
             mi_rm_rf(work);
             free(work);
+            free(torrent_path);
             return MI_ERR_IO;
         }
     }
     free(produced);
     mi_rm_rf(work);
     free(work);
+    free(torrent_path);
 
     int64_t written = mi_file_size(dest);
     if (written <= 0) return MI_ERR_IO;

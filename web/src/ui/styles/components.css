@@ -5436,3 +5436,62 @@ input[type='range']:focus-visible {
   font-size: 12px;
   word-break: break-all;
 }
+
+/* The torrent detail panel: a poster (when the torrent carries one) beside the
+   metadata, so a long file list has a face. */
+.tt__detail {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+}
+.tt__detail > .kv {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tt__poster {
+  flex: 0 0 auto;
+  width: 132px;
+  max-height: 190px;
+  object-fit: cover;
+  border-radius: var(--r);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+/* A thumbnail in the results table. The index's own picture, fetched directly;
+   when it will not load the glyph stands in rather than a broken image. */
+.tt__thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.tt__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.tt__thumbglyph {
+  display: inline-flex;
+  color: var(--text-3);
+}
+.tt__thumbglyph svg {
+  width: 16px;
+  height: 16px;
+}
+
+@media (max-width: 640px) {
+  .tt__detail {
+    flex-direction: column;
+  }
+  .tt__poster {
+    width: 100%;
+    max-height: 220px;
+  }
+}

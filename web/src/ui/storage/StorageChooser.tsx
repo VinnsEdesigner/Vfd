@@ -78,10 +78,19 @@ export function StorageChooser({
       const dir = await window.showDirectoryPicker({ id: 'vyzorix-media', mode: 'readwrite' });
       onChoose('file-system-access', dir);
     } catch (e) {
-      // AbortError is the user closing the picker: not an error to report.
-      if (!(e instanceof DOMException && e.name === 'AbortError')) {
-        setGrantError(e instanceof Error ? e.message : 'The folder could not be opened.');
-      }
+      /*
+       * AbortError is the user closing the picker, which is a decision and not a
+       * failure — saying nothing is right. But *every other* error must be shown:
+       * swallowing them all is how a picker that never opens looks like a dead
+       * button. A `SecurityError` (no user gesture), a `NotAllowedError` (a
+       * policy refused it) and an unexpected throw each need to be visible.
+       */
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      setGrantError(
+        e instanceof Error && e.message
+          ? e.message
+          : 'The folder could not be opened.',
+      );
     } finally {
       setGranting(false);
     }

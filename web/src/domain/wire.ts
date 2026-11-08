@@ -266,6 +266,17 @@ export interface WireTorrentInfo {
   files?: WireTorrentFile[];
   tracker_count?: number;
   trackers?: string[];
+  /** BEP-19 webseeds, as base URLs. */
+  webseed_count?: number;
+  webseeds?: string[];
+  /**
+   * A poster URL, when one can be pointed at.
+   *
+   * A torrent's images live inside it, so the only way to show one without
+   * downloading the torrent is to fetch it from a webseed. Null when the torrent
+   * has no webseed, or no image worth showing.
+   */
+  poster?: string | null;
 }
 
 export interface WireTorrentInspectRequest {

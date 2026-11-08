@@ -74,7 +74,7 @@ the chosen files are fetched.
 |---|---|---|---|
 | `/api/v1/extract` | POST | `{url}` or `{search, limit, site}`, plus `timeout_seconds`, `enumerate`, `playlist_items`, `match_filter`, `date_after`, `date_before`, `extractor_args` | title, extractor, duration, thumbnail, formats, entries |
 | `/api/v1/extract-rows` | POST | `{url, selector?}` | rows read from a table on a page |
-| `/api/v1/torrent/inspect` | POST | `{base64}` (a `.torrent`) or `{magnet}` | name, info-hash, file list, trackers, piece size |
+| `/api/v1/torrent/inspect` | POST | `{base64}` (a `.torrent`) or `{magnet}` | name, info-hash, file list, trackers, webseeds, poster, piece size |
 | `/api/v1/browse` | POST | `{url, filter}` | the media a page or directory offers (`filter: media` or `all`) |
 
 `extract` asks yt-dlp (video), gallery-dl (images) or py1337x (torrents) —
@@ -86,9 +86,16 @@ entry carries the index's own fields (`seeders`, `leechers`, `bytes`,
 
 `torrent/inspect` reads what a torrent *contains* before it is downloaded.
 `complete` is the honest distinction: a `.torrent` file **is** the metadata, so
-its `files[]`, `piece_length` and `trackers[]` are real and `complete` is true; a
-magnet names only the info-hash and the display name, so `files[]` is empty and
-`complete` is false until a client fetches the metadata from the swarm. See
+its `files[]`, `piece_length`, `trackers[]` and `webseeds[]` are real and
+`complete` is true; a magnet names only the info-hash and the display name, so
+`files[]` is empty and `complete` is false until a client fetches the metadata
+from the swarm.
+
+`webseeds[]` are the torrent's HTTP sources (BEP-19 `url-list`) and `poster` is a
+URL built from one — `<webseed>/<image path>` for the largest image in the
+torrent. That is the only way to show a torrent's own picture without downloading
+it, since the image lives *inside* the torrent. `poster` is null when the torrent
+has no webseed or no image worth showing. See
 [media-pipeline.md](media-pipeline.md#torrents).
 
 ## Crawl
@@ -144,6 +151,29 @@ bounds.
 
 Egress settings live in memory for the session. Credentials travel as request
 headers on a download; they are never written to disk or logged.
+
+## Logs
+
+| Route | Method | Query | Returns |
+|---|---|---|---|
+| `/api/v1/logs` | GET | `since=N` | `{lines, latest, enabled}` |
+
+A bounded in-memory ring of the last ~500 log lines, so a console can show *what
+happened* — Vyzor logs to stderr, which a browser cannot see. `since` is a
+monotonic `seq`, so a caller polls incrementally by passing the highest it has
+seen. `enabled` says whether the server is capturing at all.
+
+The ring carries everything, including the **output of the external tools** Vyzor
+shells out to (ffmpeg, yt-dlp, aria2), relayed with a `tool:` prefix. That is
+deliberate: a transfer that produces no bytes prints its reason on the tool's own
+output — "no peer found", "Connection refused", "Invalid data found when
+processing input" — so discarding it left the log saying only "0 bytes" with no
+explanation. Each relayed line keeps the tool's own severity: an aria2
+`[ERROR]`/`Exception:` line is logged as an error, a `WARNING:` as a warning, so
+the console's level filter works on them.
+
+Note that the tools disagree about which stream they use — ffmpeg and yt-dlp
+write to stderr, **aria2 writes its notices to stdout** — so both are captured.
 
 ## The interactive WebSocket
 

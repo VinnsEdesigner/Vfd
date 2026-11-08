@@ -360,6 +360,8 @@ export function normalizeTorrentInfo(w: WireTorrentInfo): TorrentInfo {
     createdAt: typeof w.created_at === 'number' ? w.created_at : 0,
     files,
     trackers: Array.isArray(w.trackers) ? w.trackers.filter(Boolean) : [],
+    webseeds: Array.isArray(w.webseeds) ? w.webseeds.filter(Boolean) : [],
+    poster: w.poster && w.poster.trim() ? w.poster : null,
   };
 }
 

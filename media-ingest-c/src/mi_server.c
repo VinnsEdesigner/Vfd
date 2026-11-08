@@ -77,14 +77,15 @@ typedef struct {
     int *magnet_files;
     size_t magnet_file_count;
     /*
-     * A `.torrent` file the caller opened, as a magnet built from it.
+     * The raw `.torrent` bytes the caller opened, if any.
      *
-     * A `.torrent` *is* the metadata, so a magnet built from its info-hash and
-     * trackers downloads exactly the same content — and a magnet is the one
-     * shape both the client and this record already handle. Kept so the record
-     * can report where it came from.
+     * Kept so the BitTorrent client can be handed the *file* — which carries the
+     * webseeds and piece hashes a magnet does not. Measured: an archive.org
+     * torrent has no peers and downloads only from its webseed, so the magnet
+     * alone fetched zero bytes.
      */
-    char *torrent_name;
+    unsigned char *torrent_bytes;
+    size_t torrent_len;
 
     download_state state;
     double created_at;
@@ -723,7 +724,7 @@ static void download_free(mi_download_rec *j) {
     free(j->display_name);
     free(j->requested_quality);
     free(j->magnet_files);
-    free(j->torrent_name);
+    free(j->torrent_bytes);
     free(j->sha256);
     free(j->master_playlist);
     free(j->converted_path);
@@ -769,6 +770,22 @@ static char *percent_decode(const char *s, size_t len) {
 
 static char *basename_from_url(const char *url) {
     if (!url) return mi_strdup("download");
+    /*
+     * A magnet has no path to take a name from — its "path" is the query — so
+     * the last-segment rule below would name every magnet download "magnet:".
+     * The name a magnet carries is its `dn=`, which is the whole point of the
+     * field.
+     */
+    if (mi_torrent_is_magnet(url)) {
+        char *dn = mi_torrent_name_from_magnet(url);
+        if (dn && *dn) return dn;
+        free(dn);
+        /* A magnet with no `dn` is named after its hash, which is at least
+         * stable and identifies the torrent. */
+        char hash[41];
+        if (mi_torrent_hash_from_magnet(url, hash) == MI_OK) return mi_strdup(hash);
+        return mi_strdup("torrent");
+    }
     const char *q = strpbrk(url, "?#");
     size_t len = q ? (size_t)(q - url) : strlen(url);
     const char *end = url + len;
@@ -1658,6 +1675,16 @@ static void *download_worker(void *arg) {
     dcfg.torrent_extractor_path = srv->cfg.torrent_extractor_path;
     dcfg.torrent_site = srv->cfg.torrent_site;
     dcfg.magnet_downloader_path = srv->cfg.magnet_downloader_path;
+    /*
+     * The raw `.torrent`, when the caller opened one. The client is handed the
+     * *file*, because it carries the webseeds and piece hashes a magnet does not
+     * — and for a webseed-only torrent (archive.org) that is the difference
+     * between the whole download and zero bytes.
+     */
+    dcfg.torrent_bytes = j->torrent_bytes;
+    dcfg.torrent_len = j->torrent_len;
+    /* A torrent gets the swarm's own clock, not the 30-second HTTP timeout. */
+    dcfg.torrent_timeout_seconds = 0;
     dcfg.magnet_files = j->magnet_files;
     dcfg.magnet_file_count = j->magnet_file_count;
     dcfg.cookies_text = srv->cfg.cookies_text;
@@ -3544,7 +3571,47 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                 if (i) mi_json_raw(&b, ",");
                 mi_json_string(&b, t.trackers[i]);
             }
-            mi_json_raw(&b, "]}");
+            mi_json_raw(&b, "],\"webseed_count\":");
+            mi_json_int(&b, (int64_t)t.webseed_count);
+            mi_json_raw(&b, ",\"webseeds\":[");
+            for (size_t i = 0; i < t.webseed_count; i++) {
+                if (i) mi_json_raw(&b, ",");
+                mi_json_string(&b, t.webseeds[i]);
+            }
+            /*
+             * A poster, when one can be pointed at.
+             *
+             * A torrent's own images live *inside* it, so the only way to show
+             * one without downloading the torrent is to fetch it from a webseed
+             * (`<webseed>/<path>`). Picked here because the file list is known
+             * and the choice — the largest image, which is the best poster — is
+             * a decision the caller should not have to make.
+             */
+            char *poster = NULL;
+            if (t.webseed_count > 0) {
+                int64_t best = -1;
+                for (size_t i = 0; i < t.file_count; i++) {
+                    const char *p = t.files[i].path;
+                    const char *dot = strrchr(p, '.');
+                    if (!dot) continue;
+                    if (strcasecmp(dot, ".jpg") && strcasecmp(dot, ".jpeg") &&
+                        strcasecmp(dot, ".png") && strcasecmp(dot, ".webp") &&
+                        strcasecmp(dot, ".gif"))
+                        continue;
+                    /* Skip the tiny thumbnails an index adds; a poster should be
+                     * a real image, not a 3 KB icon. */
+                    if (t.files[i].bytes < 8192) continue;
+                    if (t.files[i].bytes > best) {
+                        best = t.files[i].bytes;
+                        free(poster);
+                        poster = mi_asprintf("%s%s", t.webseeds[0], p);
+                    }
+                }
+            }
+            mi_json_raw(&b, "],\"poster\":");
+            mi_json_string(&b, poster);
+            free(poster);
+            mi_json_raw(&b, "}");
             mi_torrent_free(&t);
             send_json(fd, 200, "OK", &b, cors);
             mi_json_free(&b);
@@ -3567,7 +3634,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             mi_json_raw(&b, ",\"magnet\":");
             mi_json_string(&b, magnet);
             mi_json_raw(&b, ",\"file_count\":0,\"files\":[],"
-                            "\"tracker_count\":0,\"trackers\":[]}");
+                            "\"tracker_count\":0,\"trackers\":[],"
+                            "\"webseed_count\":0,\"webseeds\":[],\"poster\":null}");
             free(name);
             send_json(fd, 200, "OK", &b, cors);
             mi_json_free(&b);
@@ -4312,12 +4380,19 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         const char *url = mi_json_get_string(in, "url", NULL);
         const char *torrent_file = mi_json_get_string(in, "torrent_file", NULL);
         /*
-         * A `.torrent` the user opened is converted to a magnet, because a
-         * `.torrent` *is* the metadata: its info-hash and trackers name exactly
-         * the same content, and a magnet is the one shape the client and the
-         * record both already handle. So the two ways in converge here.
+         * A `.torrent` the user opened.
+         *
+         * Two things come from it and both are needed: the **raw bytes**, which
+         * go to the BitTorrent client because a `.torrent` carries the webseeds
+         * and piece hashes a magnet does not (measured: an archive.org torrent
+         * has no peers and downloads only from its webseed, so the magnet alone
+         * fetched zero bytes), and a **magnet**, which is what the record shows
+         * and what the console can copy. The file is authoritative for the
+         * download; the magnet is for display.
          */
         char *magnet_from_file = NULL;
+        unsigned char *torrent_bytes = NULL;
+        size_t torrent_len = 0;
         if ((!url || !*url) && torrent_file && *torrent_file) {
             mi_torrent t;
             if (torrent_from_base64(torrent_file, &t) == MI_OK) {
@@ -4326,6 +4401,18 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
                     magnet_from_file =
                         mi_torrent_build_magnet(t.info_hash, t.name, NULL, 0);
                 }
+                /* Decode the base64 once more, into the bytes the client gets. */
+                size_t blen = strlen(torrent_file);
+                size_t cap = blen / 4 * 3 + 4;
+                torrent_bytes = mi_malloc(cap);
+                if (torrent_bytes) {
+                    ssize_t n = mi_base64_decode(torrent_file, blen, torrent_bytes, cap);
+                    torrent_len = n > 0 ? (size_t)n : 0;
+                    if (torrent_len == 0) {
+                        free(torrent_bytes);
+                        torrent_bytes = NULL;
+                    }
+                }
                 mi_torrent_free(&t);
             }
             url = magnet_from_file;
@@ -4333,6 +4420,7 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         if (!url || !*url) {
             send_error(fd, 400, "Bad Request", "missing or empty 'url'", cors);
             free(magnet_from_file);
+            free(torrent_bytes);
             mi_json_value_free(in);
             return;
         }
@@ -4340,15 +4428,16 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         if (!j) {
             send_error(fd, 500, "Internal Server Error", "out of memory", cors);
             free(magnet_from_file);
+            free(torrent_bytes);
             mi_json_value_free(in);
             return;
         }
-        /* A `.torrent`-derived magnet is owned by the record's name field, so the
-         * console can say where the download came from. */
-        if (magnet_from_file) {
-            free(magnet_from_file);
-            magnet_from_file = NULL;
-        }
+        /* The magnet is owned by the record's url; the raw bytes are kept so the
+         * client can be handed the file itself. */
+        free(magnet_from_file);
+        magnet_from_file = NULL;
+        j->torrent_bytes = torrent_bytes;
+        j->torrent_len = torrent_len;
         const char *hls = mi_json_get_string(in, "hls_dir", NULL);
         const char *prefix = mi_json_get_string(in, "prefix", NULL);
         if (hls) j->hls_dir = mi_strdup(hls);

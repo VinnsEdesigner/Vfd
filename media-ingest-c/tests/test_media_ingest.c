@@ -1153,6 +1153,170 @@ static void test_magnet_uses_the_torrent_client(void) {
     unlink(script);
 }
 
+/*
+ * A multi-file torrent, the shape a real one has.
+ *
+ * This is the bug a real archive.org torrent exposed: aria2 writes a multi-file
+ * torrent into a *subdirectory named after it*, and writes **one** control file
+ * per torrent (`<name>.aria2`), not one per file. The old code did a flat
+ * `readdir` of the work dir — which sees only the subdirectory, so it found no
+ * file at all — and looked for a per-file `.aria2` that never exists. Both are
+ * exercised here: the stub writes a directory tree and removes the control file
+ * only when it "finishes", exactly as aria2 does.
+ */
+static void test_magnet_reads_a_multifile_torrent(void) {
+    const char *script = "/tmp/mi-test-magnet-multi.sh";
+    FILE *f = fopen(script, "w");
+    if (!f) { CHECK(0, "write multi stub"); return; }
+    fprintf(f, "#!/bin/sh\n");
+    fprintf(f, "dir=. ; while [ $# -gt 0 ]; do\n");
+    fprintf(f, "  if [ \"$1\" = \"--dir\" ]; then dir=\"$2\"; shift 2; else shift; fi\n");
+    fprintf(f, "done\n");
+    fprintf(f, "mkdir -p \"$dir/MyTorrent1\"\n");
+    /* The torrent-level control file, present while "downloading". */
+    fprintf(f, "printf x > \"$dir/MyTorrent1.aria2\"\n");
+    /* Two files: the larger is the media, so it must be the one delivered. */
+    fprintf(f, "printf '%%s' 'readme' > \"$dir/MyTorrent1/readme.txt\"\n");
+    fprintf(f, "printf '%%s' 'BIG-MEDIA-FILE-CONTENT' > \"$dir/MyTorrent1/movie.mp4\"\n");
+    /* Done: the control file goes, as aria2 removes it on completion. */
+    fprintf(f, "rm -f \"$dir/MyTorrent1.aria2\"\n");
+    fclose(f);
+    chmod(script, 0755);
+
+    mi_download_config cfg;
+    mi_download_config_init(&cfg);
+    cfg.magnet_downloader_path = script;
+
+    char dest[] = "/tmp/mi-test-magnet-multi.bin";
+    unlink(dest);
+    mi_download_result res;
+    int rc = mi_download(&cfg, "magnet:?xt=urn:btih:multi", dest, NULL, NULL, &res);
+    CHECK(rc == MI_OK, "a multi-file torrent is downloaded");
+    /* The largest file — the media — is what lands at dest, not the readme. */
+    FILE *g = fopen(dest, "rb");
+    CHECK(g != NULL, "the destination exists");
+    if (g) {
+        char got[64] = {0};
+        size_t n = fread(got, 1, sizeof got - 1, g);
+        fclose(g);
+        CHECK(n == strlen("BIG-MEDIA-FILE-CONTENT") &&
+                  strcmp(got, "BIG-MEDIA-FILE-CONTENT") == 0,
+              "the largest file in the tree is the one delivered");
+    }
+    unlink(dest);
+    mi_download_result_free(&res);
+    unlink(script);
+}
+
+/*
+ * A torrent that never finishes must NOT be reported as a success.
+ *
+ * The control file stays when the swarm has not delivered every piece, so the
+ * bytes on disk are incomplete. Handing them over as a completed download is the
+ * failure this guards against — worse than a plain error, because it looks like
+ * it worked.
+ */
+static void test_magnet_partial_is_not_success(void) {
+    const char *script = "/tmp/mi-test-magnet-partial.sh";
+    FILE *f = fopen(script, "w");
+    if (!f) { CHECK(0, "write partial stub"); return; }
+    fprintf(f, "#!/bin/sh\n");
+    fprintf(f, "dir=. ; while [ $# -gt 0 ]; do\n");
+    fprintf(f, "  if [ \"$1\" = \"--dir\" ]; then dir=\"$2\"; shift 2; else shift; fi\n");
+    fprintf(f, "done\n");
+    fprintf(f, "mkdir -p \"$dir/PartialTorrent\"\n");
+    /* Half the bytes, and the control file still there: not finished. */
+    fprintf(f, "printf '%%s' 'HALF' > \"$dir/PartialTorrent/movie.mp4\"\n");
+    fprintf(f, "printf x > \"$dir/PartialTorrent.aria2\"\n");
+    fclose(f);
+    chmod(script, 0755);
+
+    mi_download_config cfg;
+    mi_download_config_init(&cfg);
+    cfg.magnet_downloader_path = script;
+
+    char dest[] = "/tmp/mi-test-magnet-partial.bin";
+    unlink(dest);
+    mi_download_result res;
+    int rc = mi_download(&cfg, "magnet:?xt=urn:btih:partial", dest, NULL, NULL, &res);
+    CHECK(rc != MI_OK, "an incomplete torrent is a failure, not a success");
+    CHECK(access(dest, F_OK) != 0, "no partial file is left at the destination");
+    mi_download_result_free(&res);
+    unlink(script);
+}
+
+/*
+ * The relay: a tool's own output must reach the log.
+ *
+ * The bug this guards against is subtle and was invisible for a long time — the
+ * child's output was sent to /dev/null, so a transfer that produced no bytes
+ * printed its reason into the void and the log held only "0 bytes". Worse, the
+ * tools disagree about which stream they use: ffmpeg and yt-dlp write to stderr,
+ * **aria2 writes its notices to stdout**, so capturing only one of the two
+ * relays nothing from the other.
+ *
+ * This drives the *real* torrent path with a stub "aria2" that writes to both
+ * streams, and reads the log ring back. A seam would test the helpers; this
+ * tests the thing that was actually broken.
+ */
+static void test_tool_output_is_relayed(void) {
+    const char *script = "/tmp/mi-test-relay-aria2.sh";
+    FILE *f = fopen(script, "w");
+    if (!f) { CHECK(0, "write relay stub"); return; }
+    fprintf(f, "#!/bin/sh\n");
+    /* Find --dir, write the content there, and talk on both streams. */
+    fprintf(f, "dir=. ; while [ $# -gt 0 ]; do\n");
+    fprintf(f, "  if [ \"$1\" = \"--dir\" ]; then dir=\"$2\"; shift 2; else shift; fi\n");
+    fprintf(f, "done\n");
+    fprintf(f, "mkdir -p \"$dir/RelayTorrent\"\n");
+    fprintf(f, "printf '%%s' 'RELAYED-CONTENT' > \"$dir/RelayTorrent/movie.mp4\"\n");
+    fprintf(f, "echo 'notice on stdout'\n");
+    fprintf(f, "echo 'diagnostic on stderr' 1>&2\n");
+    fprintf(f, "echo '[ERROR] something failed'\n");
+    fprintf(f, "echo 'WARNING: something is odd' 1>&2\n");
+    fclose(f);
+    chmod(script, 0755);
+
+    /*
+     * Capture the log ring at DEBUG: the relayed notices are INFO, so a higher
+     * filter would drop them before the ring ever sees them — which is what the
+     * first version of this test got wrong.
+     */
+    mi_log_ring_enable(1);
+    mi_log_set_level(MI_LOG_DEBUG);
+
+    mi_download_config cfg;
+    mi_download_config_init(&cfg);
+    cfg.magnet_downloader_path = script;
+    char dest[] = "/tmp/mi-test-relay.bin";
+    unlink(dest);
+    mi_download_result res;
+    int rc = mi_download(&cfg, "magnet:?xt=urn:btih:relay", dest, NULL, NULL, &res);
+    CHECK(rc == MI_OK, "the stub torrent is fetched");
+    mi_download_result_free(&res);
+    unlink(dest);
+
+    mi_log_record *recs = NULL;
+    size_t n = mi_log_snapshot(0, &recs);
+    int saw_stdout = 0, saw_stderr = 0, err_level = 0, warn_level = 0;
+    for (size_t i = 0; i < n; i++) {
+        const char *t = recs[i].text;
+        if (strstr(t, "notice on stdout")) saw_stdout = 1;
+        if (strstr(t, "diagnostic on stderr")) saw_stderr = 1;
+        if (strstr(t, "[ERROR]") && recs[i].level == MI_LOG_ERROR) err_level = 1;
+        if (strstr(t, "WARNING:") && recs[i].level == MI_LOG_WARN) warn_level = 1;
+    }
+    CHECK(saw_stdout, "the tool's stdout is relayed (aria2 uses stdout)");
+    CHECK(saw_stderr, "the tool's stderr is relayed (ffmpeg and yt-dlp use stderr)");
+    CHECK(err_level, "a tool [ERROR] line is logged at error level");
+    CHECK(warn_level, "a tool WARNING line is logged at warn level");
+
+    mi_log_snapshot_free(recs);
+    mi_log_ring_enable(0);
+    mi_log_set_level(MI_LOG_ERROR);
+    unlink(script);
+}
+
 int main(void) {
     mi_log_set_level(MI_LOG_ERROR); /* keep test output clean */
     signal(SIGPIPE, SIG_IGN);
@@ -1176,6 +1340,9 @@ int main(void) {
     test_resume();
     test_streaming_fallback();
     test_magnet_uses_the_torrent_client();
+    test_magnet_reads_a_multifile_torrent();
+    test_magnet_partial_is_not_success();
+    test_tool_output_is_relayed();
     test_hmac_vectors();
     test_sigv4_known_vector();
     test_s3_upload_live();

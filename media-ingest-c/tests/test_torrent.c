@@ -102,6 +102,38 @@ static void test_rejects_bad_input(void) {
           "a runaway nesting depth is rejected");
 }
 
+/*
+ * Webseeds (`url-list`, BEP-19) — the HTTP source for the content.
+ *
+ * They matter twice: a webseed-only torrent (archive.org) has no peers and
+ * downloads only from one, and a torrent's own image can be shown as a poster by
+ * pointing at `<webseed>/<path>`. Both `url-list` spellings — a bare string and a
+ * list — appear in the wild, so both are read.
+ */
+static void test_webseeds(void) {
+    /* A single string form. */
+    const char *one = "d4:infod6:lengthi8e4:name1:a12:piece lengthi16384e"
+                      "6:pieces20:12345678901234567890e"
+                      "8:url-list25:http://seed.example/base/e";
+    unsigned char buf[512];
+    memcpy(buf, one, strlen(one));
+    mi_torrent t;
+    CHECK(mi_torrent_parse(buf, strlen(one), &t) == MI_OK, "a torrent with a url-list parses");
+    CHECK(t.webseed_count == 1, "the string form yields one webseed");
+    CHECK(t.webseeds && strcmp(t.webseeds[0], "http://seed.example/base/") == 0,
+          "the webseed URL is read");
+    mi_torrent_free(&t);
+
+    /* The list form. */
+    const char *many = "d4:infod6:lengthi8e4:name1:a12:piece lengthi16384e"
+                       "6:pieces20:12345678901234567890e"
+                       "8:url-listl18:http://s1.example/18:http://s2.example/ee";
+    memcpy(buf, many, strlen(many));
+    CHECK(mi_torrent_parse(buf, strlen(many), &t) == MI_OK, "a url-list as a list parses");
+    CHECK(t.webseed_count == 2, "both webseeds are read");
+    mi_torrent_free(&t);
+}
+
 static void test_magnet_hash(void) {
     char hex[41];
     /* The 40-hex form. */
@@ -153,6 +185,7 @@ static void test_magnet_name_and_build(void) {
 int main(void) {
     test_parse_single_file();
     test_rejects_bad_input();
+    test_webseeds();
     test_magnet_hash();
     test_magnet_name_and_build();
 

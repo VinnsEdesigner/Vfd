@@ -79,10 +79,24 @@ Two tools do the two halves:
 - **`py1337x`** (via the `scripts/py1337x-json.py` wrapper) resolves an index —
   1337x — to magnet links. It answers a *search* as a list, one entry per
   torrent, and each entry's URL is the magnet.
-- **`aria2`** fetches the magnet. A crawl or a download of a magnet is handed to
-  `aria2c`, which joins the swarm, writes the files, and is stopped once the
-  first file is complete. The largest completed file is what the caller gets —
-  the video, for a media torrent.
+- **`aria2`** fetches the torrent. A magnet or a `.torrent` is handed to `aria2c`,
+  which joins the swarm (or reads the webseed), writes the files, and is stopped
+  once the transfer completes. The largest completed file is what the caller gets
+  — the video, for a media torrent.
+
+A `.torrent` is handed to the client as a **file**, not converted to a magnet,
+because it carries the **webseeds** (`url-list`) and the piece hashes that a
+magnet does not. Measured: an archive.org torrent has no peers at all and
+downloads only from its HTTP webseed, so converting it to a magnet fetched zero
+bytes while the file itself fetched the whole thing. The magnet is still built,
+for display and for the record.
+
+A torrent gets its **own timeout** (15 minutes by default), not the 30-second HTTP
+timeout — a swarm may spend a minute finding peers before a byte arrives, so
+reusing the HTTP timeout made every torrent fail at 30 seconds. Completeness is
+judged by aria2's control file (`<name>.aria2`), which it removes only once every
+piece has verified, so a partial download is reported as a failure rather than
+handed over as a finished file.
 
 Routing is by host: a `1337x` URL goes to the torrent extractor automatically. A
 **bare search** — "find this on the index" — has no host to go on, so it is only
@@ -102,6 +116,20 @@ The torrent feature is its own tab on **New download**, with three ways in:
 - **Open a .torrent** — a `.torrent` file *is* the metadata, so opening one shows
   everything inside it: every file with its size, the piece length and count, the
   trackers, the info-hash, the private flag and the creator.
+
+### Posters and thumbnails
+
+A torrent index has no poster *column* — the picture is in the torrent's
+description — so the console gets a face for a result two ways:
+
+- **In the results table**, the index page is read once per result for its
+  description image (the wrapper's `--posters`, on for a search only, since it is
+  one extra request each). A result with no image shows a file glyph rather than
+  a broken frame.
+- **In the detail panel**, when the torrent has a **webseed** and carries an
+  image, the server builds `<webseed>/<image path>` for the largest image and the
+  panel shows it. That is the only way to see a torrent's own picture without
+  downloading the torrent, because the image lives inside it.
 
 The detail panel reuses the **quality picker** for the file list (`variant="file"`):
 each row is a file and its size, and any subset can be selected. The chosen

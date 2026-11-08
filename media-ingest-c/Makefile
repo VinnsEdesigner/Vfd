@@ -231,6 +231,7 @@ test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUI
 	$(BUILD)/test_css
 	$(BUILD)/test_xpath
 	$(BUILD)/test_extract_rows
+	$(BUILD)/test_torrent
 
 clean:
 	rm -rf $(BUILD)

@@ -141,13 +141,74 @@ def _patch_page_url(api):
     api.get_torrent_data = get_torrent_data
 
 
-def _search(api, term, limit, site):
+# Image extensions worth showing as a poster, in rough order of usefulness.
+_POSTER_EXT = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def _first_poster(html):
+    """The best poster image URL in a torrent page's HTML, or None.
+
+    A torrent index has no poster *column* — the picture lives in the torrent's
+    description, and it is what a person recognises the release by. This pulls
+    the first image that looks like a real poster rather than an icon: a URL with
+    an image extension, not a data URI, not a tracker/logo path.
+
+    Deliberately simple and best-effort: a wrong guess is worse than none, so
+    anything ambiguous is skipped rather than shown.
+    """
+    if not html:
+        return None
+    import re
+
+    # Prefer the description block, which is where 1337x puts the poster.
+    m = re.search(r'id="description".*?</div>', html, re.S | re.I)
+    scope = m.group(0) if m else html
+    for src in re.findall(r'<img[^>]+src="([^"]+)"', scope, re.I):
+        low = src.lower()
+        if low.startswith("data:"):
+            continue
+        if not low.startswith(("http://", "https://")):
+            continue
+        # Strip a query so the extension test is about the path.
+        path = low.split("?", 1)[0]
+        if not path.endswith(_POSTER_EXT):
+            continue
+        # Skip the index's own chrome.
+        if any(s in low for s in ("/static/", "logo", "favicon", "sprite", "icon")):
+            continue
+        return src
+    return None
+
+
+def _attach_posters(api, entries, limit):
+    """Fetch each entry's page and attach a poster, best-effort.
+
+    One extra request per entry, so this is opt-in and bounded: a search of 50
+    would otherwise make 50 extra fetches for pictures most people never look at.
+    A failure is not fatal — the entry simply has no poster.
+    """
+    import requests
+
+    for e in entries[:limit]:
+        url = e.get("page_url")
+        if not url:
+            continue
+        try:
+            r = requests.get(url, timeout=20)
+            e["thumbnail"] = _first_poster(r.text)
+        except Exception:  # noqa: BLE001 - a missing poster is not an error
+            continue
+
+
+def _search(api, term, limit, site, posters=False):
     """Search the index and return a yt-dlp-shaped document."""
     # smallToLargeTorrents=False keeps the index's own relevance order; the size
     # sort would bury the best-seeded match at the bottom of a large result set.
     rows = api.search(term, smallToLargeTorrents=False)
     entries = [_entry_from_torrent(t) for t in rows[:limit]]
     entries = [e for e in entries if e["url"]]
+    if posters:
+        _attach_posters(api, entries, limit)
     return {
         "title": term,
         "extractor": site,
@@ -192,6 +253,11 @@ def main(argv):
                     help="print one JSON object (the only supported output)")
     ap.add_argument("--site", default="1337x")
     ap.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
+    ap.add_argument(
+        "--posters",
+        action="store_true",
+        help="also fetch each result's page for a poster image (one request each)",
+    )
     ap.add_argument("--proxy", default=None)
     ap.add_argument("query", nargs="?", default=None,
                     help="a search term, or a 1337x page URL")
@@ -227,11 +293,11 @@ def main(argv):
         if args.query.startswith("http://") or args.query.startswith("https://"):
             term = _term_from_search_url(args.query)
             if term:
-                doc = _search(api, term, limit, args.site)
+                doc = _search(api, term, limit, args.site, posters=args.posters)
             else:
                 doc = _resolve_page(api, args.query, args.site)
         else:
-            doc = _search(api, args.query, limit, args.site)
+            doc = _search(api, args.query, limit, args.site, posters=args.posters)
     except Exception as exc:  # noqa: BLE001
         # A non-zero exit is how Vyzor learns the tool failed; say why on stderr.
         print(f"py1337x-json: {type(exc).__name__}: {exc} (transport={transport})",

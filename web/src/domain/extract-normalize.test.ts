@@ -216,6 +216,27 @@ describe('normalizeTorrentInfo', () => {
     expect(out.trackers).toEqual(['http://t.example/announce']);
   });
 
+  it('carries the webseeds and the poster the server picked', () => {
+    const out = normalizeTorrentInfo(
+      info({
+        complete: true,
+        name: 'MyRelease',
+        webseeds: ['http://seed.example/base/'],
+        poster: 'http://seed.example/base/MyRelease/poster.png',
+        files: [{ path: 'MyRelease/poster.png', bytes: 20070 }],
+      }),
+    );
+    expect(out.webseeds).toEqual(['http://seed.example/base/']);
+    // The poster is a webseed URL, because a torrent's images live inside it.
+    expect(out.poster).toBe('http://seed.example/base/MyRelease/poster.png');
+  });
+
+  it('has no poster when the torrent carries none', () => {
+    const out = normalizeTorrentInfo(info({ complete: true, name: 'x', poster: null }));
+    expect(out.poster).toBeNull();
+    expect(out.webseeds).toEqual([]);
+  });
+
   it('reports a magnet as incomplete, with no files', () => {
     const out = normalizeTorrentInfo(
       info({

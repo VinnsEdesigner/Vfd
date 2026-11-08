@@ -515,6 +515,17 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
             snprintf(limit_buf, sizeof limit_buf, "%d", cfg->search_limit);
             argv[a++] = limit_buf;
         }
+        /*
+         * A poster per result, for a *search* only.
+         *
+         * The index has no poster column — the picture is in the torrent's
+         * description — so the wrapper fetches each result's page for one. That
+         * is an extra request per result, which is worth it when the caller is
+         * looking at a list of results and pointless when they named one page.
+         */
+        if (cfg && cfg->search_term && *cfg->search_term) {
+            argv[a++] = "--posters";
+        }
         if (cfg && cfg->proxy && *cfg->proxy) {
             argv[a++] = "--proxy";
             argv[a++] = cfg->proxy;

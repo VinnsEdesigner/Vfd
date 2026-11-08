@@ -292,6 +292,38 @@ function TorrentResults({
 }) {
   const columns: ReadonlyArray<Column<ExtractEntry>> = [
     {
+      key: 'poster',
+      header: '',
+      width: '52px',
+      render: (e) => (
+        /*
+         * The poster the index reported, when it did. Fetched by the browser
+         * directly — it is a public image URL and the request carries no
+         * credentials — so a site that serves its thumbnails openly just works.
+         * A poster that will not load falls back to the category glyph rather
+         * than a broken image.
+         */
+        <span className="tt__thumb">
+          {e.thumbnail ? (
+            <img
+              src={e.thumbnail}
+              alt=""
+              loading="lazy"
+              onError={(ev) => {
+                const img = ev.currentTarget;
+                img.style.display = 'none';
+                img.parentElement?.classList.add('tt__thumb--failed');
+              }}
+            />
+          ) : (
+            <span className="tt__thumbglyph">
+              <IconFile />
+            </span>
+          )}
+        </span>
+      ),
+    },
+    {
       key: 'name',
       header: 'Name',
       render: (e) => (
@@ -459,13 +491,33 @@ function TorrentDetail({
       title="Torrent"
       subtitle={info.complete ? 'Read from the .torrent file' : 'A magnet — the file list is fetched from the swarm'}
     >
-      <div className="kv">
-        <div className="kv__row">
-          <span className="kv__k">Name</span>
-          <span className="kv__v kv__v--strong">{name}</span>
-        </div>
-        <div className="kv__row">
-          <span className="kv__k">Total size</span>
+      <div className="tt__detail">
+        {/*
+          A poster, when the torrent carries one.
+          The image lives inside the torrent, so it is fetched from a webseed
+          (`<webseed>/<path>`) — the server picked the largest real image and
+          gave the URL. A torrent with no webseed has none, and the panel simply
+          shows no poster rather than a placeholder.
+        */}
+        {info.poster && (
+          <img
+            className="tt__poster"
+            src={info.poster}
+            alt=""
+            loading="lazy"
+            onError={(ev) => {
+              const img = ev.currentTarget;
+              img.style.display = 'none';
+            }}
+          />
+        )}
+        <div className="kv">
+          <div className="kv__row">
+            <span className="kv__k">Name</span>
+            <span className="kv__v kv__v--strong">{name}</span>
+          </div>
+          <div className="kv__row">
+            <span className="kv__k">Total size</span>
           <span className="kv__v muted">{total}</span>
         </div>
         {info.infoHash && (
@@ -506,6 +558,13 @@ function TorrentDetail({
             <span className="kv__v muted">{info.trackers.length}</span>
           </div>
         )}
+        {info.webseeds.length > 0 && (
+          <div className="kv__row">
+            <span className="kv__k">Webseeds</span>
+            <span className="kv__v muted">{info.webseeds.length}</span>
+          </div>
+        )}
+      </div>
       </div>
 
       {info.complete && info.files.length > 0 ? (

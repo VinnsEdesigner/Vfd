@@ -107,6 +107,30 @@ typedef struct {
      */
     const char *magnet_downloader_path;
     /*
+     * The raw bytes of a `.torrent`, when the caller opened one.
+     *
+     * This is handed to the BitTorrent client as a *file*, not converted to a
+     * magnet — because a `.torrent` carries **webseeds** (`url-list`) and the
+     * piece hashes, and a magnet carries neither. Measured: an archive.org
+     * torrent has no peers at all and downloads only from its HTTP webseed, so
+     * converting it to a magnet produced zero bytes while the `.torrent` itself
+     * fetched the whole thing. The magnet is still built for display and for the
+     * record, but the client gets the file.
+     *
+     * NULL when the caller gave a magnet instead.
+     */
+    const unsigned char *torrent_bytes;
+    size_t torrent_len;
+    /*
+     * Seconds a torrent may take, which is not the HTTP timeout.
+     *
+     * A torrent is a swarm: it may spend a minute finding peers before any byte
+     * arrives, and a large one takes many minutes. Reusing the 30-second HTTP
+     * timeout — which is right for a single request — made every torrent fail at
+     * 30 seconds. 0 uses the default (15 minutes).
+     */
+    double torrent_timeout_seconds;
+    /*
      * Which files of a torrent to fetch, 1-based, or NULL for all of them.
      *
      * A torrent is often a *set*: a film and its subtitles, or several

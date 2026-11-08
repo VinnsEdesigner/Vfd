@@ -84,6 +84,18 @@ export interface LocalStorageState {
   choose: (tier: StorageTierId, directory?: FileSystemDirectoryHandle) => void;
   /** Re-grant access to a remembered folder. Must come from a user gesture. */
   regrantDirectory: () => Promise<DirectoryPermission>;
+  /**
+   * Re-grant a remembered folder, and *repair* it when the handle is gone.
+   *
+   * A remembered folder has two halves that can go out of step: the choice in
+   * `localStorage` (which survives) and the handle in IndexedDB (which does not
+   * always — a cleared profile, a failed save, a browser that purges it). When
+   * only the choice survives, "re-grant" has no handle to re-grant and must fall
+   * back to the picker; otherwise the button silently does nothing, which is
+   * exactly the bug this fixes. MUST be called from a user gesture: the picker
+   * requires one.
+   */
+  regrantOrRepick: () => Promise<DirectoryPermission>;
   /** Attempt to restore a remembered folder and report what it found. */
   restore: () => Promise<void>;
   clear: () => void;
@@ -134,7 +146,21 @@ export const useLocalStorageStore = create<LocalStorageState>((set, get) => ({
 
   restore: async () => {
     const { handle, permission } = await restoreDirectory();
-    if (handle) set({ directory: handle, directoryPermission: permission });
+    if (handle) {
+      set({ directory: handle, directoryPermission: permission });
+      return;
+    }
+    /*
+     * The choice survived but the handle did not — a cleared profile, a purged
+     * IndexedDB, a save that failed. Leaving the choice in place makes the app
+     * *believe* a folder is configured (so it never asks again) while having
+     * nothing to write through, which is the silent-dead-end this fixes. So the
+     * stale choice is dropped and the user is asked again.
+     */
+    if (get().choice?.tier === 'file-system-access') {
+      persist(null);
+      set({ choice: null, directory: null, directoryPermission: 'unknown' });
+    }
   },
 
   regrantDirectory: async () => {
@@ -144,6 +170,35 @@ export const useLocalStorageStore = create<LocalStorageState>((set, get) => ({
     const permission = await requestDirectoryPermission(handle);
     set({ directoryPermission: permission });
     return permission;
+  },
+
+  regrantOrRepick: async () => {
+    /*
+     * The handle is still held: re-granting it is one tap and needs no picker.
+     */
+    const handle = get().directory;
+    if (handle) return get().regrantDirectory();
+
+    /*
+     * No handle — the choice outlived it. Fall back to the picker, which is the
+     * only way to get a handle back, and store what the user picks. This runs
+     * straight from a click, so the user activation the picker needs is intact.
+     */
+    if (typeof window === 'undefined' || typeof window.showDirectoryPicker !== 'function') {
+      return 'unknown';
+    }
+    try {
+      const dir = await window.showDirectoryPicker({ id: 'vyzorix-media', mode: 'readwrite' });
+      get().choose('file-system-access', dir);
+      return 'granted';
+    } catch (e) {
+      /*
+       * AbortError is the user closing the picker, which is a decision and not a
+       * failure. Anything else is real and is surfaced rather than swallowed.
+       */
+      if (e instanceof DOMException && e.name === 'AbortError') return 'unknown';
+      throw e;
+    }
   },
 
   clear: () => {

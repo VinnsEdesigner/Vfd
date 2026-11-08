@@ -50,6 +50,16 @@ typedef struct {
     /* `announce` plus every tier of `announce-list`, de-duplicated. */
     char **trackers;
     size_t tracker_count;
+    /*
+     * BEP-19 webseeds (`url-list`), as base URLs.
+     *
+     * An HTTP source for the content, which is how an archive.org torrent is
+     * fetched at all — it has no peers. Also what makes a *poster* possible: an
+     * image file inside the torrent can be pointed at `<webseed>/<path>` and
+     * loaded directly, without downloading the torrent.
+     */
+    char **webseeds;
+    size_t webseed_count;
     char *comment;
     char *created_by;
     /* Unix epoch seconds, 0 when the file did not say. */

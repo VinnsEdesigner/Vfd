@@ -405,6 +405,10 @@ export interface TorrentInfo {
   createdAt: number;
   files: TorrentFile[];
   trackers: string[];
+  /** BEP-19 webseeds, as base URLs. */
+  webseeds: string[];
+  /** A poster URL fetched from a webseed, or null when there is none. */
+  poster: string | null;
 }
 
 /** What the extractor found: a single item, or a list of them. */

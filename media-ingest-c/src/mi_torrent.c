@@ -564,6 +564,29 @@ int mi_torrent_parse(const unsigned char *data, size_t len, mi_torrent *out) {
         }
     }
 
+    /*
+     * Webseeds: BEP-19 `url-list`, which is either a single string or a list.
+     * Kept because they are how a webseed-only torrent is fetched at all, and
+     * because an image among the files can be shown as a poster from one.
+     */
+    const ben_value *ul = ben_get(root, "url-list");
+    if (ul && ul->type == BEN_STR) {
+        char *s = ben_dup_str(ul);
+        if (s) {
+            out->webseeds = mi_calloc(1, sizeof *out->webseeds);
+            if (out->webseeds) out->webseeds[out->webseed_count++] = s;
+            else free(s);
+        }
+    } else if (ul && ul->type == BEN_LIST && ul->count > 0) {
+        out->webseeds = mi_calloc(ul->count, sizeof *out->webseeds);
+        if (out->webseeds) {
+            for (size_t i = 0; i < ul->count; i++) {
+                char *s = ben_dup_str(ul->items[i]);
+                if (s) out->webseeds[out->webseed_count++] = s;
+            }
+        }
+    }
+
     out->comment = ben_dup_str(ben_get(root, "comment"));
     out->created_by = ben_dup_str(ben_get(root, "created by"));
     out->created_at = ben_int_or(ben_get(root, "creation date"), 0);
@@ -581,6 +604,8 @@ void mi_torrent_free(mi_torrent *t) {
     free(t->files);
     for (size_t i = 0; i < t->tracker_count; i++) free(t->trackers[i]);
     free(t->trackers);
+    for (size_t i = 0; i < t->webseed_count; i++) free(t->webseeds[i]);
+    free(t->webseeds);
     free(t->name);
     free(t->info_hash);
     free(t->comment);

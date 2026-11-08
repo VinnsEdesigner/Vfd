@@ -2120,7 +2120,17 @@ export function App({ initialView = 'overview' }: AppProps) {
                 busy={busy === 'storage'}
                 onChoose={chooseStorage}
                 onRegrant={() =>
-                  void localStore.regrantDirectory().then(() => localMedia.refresh())
+                  /*
+                   * Re-granting may need the picker: the remembered handle can be
+                   * gone even when the choice survives, and a bare
+                   * `requestPermission` on a missing handle does nothing at all.
+                   * `regrantOrRepick` handles both, and reports a real failure
+                   * instead of failing silently.
+                   */
+                  void localStore
+                    .regrantOrRepick()
+                    .then(() => localMedia.refresh())
+                    .catch((e) => toast.error('Could not open that folder', describeError(e)))
                 }
                 onRequestPersistence={() => void localStore.requestPersistence()}
                 onRefresh={() => {
