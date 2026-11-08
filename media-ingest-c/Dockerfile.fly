@@ -1,0 +1,130 @@
+# vyzor on Fly.io — the engine plus the tools it shells out to.
+#
+# WHY THIS IS A SECOND DOCKERFILE
+#
+# The other one (`Dockerfile`) builds a self-hosted Vyzor: it carries Chromium and
+# the fonts so a page can be rendered, and it deliberately carries no extractors,
+# because a self-hoster installs those themselves. This image is for a different
+# job — running on a Fly machine to answer one question: can the media pipeline
+# fetch a real stream from a *hosted* address, or is it blocked the way a
+# datacenter sandbox is? For that, the extractors ARE the point, and Chromium is
+# 600 MB of not-the-point. So the split is deliberate: browser here, extractors
+# there, and neither image pretends to be the other.
+#
+# WHAT IS INSTALLED, AND WHY EACH
+#
+#   yt-dlp, gallery-dl, curl_cffi   resolve a page to a stream. Installed from pip,
+#                                   not apt: a distribution's copy lags a site's
+#                                   changes by months, and this is the one component
+#                                   whose whole job is keeping up with them.
+#   py1337x                         resolves a torrent index. Paired with the
+#                                   wrapper in scripts/py1337x-json.py.
+#   aria2                           fetches a magnet. Nothing else speaks BitTorrent.
+#   ffmpeg                          reads an HLS/DASH manifest and muxes the result.
+#                                   Debian's own build is fine; it is not the tool
+#                                   that goes stale.
+#
+# The extractors live in a venv under /opt/vyzorix and are put on PATH, which is
+# how the engine finds them (it resolves each by name, see mi_extract.c).
+
+# ------------------------------------------------------------------ #
+# Build                                                               #
+# ------------------------------------------------------------------ #
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential \
+      pkg-config \
+      libcurl4-openssl-dev \
+      libsqlite3-dev \
+      zlib1g-dev \
+      libgstreamer1.0-dev \
+      libgstreamer-plugins-base1.0-dev \
+      libgstreamer-plugins-bad1.0-dev \
+      ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+# The build context is the REPOSITORY ROOT, not media-ingest-c/, because the
+# wrapper script below lives in a sibling directory (scripts/).
+COPY media-ingest-c/Makefile ./
+COPY media-ingest-c/src ./src
+RUN make
+
+# ------------------------------------------------------------------ #
+# Run                                                                 #
+# ------------------------------------------------------------------ #
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ffmpeg \
+      aria2 \
+      python3 \
+      python3-venv \
+      python3-pip \
+      ca-certificates \
+      curl \
+      tini \
+      libcurl4 \
+      libsqlite3-0 \
+      zlib1g \
+      gstreamer1.0-tools \
+      gstreamer1.0-plugins-base \
+      gstreamer1.0-plugins-good \
+      gstreamer1.0-plugins-bad \
+      gstreamer1.0-libav \
+      gstreamer1.0-nice \
+ && rm -rf /var/lib/apt/lists/*
+
+# The extractors, in their own venv so they cannot collide with the system
+# Python, and on PATH because that is where the engine looks for them.
+RUN python3 -m venv /opt/vyzorix/venv \
+ && /opt/vyzorix/venv/bin/pip install --quiet --upgrade pip \
+ && /opt/vyzorix/venv/bin/pip install --quiet --upgrade \
+      yt-dlp gallery-dl py1337x curl_cffi
+
+COPY --from=build /src/build/vyzor /usr/local/bin/vyzor
+# The py1337x wrapper, linked under the name the engine execs ("py1337x").
+#
+# The mode is set to 0755 explicitly, not with `chmod +x`. A script must be
+# *readable* to be interpreted, and `+x` only adds execute bits — a build context
+# with a restrictive umask produced 0771, which the engine's user could execute but
+# not read, and the failure read as "python3: can't open file ... Permission denied".
+COPY scripts/py1337x-json.py /opt/vyzorix/py1337x-json.py
+RUN chmod 0755 /opt/vyzorix/py1337x-json.py \
+ && ln -sf /opt/vyzorix/py1337x-json.py /opt/vyzorix/venv/bin/py1337x
+
+ENV PATH="/opt/vyzorix/venv/bin:$PATH" \
+    MI_WORK_DIR=/data/downloads \
+    MI_HOST=0.0.0.0 \
+    MI_PORT=8080 \
+    MI_RENDER=0 \
+    MI_INTERACTIVE=0 \
+    MI_RTC=0
+
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin vyzorix \
+ && mkdir -p /data/downloads \
+ && chown -R vyzorix:vyzorix /data
+
+VOLUME ["/data"]
+USER vyzorix
+WORKDIR /home/vyzorix
+
+# tini reaps: the engine forks ffmpeg/yt-dlp/aria2 and a container's PID 1 must
+# actually reap rather than be the thing that spawned them.
+ENTRYPOINT ["/usr/bin/tini", "--", "vyzor"]
+
+# No --render/--interactive/--rtc: this image has no browser, and asking for one
+# would only log a capability as unavailable. The engine serves everything else.
+CMD ["serve", \
+     "--host", "0.0.0.0", \
+     "--port", "8080", \
+     "--work-dir", "/data/downloads", \
+     "--allow-origin", "*"]
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1

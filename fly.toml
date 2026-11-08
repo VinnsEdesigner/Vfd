@@ -1,0 +1,71 @@
+# Fly.io deployment for Vyzor (the media engine).
+#
+# WHAT THIS IS FOR
+#
+# Running the engine on a hosted machine to find out whether the media pipeline
+# works from a *hosted* address. The sandbox this was developed in sits on a
+# datacenter IP that YouTube refuses, so every YouTube download failed there for a
+# reason that is not in the code. A Fly machine is also a datacenter, so the honest
+# expectation is that it is refused the same way — but "expected" is not "measured",
+# and the measurement is the point.
+#
+# WHY THERE IS NO BROWSER HERE
+#
+# The render/interactive/live-video features need Chromium (about 600 MB, and about
+# 500 MB of memory per render). They are off: this image is for the download
+# pipeline, and a machine with one shared CPU and 512 MB is not a place to render a
+# page. `media-ingest-c/Dockerfile.fly` says the same thing from its side.
+#
+# WHY min_machines_running = 1
+#
+# Fly stops a machine with no traffic. A stopped machine cannot answer a download
+# request, and the console would show it as offline. One machine kept warm is the
+# cheapest way for the app to behave like a server rather than a lambda.
+
+app = "vyzor"
+primary_region = "ams"
+
+[build]
+  dockerfile = "media-ingest-c/Dockerfile.fly"
+
+[env]
+  # The engine reads these (see mi_cli.c); the Dockerfile already sets the ones
+  # that are properties of the image rather than of this deployment.
+  MI_HOST = "0.0.0.0"
+  MI_PORT = "8080"
+  MI_WORK_DIR = "/data/downloads"
+  # The console is served from Cloudflare Pages, so it is a different origin and
+  # the browser will block every request without this. It is a public static site
+  # and the engine holds no credentials, so a wildcard is acceptable here — but it
+  # is the reason the console can talk to this app at all.
+  MI_ALLOW_ORIGINS = "*"
+  # Browser features are off (no Chromium in this image).
+  MI_RENDER = "0"
+  MI_INTERACTIVE = "0"
+  MI_RTC = "0"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 20
+    hard_limit = 40
+
+# One small machine. A download is mostly network wait, and the engine streams to
+# disk rather than buffering a whole file, so 512 MB holds it comfortably. This is
+# NOT sized for rendering — see the note above.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# The downloads and the engine's own state. A Fly volume is per-machine and does
+# not move, which is the same lifetime rule as the self-hosted case: the data
+# outlives the process, not the host.
+[mounts]
+  source = "vyzor_data"
+  destination = "/data"
