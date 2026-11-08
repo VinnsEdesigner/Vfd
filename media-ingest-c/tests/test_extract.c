@@ -245,6 +245,43 @@ static void test_normalize_impersonate(void) {
     CHECK(mi_extract_normalize_impersonate("") == NULL, "an empty target normalises to NULL");
 }
 
+/*
+ * Splitting MI_EXTRACTOR_ARGS into argv entries.
+ *
+ * The setting is one string because an env var is one value, while
+ * `--extractor-args` is repeatable — so this is the join between them, and a
+ * mistake here is a YouTube job silently running without its player client or
+ * PO-token provider.
+ */
+static void test_extractor_args_split(void) {
+    size_t n = 0;
+    /* Absent and empty both mean "none", not "one empty argument". */
+    CHECK(mi_extract_args_split(NULL, &n) == NULL && n == 0, "NULL splits to nothing");
+    CHECK(mi_extract_args_split("", &n) == NULL && n == 0, "empty splits to nothing");
+
+    char **a = mi_extract_args_split("youtube:player_client=visionos", &n);
+    CHECK(n == 1 && a && strcmp(a[0], "youtube:player_client=visionos") == 0,
+          "a single argument is kept whole");
+    mi_extract_args_free(a, n);
+
+    /* Several, and the spaces around the commas are trimmed. */
+    a = mi_extract_args_split("youtube:player_client=visionos, youtube:po_token=abc", &n);
+    CHECK(n == 2, "a comma-separated list splits in two");
+    if (n == 2) {
+        CHECK(strcmp(a[0], "youtube:player_client=visionos") == 0, "first argument exact");
+        CHECK(strcmp(a[1], "youtube:po_token=abc") == 0, "second argument trimmed");
+    }
+    mi_extract_args_free(a, n);
+
+    /* A stray trailing comma must not produce an empty argument, which the
+     * extractor would reject. */
+    a = mi_extract_args_split("a=1,,b=2,", &n);
+    CHECK(n == 2, "empty segments are dropped");
+    mi_extract_args_free(a, n);
+    /* Freeing nothing must be safe: a caller clears the setting with "". */
+    mi_extract_args_free(NULL, 0);
+}
+
 static void test_torrent_routing(void) {
     mi_extract_config cfg;
     mi_extract_config_init(&cfg);
@@ -327,6 +364,7 @@ int main(void) {
     test_extract_needs_a_url_or_a_search();
     test_video_resolve();
     test_gallery_resolve();
+    test_extractor_args_split();
     test_torrent_routing();
     test_torrent_search_parses_entries();
 

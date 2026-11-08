@@ -1443,6 +1443,8 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->jar = NULL;
     cfg->proxy = NULL;
     cfg->impersonate = NULL;
+    cfg->extractor_args = NULL;
+    cfg->extractor_arg_count = 0;
     cfg->identity_retries = 0;
     cfg->rotate_identity = 1;
     cfg->preferred_height = 0;
@@ -1702,6 +1704,25 @@ static int download_via_extractor(const mi_download_config *cfg, const char *pag
     if (imp) {
         argv[a++] = "--impersonate";
         argv[a++] = imp;
+    }
+    /*
+     * Per-site arguments, passed through verbatim and repeatable.
+     *
+     * This is what lets a caller say `youtube:player_client=visionos` for the
+     * *download*, not only for the resolve. It matters because YouTube gates the
+     * two stages differently: a client that resolves can still 403 on the bytes
+     * if the download falls back to the extractor's default client. The syntax is
+     * the extractor's own, so it is passed rather than parsed.
+     *
+     * The bound is explicit: `argv` is a fixed array, each argument costs two
+     * slots (the flag and its value), and overflowing it would be a stack smash
+     * rather than a rejected argument.
+     */
+    for (size_t i = 0; i < cfg->extractor_arg_count; i++) {
+        if (!cfg->extractor_args[i] || !*cfg->extractor_args[i]) continue;
+        if (a + 2 >= (int)(sizeof argv / sizeof argv[0])) break;
+        argv[a++] = "--extractor-args";
+        argv[a++] = cfg->extractor_args[i];
     }
     argv[a++] = "--";
     argv[a++] = page_url;

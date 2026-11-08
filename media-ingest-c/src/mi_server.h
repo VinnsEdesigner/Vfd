@@ -227,6 +227,22 @@ typedef struct {
      * server). NULL uses the provider's own. */
     const char *captcha_base_url;
     /*
+     * Per-site extractor arguments applied to *every* resolve and download, e.g.
+     * `youtube:player_client=visionos`.
+     *
+     * This is the operator-level half of the same seam the per-request
+     * `extractor_args` uses, and it is where a YouTube PO-token provider is
+     * configured: yt-dlp takes `youtube:po_token=...` (or a `getpot_bgutil` /
+     * `bgutil:...` provider) through `--extractor-args`, so naming it here wires
+     * it into every YouTube job without a code change.
+     *
+     * It exists because the player client and the token are a *policy* decision
+     * about the host's egress, not a property of one download — the same reason
+     * `impersonate` and the captcha provider are settings. Set from the settings
+     * endpoint or MI_EXTRACTOR_ARGS (comma-separated).
+     */
+    const char *extractor_args;
+    /*
      * A shared crawl frontier, so several Vyzors walk one site once rather than
      * once each. When both are set, a crawl request's `run_id` puts its queue in
      * this Turso database. The token is a credential and is never returned.

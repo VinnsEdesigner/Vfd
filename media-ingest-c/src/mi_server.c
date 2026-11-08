@@ -77,6 +77,15 @@ typedef struct {
     int *magnet_files;
     size_t magnet_file_count;
     /*
+     * Per-site extractor arguments for this job, e.g. `youtube:player_client=visionos`.
+     *
+     * Held on the record because the *download* needs them, not just the resolve:
+     * a player client that resolves YouTube's metadata is also the one that must
+     * fetch its bytes, or the second request 403s.
+     */
+    char **extractor_args;
+    size_t extractor_arg_count;
+    /*
      * The raw `.torrent` bytes the caller opened, if any.
      *
      * Kept so the BitTorrent client can be handed the *file* — which carries the
@@ -155,6 +164,15 @@ typedef struct {
 
 struct mi_server {
     mi_server_config cfg;
+    /*
+     * The operator's per-site extractor arguments, split once at start.
+     *
+     * Held here rather than re-split per request because it is fixed for the
+     * process's life, and every resolve and download needs it. Empty when
+     * `cfg.extractor_args` is unset.
+     */
+    char **extractor_args;
+    size_t extractor_arg_count;
     /* The directory downloads are written to. Defaults to cfg.work_dir but can
      * be changed at runtime (PUT /api/v1/storage/location), so every path that
      * derives an item's directory reads this rather than cfg.work_dir. */
@@ -724,6 +742,8 @@ static void download_free(mi_download_rec *j) {
     free(j->display_name);
     free(j->requested_quality);
     free(j->magnet_files);
+    for (size_t i = 0; i < j->extractor_arg_count; i++) free(j->extractor_args[i]);
+    free(j->extractor_args);
     free(j->torrent_bytes);
     free(j->sha256);
     free(j->master_playlist);
@@ -1706,6 +1726,19 @@ static void *download_worker(void *arg) {
     dcfg.user_agent = srv->cfg.user_agent;
     dcfg.proxy = srv->cfg.proxy;
     dcfg.impersonate = srv->cfg.impersonate;
+    /*
+     * Per-site extractor arguments, so the resolve and the download use the same
+     * player client. The per-request list wins when one was given; otherwise the
+     * operator's setting applies, which is what makes a YouTube player client or
+     * PO-token provider work without every caller naming it.
+     */
+    if (j->extractor_arg_count > 0) {
+        dcfg.extractor_args = (const char *const *)j->extractor_args;
+        dcfg.extractor_arg_count = j->extractor_arg_count;
+    } else {
+        dcfg.extractor_args = (const char *const *)srv->extractor_args;
+        dcfg.extractor_arg_count = srv->extractor_arg_count;
+    }
     dcfg.identity_retries = srv->cfg.identity_retries;
     dcfg.rotate_identity = srv->cfg.rotate_identity;
     dcfg.brain = srv->brain;
@@ -3379,6 +3412,11 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         if (xargc > 0) {
             ecfg.extractor_args = xargv;
             ecfg.extractor_arg_count = xargc;
+        } else if (srv->extractor_arg_count > 0) {
+            /* The operator's setting, when the request named none — so a YouTube
+             * player client configured once applies to every resolve. */
+            ecfg.extractor_args = (const char *const *)srv->extractor_args;
+            ecfg.extractor_arg_count = srv->extractor_arg_count;
         }
 
         mi_extract_result er;
@@ -4464,6 +4502,25 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             }
         }
         j->do_hls = mi_json_get_bool(in, "hls", 1);
+        /*
+         * Per-site extractor arguments, e.g. `youtube:player_client=visionos`.
+         *
+         * Passed to the *download* as well as the resolve, because the player
+         * client that resolves YouTube's metadata is also the one that must fetch
+         * its bytes — a mismatch is a 403 on the second request.
+         */
+        const mi_json *xargs = mi_json_get(in, "extractor_args");
+        if (xargs && xargs->type == MI_JSON_ARRAY && xargs->count > 0) {
+            j->extractor_args = mi_calloc(xargs->count, sizeof *j->extractor_args);
+            if (j->extractor_args) {
+                for (size_t i = 0; i < xargs->count; i++) {
+                    const mi_json *el = xargs->items[i];
+                    if (el && el->type == MI_JSON_STRING && el->string && *el->string) {
+                        j->extractor_args[j->extractor_arg_count++] = mi_strdup(el->string);
+                    }
+                }
+            }
+        }
         j->do_upload = mi_json_get_bool(in, "upload", 0);
         j->do_purge = mi_json_get_bool(in, "purge", 0);
         int conns = (int)mi_json_get_int(in, "connections", 8);
@@ -5038,6 +5095,21 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             }
         }
         mi_json_raw(&b, ",");
+        /*
+         * The operator's per-site extractor arguments, as a list.
+         *
+         * Exposed so a console can show and edit what every job is passing —
+         * notably the YouTube player client or PO-token provider, which is the
+         * lever that decides whether a resolve works from this host.
+         */
+        mi_json_key(&b, "extractor_args");
+        mi_json_raw(&b, "[");
+        for (size_t i = 0; i < srv->extractor_arg_count; i++) {
+            if (i) mi_json_raw(&b, ",");
+            mi_json_string(&b, srv->extractor_args[i]);
+        }
+        mi_json_raw(&b, "]");
+        mi_json_raw(&b, ",");
         mi_json_key(&b, "frontier_db_url");
         mi_json_string(&b, srv->cfg.frontier_db_url);
         mi_json_raw(&b, ",");
@@ -5070,8 +5142,10 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         const mi_json *ftok_v = mi_json_get(in, "frontier_token");
         const mi_json *fpath_v = mi_json_get(in, "frontier_db_path");
         const mi_json *cfb_v = mi_json_get(in, "cookies_from_browser");
+        const mi_json *xargs_guard = mi_json_get(in, "extractor_args");
         if (!cookies_v && !proxy_v && !impersonate_v && !retries_v && !cprov_v &&
-            !ckey_v && !cbase_v && !furl_v && !ftok_v && !fpath_v && !cfb_v) {
+            !ckey_v && !cbase_v && !furl_v && !ftok_v && !fpath_v && !cfb_v &&
+            !xargs_guard) {
             send_error(fd, 400, "Bad Request", "nothing to set", cors);
             mi_json_value_free(in);
             return;
@@ -5185,7 +5259,54 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             }
             fpath = fpath_v->string;
         }
+        /*
+         * The per-site extractor arguments. Accepts a JSON array of strings (what
+         * the GET returns) or a comma-separated string (what MI_EXTRACTOR_ARGS
+         * takes), so either spelling works from a console or a script.
+         */
+        const mi_json *xargs_v = mi_json_get(in, "extractor_args");
+        char *xargs_csv = NULL;
+        if (xargs_v) {
+            if (xargs_v->type == MI_JSON_NULL) {
+                xargs_csv = mi_strdup("");
+            } else if (xargs_v->type == MI_JSON_STRING) {
+                xargs_csv = mi_strdup(xargs_v->string ? xargs_v->string : "");
+            } else if (xargs_v->type == MI_JSON_ARRAY) {
+                mi_json_buf tmp;
+                mi_json_init(&tmp);
+                int first = 1;
+                for (size_t i = 0; i < xargs_v->count; i++) {
+                    const mi_json *el = xargs_v->items[i];
+                    if (!el || el->type != MI_JSON_STRING || !el->string) continue;
+                    if (!first) mi_json_raw(&tmp, ",");
+                    mi_json_raw(&tmp, el->string);
+                    first = 0;
+                }
+                xargs_csv = mi_strdup(mi_json_data(&tmp));
+                mi_json_free(&tmp);
+            } else {
+                send_error(fd, 400, "Bad Request",
+                           "extractor_args must be an array of strings or a string", cors);
+                mi_json_value_free(in);
+                return;
+            }
+            if (!xargs_csv) {
+                send_error(fd, 500, "Internal Server Error", "out of memory", cors);
+                mi_json_value_free(in);
+                return;
+            }
+        }
         pthread_mutex_lock(&srv->lock);
+        if (xargs_csv != NULL) {
+            mi_extract_args_free(srv->extractor_args, srv->extractor_arg_count);
+            srv->extractor_args = mi_extract_args_split(xargs_csv, &srv->extractor_arg_count);
+            free((char *)srv->cfg.extractor_args);
+            srv->cfg.extractor_args = (*xargs_csv) ? mi_strdup(xargs_csv) : NULL;
+            mi_logf(MI_LOG_INFO, "settings: %zu per-site extractor argument(s) set",
+                    srv->extractor_arg_count);
+            free(xargs_csv);
+            xargs_csv = NULL;
+        }
         if (cookies_v) {
             free((char *)srv->cfg.cookies_text);
             srv->cfg.cookies_text = (cookies && *cookies) ? mi_strdup(cookies) : NULL;
@@ -5395,6 +5516,18 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
     srv->cfg.frontier_db_path = (cfg->frontier_db_path && *cfg->frontier_db_path)
                                     ? mi_strdup(cfg->frontier_db_path) : NULL;
     srv->download_dir = mi_strdup(cfg->work_dir ? cfg->work_dir : "./downloads");
+    /*
+     * The operator's per-site extractor arguments, split once.
+     *
+     * Comma-separated because an env var is a single value while
+     * `--extractor-args` is repeatable. Split here rather than per request: it is
+     * fixed for the process, and every resolve and download reads it.
+     */
+    srv->extractor_args = mi_extract_args_split(cfg->extractor_args, &srv->extractor_arg_count);
+    if (srv->extractor_arg_count > 0) {
+        mi_logf(MI_LOG_INFO, "extract: %zu per-site argument(s) configured for every job",
+                srv->extractor_arg_count);
+    }
     srv->listen_fd = -1;
     srv->stop = 0;
     pthread_mutex_init(&srv->lock, NULL);

@@ -487,13 +487,14 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
                      int rtc_bitrate, const char *rtc_stun, const char *proxy,
                      const char *impersonate, int identity_retries,
                      const char *frontier_db, const char *persistent_profile,
-                     const char *torrent_site) {
+                     const char *torrent_site, const char *extractor_args) {
     mi_server_config cfg;
     mi_server_config_init(&cfg);
     if (host) cfg.host = host;
     /* The torrent index a bare search should hit. A 1337x URL needs no setting:
      * the host routes it. */
     cfg.torrent_site = (torrent_site && *torrent_site) ? torrent_site : NULL;
+    cfg.extractor_args = (extractor_args && *extractor_args) ? extractor_args : NULL;
     if (persistent_profile && *persistent_profile) {
         cfg.persistent_profile = persistent_profile;
         /* The same ergonomic default as the env path: the profile is also the
@@ -696,6 +697,9 @@ int main(int argc, char **argv) {
     const char *serve_frontier_db = getenv("MI_FRONTIER_DB");
     const char *serve_persistent_profile = getenv("MI_PERSISTENT_PROFILE");
     const char *serve_torrent_site = getenv("MI_TORRENT_SITE");
+    /* Per-site extractor arguments for every job, e.g. a YouTube player client
+     * or PO-token provider. Comma-separated because an env var is one value. */
+    const char *serve_extractor_args = getenv("MI_EXTRACTOR_ARGS");
     /* Rendering is opt-in: it costs about half a gigabyte per render and needs
      * a browser on the host. MI_RENDER=1 turns it on without a flag. */
     int serve_render = getenv("MI_RENDER") != NULL;
@@ -933,7 +937,7 @@ int main(int argc, char **argv) {
                            serve_rtc_fps, serve_rtc_bitrate, serve_rtc_stun,
                            serve_proxy, serve_impersonate, serve_identity_retries,
                            serve_frontier_db, serve_persistent_profile,
-                           serve_torrent_site);
+                           serve_torrent_site, serve_extractor_args);
             break;
         default: rc = 2;
     }

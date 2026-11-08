@@ -335,6 +335,24 @@ char *mi_extract_cookies_for_ffmpeg(const char *text);
 char *mi_extract_normalize_impersonate(const char *target);
 
 /*
+ * Split a comma-separated list of per-site extractor arguments.
+ *
+ * `MI_EXTRACTOR_ARGS` (and the settings field) carry several arguments in one
+ * string because an environment variable is a single value and `--extractor-args`
+ * is repeatable. `youtube:player_client=visionos,youtube:po_token=...` becomes two
+ * entries, which is what the argv needs.
+ *
+ * A comma *inside* an argument's own value would be ambiguous, and yt-dlp's own
+ * syntax does not use one at this level — the per-site arguments are separated by
+ * `;` within a single `IE_KEY:ARGS` value — so a plain split is correct.
+ *
+ * Returns an owned array of owned strings (NULL on an empty/absent input), with
+ * the count in `*count`. Free with `mi_extract_args_free`.
+ */
+char **mi_extract_args_split(const char *list, size_t *count);
+void mi_extract_args_free(char **args, size_t count);
+
+/*
  * Write Netscape cookie text to a 0600 temp file and return its path.
  *
  * yt-dlp takes cookies as a path, so a caller holding them inline (a server

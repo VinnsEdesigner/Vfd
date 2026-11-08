@@ -196,6 +196,23 @@ typedef struct {
      */
     const char *impersonate;
     /*
+     * Per-site arguments for the extractor, `IE_KEY:ARGS` — e.g.
+     * `youtube:player_client=visionos`.
+     *
+     * Why this has to reach the *download* and not only the resolve: YouTube
+     * answers in two stages, and they are gated differently. Its metadata
+     * endpoint accepts some player clients and refuses others from a hosted
+     * address — `visionos` and `android_vr` resolve where the default `web`
+     * client is told "Sign in to confirm you're not a bot". But the *bytes* are
+     * fetched by a second request that must use the same client the metadata came
+     * from, so a resolve that succeeded with one client and a download that
+     * defaults to another fails with a 403 that looks like a different problem.
+     *
+     * NULL sends none, which leaves the extractor's own defaults.
+     */
+    const char *const *extractor_args;
+    size_t extractor_arg_count;
+    /*
      * Conditional-GET validators: what the last fetch of this URL returned.
      *
      * Sending these back is how an incremental crawl avoids re-downloading an

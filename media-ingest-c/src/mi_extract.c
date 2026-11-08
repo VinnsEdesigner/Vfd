@@ -422,6 +422,46 @@ char *mi_extract_normalize_impersonate(const char *target) {
     return out;
 }
 
+char **mi_extract_args_split(const char *list, size_t *count) {
+    if (count) *count = 0;
+    if (!list || !*list) return NULL;
+
+    char **args = NULL;
+    size_t n = 0;
+    const char *p = list;
+    while (*p) {
+        const char *end = strchr(p, ',');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        /* Trim, so "a, b" does not pass a leading space to the extractor. */
+        while (len > 0 && (*p == ' ' || *p == '\t')) { p++; len--; }
+        while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t')) len--;
+        if (len > 0) {
+            char **grown = mi_realloc(args, (n + 1) * sizeof *grown);
+            if (!grown) {
+                mi_extract_args_free(args, n);
+                return NULL;
+            }
+            args = grown;
+            args[n] = mi_strndup(p, len);
+            if (!args[n]) {
+                mi_extract_args_free(args, n);
+                return NULL;
+            }
+            n++;
+        }
+        if (!end) break;
+        p = end + 1;
+    }
+    if (count) *count = n;
+    return args;
+}
+
+void mi_extract_args_free(char **args, size_t count) {
+    if (!args) return;
+    for (size_t i = 0; i < count; i++) free(args[i]);
+    free(args);
+}
+
 /*
  * Run an extractor and return its stdout, or NULL.
  *
