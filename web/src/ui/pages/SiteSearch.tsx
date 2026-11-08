@@ -23,7 +23,7 @@ import { SwitchRow } from '../primitives/SwitchRow';
 import { Note } from '../primitives/Note';
 import { EmptyState } from '../primitives/EmptyState';
 import { Spinner } from '../primitives/Spinner';
-import { IconSearch, IconDownload } from '../primitives/Icons';
+import { IconSearch, IconDownload, IconX } from '../primitives/Icons';
 import { QualityPicker } from '../downloads/QualityPicker';
 import { formatBytes, type QualityOption } from '../../hooks/view-models';
 import type { CrawlHit, CrawlReport } from '../../hooks';
@@ -297,6 +297,12 @@ function ResolvedQualities({
 }) {
   const [selected, setSelected] = useState<number | null>(null);
   /*
+   * Dismissing the card hides it for this result. Kept as local state rather
+   * than lifted: it is a view choice about *this* proposal, and re-running the
+   * search produces a new one that should be shown again.
+   */
+  const [dismissed, setDismissed] = useState(false);
+  /*
    * The first resolved hit, and its renditions.
    *
    * A crawl of a streaming page usually yields the media plus the page's own
@@ -304,7 +310,7 @@ function ResolvedQualities({
    * rather than assuming the first hit is it.
    */
   const target = hits.find((h) => h.qualities.length > 0) ?? null;
-  if (!target) return null;
+  if (!target || dismissed) return null;
 
   const options: QualityOption[] = target.qualities.map((q) => ({
     url: target.url,
@@ -324,6 +330,18 @@ function ResolvedQualities({
       subtitle={`${target.filename.slice(0, 60)} — ${target.qualities.length} rendition${
         target.qualities.length === 1 ? '' : 's'
       }`}
+      actions={
+        <Button
+          size="sm"
+          variant="ghost"
+          icon
+          aria-label="Dismiss quality"
+          title="Dismiss"
+          onClick={() => setDismissed(true)}
+        >
+          <IconX />
+        </Button>
+      }
     >
       <QualityPicker options={options} selectedHeight={active} onSelect={setSelected} />
       <div className="form-actions">

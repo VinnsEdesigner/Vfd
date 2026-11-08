@@ -30,7 +30,7 @@ import { EmptyState } from '../primitives/EmptyState';
 import { Spinner } from '../primitives/Spinner';
 import { DataTable, type Column } from '../primitives/DataTable';
 import { QualityPicker } from '../downloads/QualityPicker';
-import { IconSearch, IconDownload, IconExternal, IconFile, IconRefresh } from '../primitives/Icons';
+import { IconSearch, IconDownload, IconExternal, IconFile, IconRefresh, IconX } from '../primitives/Icons';
 import { formatBytes, type QualityOption } from '../../hooks/view-models';
 import type { ExtractEntry, ExtractResult, TorrentInfo } from '../../hooks';
 
@@ -490,6 +490,18 @@ function TorrentDetail({
     <Card
       title="Torrent"
       subtitle={info.complete ? 'Read from the .torrent file' : 'A magnet — the file list is fetched from the swarm'}
+      actions={
+        <Button
+          size="sm"
+          variant="ghost"
+          icon
+          aria-label="Dismiss torrent details"
+          title="Dismiss"
+          onClick={onClear}
+        >
+          <IconX />
+        </Button>
+      }
     >
       <div className="tt__detail">
         {/*

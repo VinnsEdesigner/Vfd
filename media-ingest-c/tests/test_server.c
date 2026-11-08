@@ -219,7 +219,7 @@ static void test_http_api(void) {
           "capabilities reports the real body cap");
     CHECK(strstr(body_of(resp), "\"workers\":16") != NULL,
           "capabilities reports the real worker count");
-    CHECK(strstr(body_of(resp), "\"vyzor_version\":\"0.1.0\"") != NULL,
+    CHECK(strstr(body_of(resp), "\"vyzor_version\":\"0.1.3\"") != NULL,
           "capabilities reports Vyzor version");
     CHECK(strstr(body_of(resp), "\"ffmpeg\":") != NULL,
           "capabilities reports ffmpeg availability");

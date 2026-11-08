@@ -21,7 +21,7 @@ enum {
 
 /* Vyzor's own version. Reported by `--help` and by the API, so it lives in
  * one place rather than being spelled out in each. */
-#define MI_VYZOR_VERSION "0.1.0"
+#define MI_VYZOR_VERSION "0.1.3"
 
 /* Log levels, controlled by mi_log_set_level().
  *

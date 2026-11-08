@@ -38,7 +38,7 @@ describe('system resource', () => {
 
   it('reports Vyzor\u2019s own build and host facts', async () => {
     const caps = await api.system.capabilities();
-    expect(caps.vyzorVersion).toBe('0.1.0');
+    expect(caps.vyzorVersion).toBe('0.1.3');
     expect(caps.maxBodyBytes).toBe(64 * 1024 * 1024);
     expect(caps.workers).toBe(16);
     // ffmpeg presence is a property of the host, so the contract is that the

@@ -5495,3 +5495,21 @@ input[type='range']:focus-visible {
     max-height: 220px;
   }
 }
+
+/* A dismiss control above the options, for a picker that is a proposal rather
+   than a required step. The label sits left, the close button right, so the
+   affordance reads the same wherever the picker is used. */
+.quality__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.quality__headlabel {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
