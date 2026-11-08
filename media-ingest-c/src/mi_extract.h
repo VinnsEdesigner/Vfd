@@ -81,6 +81,29 @@ typedef struct {
     char *thumbnail;
     /* 1 when this entry is itself a playlist rather than a video. */
     int is_playlist;
+    /*
+     * The fields a *torrent index* reports and a video list does not.
+     *
+     * 1337x shows a seeder count, a leecher count, a size, a category and when
+     * the torrent was posted, and those are exactly what decides which of two
+     * identically-named torrents to take — a well-seeded 1080p rip and a dead
+     * 4K one are not interchangeable. They are carried here rather than derived
+     * later because only the index knows them.
+     *
+     * -1 when the source did not say, which is different from zero: a torrent
+     * with no seeders is dead, a torrent whose seeders were not reported is
+     * merely unknown.
+     */
+    int64_t seeders;
+    int64_t leechers;
+    int64_t bytes;
+    char *category;
+    char *size_text;      /* as shown, e.g. "1.4 GB" */
+    char *uploaded_text;  /* as shown, e.g. "3 years ago" */
+    /* The index page, which a magnet does not carry. */
+    char *page_url;
+    /* 1 when this entry is a magnet a client can fetch directly. */
+    int is_torrent;
 } mi_extract_entry;
 
 typedef struct {

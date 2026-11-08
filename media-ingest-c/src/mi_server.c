@@ -24,6 +24,7 @@
 #include "mi_crawl.h"
 #include "mi_detect.h"
 #include "mi_extract.h"
+#include "mi_torrent.h"
 #include "mi_captcha.h"
 #include "mi_impersonate.h"
 #include "mi_extract_rows.h"
@@ -68,6 +69,22 @@ typedef struct {
     /* The options the job was created with, echoed back so the UI can say which
      * stages this download actually runs instead of assuming. */
     char *requested_quality;
+    /*
+     * A torrent's file selection, when the caller opened a `.torrent` and chose
+     * which files to take. 1-based indices into the torrent's own file list,
+     * matching aria2's numbering. NULL means the whole torrent.
+     */
+    int *magnet_files;
+    size_t magnet_file_count;
+    /*
+     * A `.torrent` file the caller opened, as a magnet built from it.
+     *
+     * A `.torrent` *is* the metadata, so a magnet built from its info-hash and
+     * trackers downloads exactly the same content — and a magnet is the one
+     * shape both the client and this record already handle. Kept so the record
+     * can report where it came from.
+     */
+    char *torrent_name;
 
     download_state state;
     double created_at;
@@ -705,6 +722,8 @@ static void download_free(mi_download_rec *j) {
     free(j->source_path);
     free(j->display_name);
     free(j->requested_quality);
+    free(j->magnet_files);
+    free(j->torrent_name);
     free(j->sha256);
     free(j->master_playlist);
     free(j->converted_path);
@@ -1639,6 +1658,8 @@ static void *download_worker(void *arg) {
     dcfg.torrent_extractor_path = srv->cfg.torrent_extractor_path;
     dcfg.torrent_site = srv->cfg.torrent_site;
     dcfg.magnet_downloader_path = srv->cfg.magnet_downloader_path;
+    dcfg.magnet_files = j->magnet_files;
+    dcfg.magnet_file_count = j->magnet_file_count;
     dcfg.cookies_text = srv->cfg.cookies_text;
         dcfg.cookies_from_browser = srv->cfg.cookies_from_browser;
     /*
@@ -2863,6 +2884,26 @@ static void serve_interactive_ws(mi_server *srv, int fd, http_request *req) {
     free(url);
 }
 
+/* Parse a base64 `.torrent` into its metadata. Returns MI_OK, or a negative
+ * MI_ERR_*; `out` is left zeroed on failure. Shared by the inspect endpoint and
+ * the download-create path, so a `.torrent` is understood in exactly one place. */
+static int torrent_from_base64(const char *b64, mi_torrent *out) {
+    if (!b64 || !*b64 || !out) return MI_ERR_ARG;
+    memset(out, 0, sizeof *out);
+    size_t blen = strlen(b64);
+    size_t cap = blen / 4 * 3 + 4;
+    unsigned char *raw = mi_malloc(cap);
+    if (!raw) return MI_ERR_NOMEM;
+    ssize_t n = mi_base64_decode(b64, blen, raw, cap);
+    if (n <= 0) {
+        free(raw);
+        return MI_ERR_ARG;
+    }
+    int rc = mi_torrent_parse(raw, (size_t)n, out);
+    free(raw);
+    return rc;
+}
+
 static void handle_request(mi_server *srv, int fd, http_request *req) {
     const char *cors = cors_origin_for(srv, req);
 
@@ -3266,7 +3307,13 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ecfg.binary = srv->cfg.extractor_path;
         ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
         ecfg.torrent_binary = srv->cfg.torrent_extractor_path;
-        ecfg.torrent_site = srv->cfg.torrent_site;
+        /*
+         * A torrent index named per request, so the console can pick one from a
+         * list without a restart; the server's own setting is the fallback. A
+         * URL routes by host regardless, so this only affects a bare search.
+         */
+        const char *site = mi_json_get_string(in, "site", NULL);
+        ecfg.torrent_site = (site && *site) ? site : srv->cfg.torrent_site;
         ecfg.cookies_text = srv->cfg.cookies_text;
         ecfg.cookies_from_browser = srv->cfg.cookies_from_browser;
         ecfg.proxy = srv->cfg.proxy;
@@ -3359,6 +3406,27 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
             mi_json_double(&b, e->duration_seconds);
             mi_json_raw(&b, ",\"is_playlist\":");
             mi_json_bool(&b, e->is_playlist);
+            /*
+             * The torrent fields. Emitted for every entry so the console's
+             * parser is uniform; a video list reports -1 and null, which reads
+             * as "not applicable" rather than as a zero.
+             */
+            mi_json_raw(&b, ",\"seeders\":");
+            mi_json_int(&b, e->seeders);
+            mi_json_raw(&b, ",\"leechers\":");
+            mi_json_int(&b, e->leechers);
+            mi_json_raw(&b, ",\"bytes\":");
+            mi_json_int(&b, e->bytes);
+            mi_json_raw(&b, ",\"category\":");
+            mi_json_string(&b, e->category);
+            mi_json_raw(&b, ",\"size_text\":");
+            mi_json_string(&b, e->size_text);
+            mi_json_raw(&b, ",\"uploaded_text\":");
+            mi_json_string(&b, e->uploaded_text);
+            mi_json_raw(&b, ",\"page_url\":");
+            mi_json_string(&b, e->page_url);
+            mi_json_raw(&b, ",\"is_torrent\":");
+            mi_json_bool(&b, e->is_torrent);
             mi_json_raw(&b, "}");
         }
         mi_json_raw(&b, "]");
@@ -3398,6 +3466,118 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
         mi_extract_result_free(&er);
+        mi_json_value_free(in);
+        return;
+    }
+
+    /*
+     * POST /api/v1/torrent/inspect  {magnet?, url?, base64?}
+     *
+     * What a torrent *contains*, before it is downloaded.
+     *
+     * A torrent index shows a name and a size; this is the file list, the piece
+     * size, the trackers and the info-hash — the detail a person checks before
+     * committing to a multi-gigabyte download. Two ways in, because there are
+     * two things a user has:
+     *
+     *   base64  the bytes of a `.torrent` they opened, which *is* the metadata
+     *   magnet  a magnet link, which names the hash and nothing else
+     *
+     * A magnet cannot be expanded here: the file list lives in the swarm, not in
+     * the link. So a magnet yields its hash and name, and says `complete: false`
+     * — the console shows what is known rather than pretending it knows more.
+     * A `.torrent` yields the whole structure, and `complete: true`.
+     */
+    if (!strcmp(req->path, "/api/v1/torrent/inspect") && !strcmp(req->method, "POST")) {
+        mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
+        const char *magnet = mi_json_get_string(in, "magnet", NULL);
+        const char *b64 = mi_json_get_string(in, "base64", NULL);
+
+        mi_json_buf b;
+        mi_json_init(&b);
+
+        if (b64 && *b64) {
+            mi_torrent t;
+            if (torrent_from_base64(b64, &t) != MI_OK) {
+                send_error(fd, 400, "Bad Request",
+                           "that is not a valid .torrent file (bencode parse failed)", cors);
+                mi_json_free(&b);
+                mi_json_value_free(in);
+                return;
+            }
+            mi_json_raw(&b, "{\"ok\":true,\"complete\":true,");
+            mi_json_key(&b, "name");
+            mi_json_string(&b, t.name);
+            mi_json_raw(&b, ",\"info_hash\":");
+            mi_json_string(&b, t.info_hash);
+            mi_json_raw(&b, ",\"total_bytes\":");
+            mi_json_int(&b, t.total_bytes);
+            mi_json_raw(&b, ",\"piece_length\":");
+            mi_json_int(&b, t.piece_length);
+            mi_json_raw(&b, ",\"piece_count\":");
+            mi_json_int(&b, t.piece_count);
+            mi_json_raw(&b, ",\"private\":");
+            mi_json_bool(&b, t.is_private);
+            mi_json_raw(&b, ",\"comment\":");
+            mi_json_string(&b, t.comment);
+            mi_json_raw(&b, ",\"created_by\":");
+            mi_json_string(&b, t.created_by);
+            mi_json_raw(&b, ",\"created_at\":");
+            mi_json_int(&b, t.created_at);
+            mi_json_raw(&b, ",\"magnet\":");
+            mi_json_string(&b, t.magnet);
+            mi_json_raw(&b, ",\"file_count\":");
+            mi_json_int(&b, (int64_t)t.file_count);
+            mi_json_raw(&b, ",\"files\":[");
+            for (size_t i = 0; i < t.file_count; i++) {
+                if (i) mi_json_raw(&b, ",");
+                mi_json_raw(&b, "{\"path\":");
+                mi_json_string(&b, t.files[i].path);
+                mi_json_raw(&b, ",\"bytes\":");
+                mi_json_int(&b, t.files[i].bytes);
+                mi_json_raw(&b, "}");
+            }
+            mi_json_raw(&b, "],\"tracker_count\":");
+            mi_json_int(&b, (int64_t)t.tracker_count);
+            mi_json_raw(&b, ",\"trackers\":[");
+            for (size_t i = 0; i < t.tracker_count; i++) {
+                if (i) mi_json_raw(&b, ",");
+                mi_json_string(&b, t.trackers[i]);
+            }
+            mi_json_raw(&b, "]}");
+            mi_torrent_free(&t);
+            send_json(fd, 200, "OK", &b, cors);
+            mi_json_free(&b);
+            mi_json_value_free(in);
+            return;
+        }
+
+        if (magnet && mi_torrent_is_magnet(magnet)) {
+            char hash[41];
+            char *name = mi_torrent_name_from_magnet(magnet);
+            mi_json_raw(&b, "{\"ok\":true,\"complete\":false,");
+            mi_json_key(&b, "name");
+            mi_json_string(&b, name);
+            mi_json_raw(&b, ",\"info_hash\":");
+            if (mi_torrent_hash_from_magnet(magnet, hash) == MI_OK) {
+                mi_json_string(&b, hash);
+            } else {
+                mi_json_string(&b, NULL);
+            }
+            mi_json_raw(&b, ",\"magnet\":");
+            mi_json_string(&b, magnet);
+            mi_json_raw(&b, ",\"file_count\":0,\"files\":[],"
+                            "\"tracker_count\":0,\"trackers\":[]}");
+            free(name);
+            send_json(fd, 200, "OK", &b, cors);
+            mi_json_free(&b);
+            mi_json_value_free(in);
+            return;
+        }
+
+        send_error(fd, 400, "Bad Request",
+                   "give 'base64' (a .torrent file) or 'magnet'", cors);
+        mi_json_free(&b);
         mi_json_value_free(in);
         return;
     }
@@ -4130,16 +4310,44 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
     if (!strcmp(req->path, "/api/v1/downloads") && !strcmp(req->method, "POST")) {
         mi_json *in = req->body ? mi_json_parse(req->body) : NULL;
         const char *url = mi_json_get_string(in, "url", NULL);
+        const char *torrent_file = mi_json_get_string(in, "torrent_file", NULL);
+        /*
+         * A `.torrent` the user opened is converted to a magnet, because a
+         * `.torrent` *is* the metadata: its info-hash and trackers name exactly
+         * the same content, and a magnet is the one shape the client and the
+         * record both already handle. So the two ways in converge here.
+         */
+        char *magnet_from_file = NULL;
+        if ((!url || !*url) && torrent_file && *torrent_file) {
+            mi_torrent t;
+            if (torrent_from_base64(torrent_file, &t) == MI_OK) {
+                magnet_from_file = t.magnet ? mi_strdup(t.magnet) : NULL;
+                if (!magnet_from_file && t.info_hash) {
+                    magnet_from_file =
+                        mi_torrent_build_magnet(t.info_hash, t.name, NULL, 0);
+                }
+                mi_torrent_free(&t);
+            }
+            url = magnet_from_file;
+        }
         if (!url || !*url) {
             send_error(fd, 400, "Bad Request", "missing or empty 'url'", cors);
+            free(magnet_from_file);
             mi_json_value_free(in);
             return;
         }
         mi_download_rec *j = download_new(url);
         if (!j) {
             send_error(fd, 500, "Internal Server Error", "out of memory", cors);
+            free(magnet_from_file);
             mi_json_value_free(in);
             return;
+        }
+        /* A `.torrent`-derived magnet is owned by the record's name field, so the
+         * console can say where the download came from. */
+        if (magnet_from_file) {
+            free(magnet_from_file);
+            magnet_from_file = NULL;
         }
         const char *hls = mi_json_get_string(in, "hls_dir", NULL);
         const char *prefix = mi_json_get_string(in, "prefix", NULL);
@@ -4149,6 +4357,23 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
          * particular download runs. */
         const char *quality = mi_json_get_string(in, "quality", NULL);
         if (quality) j->requested_quality = mi_strdup(quality);
+        /*
+         * Which files of the torrent to take, when the caller chose. The
+         * console sends 1-based indices from the `.torrent`'s own file list,
+         * which is exactly aria2's numbering.
+         */
+        const mi_json *mf = mi_json_get(in, "magnet_files");
+        if (mf && mf->type == MI_JSON_ARRAY && mf->count > 0) {
+            j->magnet_files = mi_calloc(mf->count, sizeof *j->magnet_files);
+            if (j->magnet_files) {
+                for (size_t i = 0; i < mf->count; i++) {
+                    const mi_json *el = mf->items[i];
+                    if (el && el->type == MI_JSON_NUMBER && el->number > 0) {
+                        j->magnet_files[j->magnet_file_count++] = (int)el->number;
+                    }
+                }
+            }
+        }
         j->do_hls = mi_json_get_bool(in, "hls", 1);
         j->do_upload = mi_json_get_bool(in, "upload", 0);
         j->do_purge = mi_json_get_bool(in, "purge", 0);

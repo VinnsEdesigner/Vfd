@@ -351,6 +351,60 @@ export interface ExtractEntry {
   durationSeconds: number;
   /** True when this entry is itself a playlist rather than a video. */
   isPlaylist: boolean;
+  /*
+   * The torrent fields, when the list came from a BitTorrent index.
+   *
+   * -1 means "not reported", which is not zero: a torrent with no seeders is
+   * dead, one whose seeders were not reported is merely unknown. A video list
+   * reports -1 throughout and `isTorrent` false.
+   */
+  seeders: number;
+  leechers: number;
+  /** Size in bytes, or -1 when not reported. */
+  bytes: number;
+  /** The size as the index shows it, e.g. "1.4 GB". */
+  sizeText: string | null;
+  category: string | null;
+  /** When it was posted, as the index shows it, e.g. "3 years ago". */
+  uploadedText: string | null;
+  /** The index page, which a magnet does not carry. */
+  pageUrl: string | null;
+  /** True when this entry is a magnet a BitTorrent client can fetch. */
+  isTorrent: boolean;
+}
+
+/** One file inside a torrent, as its metadata reports it. */
+export interface TorrentFile {
+  /** The path relative to the torrent's root, joined with '/'. */
+  path: string;
+  bytes: number;
+  /** The path's final segment, which is what a person reads. */
+  name: string;
+}
+
+/**
+ * What a torrent contains.
+ *
+ * `complete` is the honest distinction the UI is built around: a `.torrent` file
+ * *is* the metadata, so its file list is known and `complete` is true; a magnet
+ * names only the hash and the display name, so the file list is empty and
+ * `complete` is false until a client has fetched it from the swarm.
+ */
+export interface TorrentInfo {
+  complete: boolean;
+  name: string | null;
+  infoHash: string | null;
+  magnet: string | null;
+  totalBytes: number;
+  pieceLength: number;
+  pieceCount: number;
+  isPrivate: boolean;
+  comment: string | null;
+  createdBy: string | null;
+  /** Unix epoch seconds, 0 when the file did not say. */
+  createdAt: number;
+  files: TorrentFile[];
+  trackers: string[];
 }
 
 /** What the extractor found: a single item, or a list of them. */
@@ -373,6 +427,12 @@ export interface ExtractQuery {
   /** A page to resolve, or a term to search for. One of the two. */
   url?: string;
   search?: string;
+  /**
+   * A torrent index to search, e.g. "1337x".
+   *
+   * Only meaningful for a bare search (no URL) — a URL routes by its host.
+   */
+  site?: string;
   /** How many search results. */
   limit?: number;
   /** List a playlist or channel rather than resolve one item. */

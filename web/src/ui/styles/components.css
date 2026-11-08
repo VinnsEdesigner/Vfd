@@ -5303,3 +5303,136 @@ input[type='range']:focus-visible {
     grid-column: 2;
   }
 }
+
+/* ------------------------------ Torrents ------------------------------ */
+
+/* The index's own detail table. Fixed layout, so a long release name ellipsises
+   rather than forcing the card wider; the numeric columns stay narrow and
+   right-aligned so seeders line up and can be compared down the column. */
+.table--torrents tbody td {
+  padding: 11px 20px;
+}
+.tt__name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt__by {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.tt__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.tt__link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  text-decoration: none;
+}
+.tt__link:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.tt__link svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Seeders read as health: none is dead, few is slow, many is fast. Colour is
+   never the only signal — the number itself is the fact. */
+.tt__seeders {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.tt__seeders--ok {
+  color: var(--ok);
+  font-weight: 600;
+}
+.tt__seeders--low {
+  color: var(--warning);
+  font-weight: 600;
+}
+.tt__seeders--dead {
+  color: var(--state-fail-fg);
+}
+
+/* A file row in the picker: the name wraps, because a torrent path is long and
+   truncating it would hide which file it is. */
+.quality--files .quality__opt {
+  align-items: flex-start;
+}
+.quality__file {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  word-break: break-all;
+  line-height: 1.35;
+}
+.tt__picklabel {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.tt__trackers {
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 8px;
+}
+.tt__tracker {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+  padding: 3px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The .torrent drop target. */
+.tt__drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 26px 16px;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  text-align: center;
+}
+.tt__drop.is-dragging {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.tt__drop > svg {
+  width: 26px;
+  height: 26px;
+  color: var(--text-3);
+}
+.tt__droptext {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+.tt__fileinput {
+  display: none;
+}
+
+/* A hash is a long unbroken string; give it its own monospace line so it does
+   not push the key column out. */
+.kv__v--mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+}

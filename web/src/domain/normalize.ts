@@ -25,6 +25,7 @@ import {
   type CrawlResult,
   type ExtractResult,
   type LiveMessage,
+  type TorrentInfo,
 } from './browse';
 import type {
   WireBrowseResult,
@@ -40,6 +41,7 @@ import type {
   WireProbeResult,
   WireStorageConfig,
   WireLogResponse,
+  WireTorrentInfo,
 } from './wire';
 
 /** The host of a URL, for naming where a result came from. The domain's own
@@ -307,7 +309,57 @@ export function normalizeExtractResult(w: WireExtractResult): ExtractResult {
         durationSeconds:
           typeof e.duration_seconds === 'number' ? e.duration_seconds : -1,
         isPlaylist: Boolean(e.is_playlist),
+        // The torrent fields. -1 is "not reported", kept distinct from 0.
+        seeders: typeof e.seeders === 'number' ? e.seeders : -1,
+        leechers: typeof e.leechers === 'number' ? e.leechers : -1,
+        bytes: typeof e.bytes === 'number' ? e.bytes : -1,
+        sizeText: e.size_text && e.size_text.trim() ? e.size_text : null,
+        category: e.category && e.category.trim() ? e.category : null,
+        uploadedText: e.uploaded_text && e.uploaded_text.trim() ? e.uploaded_text : null,
+        pageUrl: e.page_url && e.page_url.trim() ? e.page_url : null,
+        isTorrent: Boolean(e.is_torrent),
       })),
+  };
+}
+
+/** The final path segment, which is the name a person reads. */
+function basename(path: string): string {
+  const i = path.lastIndexOf('/');
+  return i >= 0 ? path.slice(i + 1) : path;
+}
+
+/**
+ * What a torrent contains, from the inspect endpoint.
+ *
+ * The one field that matters is `complete`: a `.torrent` is the metadata so its
+ * file list is real, while a magnet names only a hash and a name. The UI is
+ * built to say which it has rather than to pretend a magnet's empty file list
+ * means an empty torrent.
+ */
+export function normalizeTorrentInfo(w: WireTorrentInfo): TorrentInfo {
+  const files = Array.isArray(w.files)
+    ? w.files
+        .filter((f) => f && typeof f.path === 'string' && f.path)
+        .map((f) => ({
+          path: f.path,
+          name: basename(f.path),
+          bytes: typeof f.bytes === 'number' ? f.bytes : -1,
+        }))
+    : [];
+  return {
+    complete: Boolean(w.complete),
+    name: w.name && w.name.trim() ? w.name : null,
+    infoHash: w.info_hash && w.info_hash.trim() ? w.info_hash : null,
+    magnet: w.magnet && w.magnet.trim() ? w.magnet : null,
+    totalBytes: typeof w.total_bytes === 'number' ? w.total_bytes : -1,
+    pieceLength: typeof w.piece_length === 'number' ? w.piece_length : 0,
+    pieceCount: typeof w.piece_count === 'number' ? w.piece_count : 0,
+    isPrivate: Boolean(w.private),
+    comment: w.comment && w.comment.trim() ? w.comment : null,
+    createdBy: w.created_by && w.created_by.trim() ? w.created_by : null,
+    createdAt: typeof w.created_at === 'number' ? w.created_at : 0,
+    files,
+    trackers: Array.isArray(w.trackers) ? w.trackers.filter(Boolean) : [],
   };
 }
 

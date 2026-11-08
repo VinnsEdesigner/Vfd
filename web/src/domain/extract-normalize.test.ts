@@ -6,11 +6,17 @@
  * quality per height is the same the crawl does, because the picker is the same
  * picker — a stream lists many variants of one size and showing them all is a
  * wall of near-duplicates.
+ *
+ * A *torrent* search is the same call with a different index, so its entries
+ * carry the index's own fields — seeders, leechers, size, category. The one
+ * distinction the normalizer must keep is -1 ("not reported") from 0 ("none"):
+ * a torrent with no seeders is dead, one whose seeders were not reported is
+ * merely unknown, and the UI says different things for each.
  */
 
 import { describe, expect, it } from 'vitest';
-import { normalizeExtractResult } from './normalize';
-import type { WireExtractResult } from './wire';
+import { normalizeExtractResult, normalizeTorrentInfo } from './normalize';
+import type { WireExtractResult, WireTorrentInfo } from './wire';
 
 function wire(patch: Partial<WireExtractResult> = {}): WireExtractResult {
   return {
@@ -108,5 +114,121 @@ describe('normalizeExtractResult', () => {
     const out = normalizeExtractResult(wire({ formats: undefined as never, entries: undefined as never }));
     expect(out.qualities).toEqual([]);
     expect(out.entries).toEqual([]);
+  });
+
+  it('carries a torrent entry\'s index fields, keeping -1 distinct from 0', () => {
+    const out = normalizeExtractResult(
+      wire({
+        entries: [
+          {
+            id: 'abc',
+            title: 'Ubuntu 24.04',
+            url: 'magnet:?xt=urn:btih:abc',
+            uploader: 'uploader',
+            thumbnail: null,
+            duration_seconds: -1,
+            is_playlist: false,
+            seeders: 0,
+            leechers: 12,
+            bytes: 1500000000,
+            category: 'Applications',
+            size_text: '1.4 GB',
+            uploaded_text: '3 years ago',
+            page_url: 'https://1337x.to/torrent/1/',
+            is_torrent: true,
+          },
+        ],
+      }),
+    );
+    const e = out.entries[0]!;
+    // Zero seeders is a fact — a dead torrent — and must survive as 0.
+    expect(e.seeders).toBe(0);
+    expect(e.leechers).toBe(12);
+    expect(e.bytes).toBe(1500000000);
+    expect(e.category).toBe('Applications');
+    expect(e.sizeText).toBe('1.4 GB');
+    expect(e.uploadedText).toBe('3 years ago');
+    expect(e.pageUrl).toBe('https://1337x.to/torrent/1/');
+    expect(e.isTorrent).toBe(true);
+  });
+
+  it('reads a video entry\'s missing torrent fields as -1, not 0', () => {
+    const out = normalizeExtractResult(
+      wire({
+        entries: [
+          {
+            id: 'v1',
+            title: 'A video',
+            url: 'https://example.com/watch',
+            uploader: null,
+            thumbnail: null,
+            duration_seconds: 100,
+            is_playlist: false,
+          },
+        ],
+      }),
+    );
+    const e = out.entries[0]!;
+    // "Not reported" must not read as "zero seeders" — a video has no seeders at
+    // all, which is different from a torrent with none.
+    expect(e.seeders).toBe(-1);
+    expect(e.leechers).toBe(-1);
+    expect(e.bytes).toBe(-1);
+    expect(e.isTorrent).toBe(false);
+    expect(e.category).toBeNull();
+  });
+});
+
+describe('normalizeTorrentInfo', () => {
+  function info(patch: Partial<WireTorrentInfo> = {}): WireTorrentInfo {
+    return { ok: true, complete: false, name: null, info_hash: null, magnet: null, ...patch };
+  }
+
+  it('reads a .torrent file\'s whole structure, with each file\'s basename', () => {
+    const out = normalizeTorrentInfo(
+      info({
+        complete: true,
+        name: 'My Torrent',
+        info_hash: 'abc123',
+        total_bytes: 2048,
+        piece_length: 16384,
+        piece_count: 2,
+        private: true,
+        comment: 'a comment',
+        created_by: 'mktorrent',
+        created_at: 1700000000,
+        files: [
+          { path: 'My Torrent/Season 1/ep1.mkv', bytes: 1024 },
+          { path: 'My Torrent/Season 1/ep2.mkv', bytes: 1024 },
+        ],
+        trackers: ['http://t.example/announce'],
+      }),
+    );
+    expect(out.complete).toBe(true);
+    expect(out.name).toBe('My Torrent');
+    expect(out.totalBytes).toBe(2048);
+    expect(out.pieceCount).toBe(2);
+    expect(out.isPrivate).toBe(true);
+    expect(out.files).toHaveLength(2);
+    // The name is the last path segment, which is what a person reads.
+    expect(out.files[0]!.name).toBe('ep1.mkv');
+    expect(out.files[0]!.path).toBe('My Torrent/Season 1/ep1.mkv');
+    expect(out.trackers).toEqual(['http://t.example/announce']);
+  });
+
+  it('reports a magnet as incomplete, with no files', () => {
+    const out = normalizeTorrentInfo(
+      info({
+        complete: false,
+        name: 'Ubuntu 24.04',
+        info_hash: '0123456789abcdef0123456789abcdef01234567',
+        magnet: 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567',
+      }),
+    );
+    expect(out.complete).toBe(false);
+    expect(out.files).toEqual([]);
+    expect(out.infoHash).toBe('0123456789abcdef0123456789abcdef01234567');
+    // The total is unknown for a magnet, not zero.
+    expect(out.totalBytes).toBe(-1);
   });
 });

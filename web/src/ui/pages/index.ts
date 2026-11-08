@@ -8,6 +8,8 @@ export { SiteSearch } from './SiteSearch';
 export type { SiteSearchProps, SiteSearchValue } from './SiteSearch';
 export { VideoSites } from './VideoSites';
 export type { VideoSitesProps, VideoSitesValue, VideoMode } from './VideoSites';
+export { Torrents } from './Torrents';
+export type { TorrentsProps, TorrentsValue, TorrentMode } from './Torrents';
 export { StoragePage, useStorageTab } from './StoragePage';
 export type { StoragePageProps, StorageTab, StorageCredentialsValue } from './StoragePage';
 export { SettingsPage } from './SettingsPage';

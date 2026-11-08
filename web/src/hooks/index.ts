@@ -34,7 +34,9 @@ export type { CrawlVariables } from './use-crawl';
 export type { CrawlHit, CrawlQuery, CrawlReport, CrawlResult } from '../domain/browse';
 export { useExtract } from './use-extract';
 export type { ExtractVariables } from './use-extract';
-export type { ExtractEntry, ExtractQuery, ExtractResult } from '../domain/browse';
+export type { ExtractEntry, ExtractQuery, ExtractResult, TorrentFile, TorrentInfo } from '../domain/browse';
+export { useTorrentInspect } from './use-torrent';
+export type { TorrentInspectVariables } from './use-torrent';
 /* The sites list is presentation data, but it is domain-shaped, so `ui` reaches
  * it through this layer like everything else. */
 export { KNOWN_SITES, accessLabel, canSearch } from '../domain/sites';

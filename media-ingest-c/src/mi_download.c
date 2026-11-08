@@ -1279,6 +1279,8 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->torrent_extractor_path = NULL;
     cfg->torrent_site = NULL;
     cfg->magnet_downloader_path = NULL;
+    cfg->magnet_files = NULL;
+    cfg->magnet_file_count = 0;
     cfg->cookies_text = NULL;
     cfg->cookies_from_browser = NULL;
     cfg->jar = NULL;
@@ -2002,6 +2004,24 @@ static int download_magnet(const mi_download_config *cfg, const char *magnet,
     if (cfg->proxy && *cfg->proxy) {
         argv[a++] = "--all-proxy";
         argv[a++] = cfg->proxy;
+    }
+    /*
+     * Which files to take, when the caller chose. aria2 takes a comma-separated
+     * list of 1-based indices; a caller that opened a `.torrent` knows the file
+     * list and can ask for one film rather than the whole season pack beside it.
+     */
+    char select_buf[256];
+    if (cfg->magnet_files && cfg->magnet_file_count > 0) {
+        size_t o = 0;
+        for (size_t i = 0; i < cfg->magnet_file_count && o < sizeof select_buf - 12; i++) {
+            if (cfg->magnet_files[i] <= 0) continue;
+            o += (size_t)snprintf(select_buf + o, sizeof select_buf - o, "%s%d",
+                                  o ? "," : "", cfg->magnet_files[i]);
+        }
+        if (o > 0) {
+            argv[a++] = "--select-file";
+            argv[a++] = select_buf;
+        }
     }
     argv[a++] = "--dir";
     argv[a++] = work;

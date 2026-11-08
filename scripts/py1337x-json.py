@@ -69,19 +69,76 @@ def _magnet_hash(magnet):
 
 
 def _entry_from_torrent(t):
-    """One py1337x torrent dict -> one yt-dlp-shaped entry."""
+    """One py1337x torrent dict -> one yt-dlp-shaped entry.
+
+    Carries the fields 1337x itself shows (seeders, leechers, size, category,
+    when it was posted) because they are what decides between two
+    identically-named torrents, and only the index knows them.
+    """
     magnet = t.get("MagnetLink") or ""
     title = t.get("title") or ""
+
+    def _int(*keys):
+        for k in keys:
+            v = t.get(k)
+            if v is None:
+                continue
+            try:
+                return int(str(v).replace(",", "").strip())
+            except (TypeError, ValueError):
+                continue
+        return -1
+
+    # py1337x reports the size in MB under `Total_size_in_MB`; keep both the
+    # number and the human string when the page gave one.
+    size_mb = t.get("Total_size_in_MB")
+    size_bytes = -1
+    size_text = None
+    try:
+        if size_mb is not None:
+            size_bytes = int(float(size_mb) * 1024 * 1024)
+            size_text = t.get("Total size")
+    except (TypeError, ValueError):
+        pass
+
     entry = {
         "id": _magnet_hash(magnet) or None,
         "title": title or None,
         # The magnet, because that is what the download path fetches.
         "url": magnet or None,
-        "uploader": None,
+        "uploader": t.get("Uploader") or None,
         "duration": None,
         "thumbnail": None,
+        # The 1337x detail fields.
+        "seeders": _int("Seeders", "seeders"),
+        "leechers": _int("Leechers", "leechers"),
+        "bytes": size_bytes,
+        "size_text": size_text,
+        "category": t.get("Category") or t.get("Type") or None,
+        "uploaded_text": t.get("Uploaded") or t.get("Date uploaded") or None,
+        "page_url": t.get("_page_url") or None,
+        "is_torrent": 1 if magnet else 0,
     }
     return entry
+
+
+def _patch_page_url(api):
+    """Make the library record each torrent's own page URL.
+
+    py1337x resolves a torrent's page internally but keeps only its fields, so
+    the link back to the index is lost. The console wants it — "open on 1337x"
+    is how a person checks a torrent's comments before downloading — so the
+    method is wrapped to stash the path it fetched under `_page_url`.
+    """
+    original = api.get_torrent_data
+
+    def get_torrent_data(page_link, *a, **kw):
+        data = original(page_link, *a, **kw)
+        if isinstance(data, dict) and page_link:
+            data["_page_url"] = "https://1337x.to" + page_link
+        return data
+
+    api.get_torrent_data = get_torrent_data
 
 
 def _search(api, term, limit, site):
@@ -164,6 +221,7 @@ def main(argv):
 
     limit = max(1, min(args.limit, MAX_LIMIT))
     api = Py1337x()
+    _patch_page_url(api)
 
     try:
         if args.query.startswith("http://") or args.query.startswith("https://"):

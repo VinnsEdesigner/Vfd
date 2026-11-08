@@ -274,6 +274,17 @@ export interface EgressUpdate {
 /** Requests the data layer accepts (already domain-shaped). */
 export interface CreateDownloadInput {
   url: string;
+  /**
+   * A `.torrent` file, base64, instead of a URL. The server converts it to a
+   * magnet — a `.torrent` is the metadata — so both ways in download the same
+   * content.
+   */
+  torrentFile?: string;
+  /**
+   * Which files of a torrent to fetch, 1-based indices into its own file list.
+   * Absent means the whole torrent.
+   */
+  magnetFiles?: number[];
   /** Chosen format label, e.g. "1080p" / "Source". */
   quality?: string;
   hls: boolean;

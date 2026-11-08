@@ -41,7 +41,7 @@ Detection reads the bytes, never the extension or `Content-Type`.
 
 | Route | Method | Body / query | Returns |
 |---|---|---|---|
-| `/api/v1/downloads` | POST | `{url, hls, upload, purge, connections, quality, hls_dir, prefix, allow_non_media}` | `202` with the new record |
+| `/api/v1/downloads` | POST | `{url, hls, upload, purge, connections, quality, hls_dir, prefix, allow_non_media}`, or a torrent: `{torrent_file}` (base64) and/or `{magnet_files:[1,3]}` | `202` with the new record |
 | `/api/v1/downloads` | GET | — | `{items: [...]}` |
 | `/api/v1/downloads/{id}` | GET | — | the record |
 | `/api/v1/downloads/{id}` | PATCH | `{"action":"pause"}` or `{"action":"resume"}` or `{"action":"convert"}` | the record |
@@ -61,16 +61,35 @@ A download is a job, not a blocking call: it returns `202` and the client polls.
 This is different from a crawl or an extract, which run to completion in the
 request.
 
+A **magnet** `url` is fetched by aria2 instead of HTTP. A `torrent_file` is
+base64 `.torrent` bytes; the server converts it to a magnet (a `.torrent` *is*
+the metadata, so the content is identical) and downloads that. `magnet_files` is
+a list of 1-based indices into the torrent's own file list — the same numbering
+`torrent/inspect` reports — and is passed to aria2 as `--select-file`, so only
+the chosen files are fetched.
+
 ## Resolution and browsing
 
 | Route | Method | Body | Returns |
 |---|---|---|---|
-| `/api/v1/extract` | POST | `{url}` or `{search, limit}`, plus `timeout_seconds`, `enumerate`, `playlist_items`, `match_filter`, `date_after`, `date_before`, `extractor_args` | title, extractor, duration, thumbnail, formats, entries |
+| `/api/v1/extract` | POST | `{url}` or `{search, limit, site}`, plus `timeout_seconds`, `enumerate`, `playlist_items`, `match_filter`, `date_after`, `date_before`, `extractor_args` | title, extractor, duration, thumbnail, formats, entries |
 | `/api/v1/extract-rows` | POST | `{url, selector?}` | rows read from a table on a page |
+| `/api/v1/torrent/inspect` | POST | `{base64}` (a `.torrent`) or `{magnet}` | name, info-hash, file list, trackers, piece size |
 | `/api/v1/browse` | POST | `{url, filter}` | the media a page or directory offers (`filter: media` or `all`) |
 
-`extract` asks yt-dlp (video) or gallery-dl (images) — chosen by host — and never
-downloads. A playlist or channel returns `entries[]` instead of `formats[]`.
+`extract` asks yt-dlp (video), gallery-dl (images) or py1337x (torrents) —
+chosen by host, or by `site` for a bare search. It never downloads. A playlist,
+channel or torrent search returns `entries[]` instead of `formats[]`; a torrent
+entry carries the index's own fields (`seeders`, `leechers`, `bytes`,
+`size_text`, `category`, `uploaded_text`, `page_url`, `is_torrent`), and its
+`url` is the magnet link.
+
+`torrent/inspect` reads what a torrent *contains* before it is downloaded.
+`complete` is the honest distinction: a `.torrent` file **is** the metadata, so
+its `files[]`, `piece_length` and `trackers[]` are real and `complete` is true; a
+magnet names only the info-hash and the display name, so `files[]` is empty and
+`complete` is false until a client fetches the metadata from the swarm. See
+[media-pipeline.md](media-pipeline.md#torrents).
 
 ## Crawl
 

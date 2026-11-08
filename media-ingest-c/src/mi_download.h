@@ -107,6 +107,20 @@ typedef struct {
      */
     const char *magnet_downloader_path;
     /*
+     * Which files of a torrent to fetch, 1-based, or NULL for all of them.
+     *
+     * A torrent is often a *set*: a film and its subtitles, or several
+     * renditions. Fetching all of it to get one file wastes the difference, so
+     * a caller that knows the file list (from a `.torrent`, whose metadata is
+     * the file itself) can name the ones it wants and the client takes only
+     * those. Indices are aria2's own numbering, which is 1-based and matches the
+     * order in the torrent's `files` list.
+     *
+     * NULL or a count of 0 means the whole torrent.
+     */
+    const int *magnet_files;
+    size_t magnet_file_count;
+    /*
      * Cookies for a site that refuses an anonymous request.
      *
      * Netscape format, as a browser export gives. Two consumers need them and in

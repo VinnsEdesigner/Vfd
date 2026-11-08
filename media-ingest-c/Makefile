@@ -30,6 +30,7 @@ LIB_SRC := $(SRC_DIR)/mi_util.c $(SRC_DIR)/mi_detect.c \
            $(SRC_DIR)/mi_session.c $(SRC_DIR)/mi_linkcheck.c $(SRC_DIR)/mi_search.c \
            $(SRC_DIR)/mi_lang.c $(SRC_DIR)/mi_captcha_inject.c \
            $(SRC_DIR)/mi_extract_rows.c \
+           $(SRC_DIR)/mi_torrent.c \
            $(SRC_DIR)/mi_frontier.c \
            $(SRC_DIR)/mi_server.c
 CLI_SRC := $(SRC_DIR)/mi_cli.c
@@ -69,6 +70,7 @@ TEST_HTML5_SRC := tests/test_html5.c
 TEST_CSS_SRC := tests/test_css.c
 TEST_XPATH_SRC := tests/test_xpath.c
 TEST_EXTRACT_ROWS_SRC := tests/test_extract_rows.c
+TEST_TORRENT_SRC := tests/test_torrent.c
 
 .PHONY: all clean test
 
@@ -188,7 +190,11 @@ $(BUILD)/test_xpath: $(LIB_SRC) $(TEST_XPATH_SRC) | $(BUILD)
 $(BUILD)/test_extract_rows: $(LIB_SRC) $(TEST_EXTRACT_ROWS_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_EXTRACT_ROWS_SRC) $(LDLIBS)
 
-test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate $(BUILD)/test_antibot $(BUILD)/test_browser_headers $(BUILD)/test_politeness $(BUILD)/test_condget $(BUILD)/test_html $(BUILD)/test_charset $(BUILD)/test_structured $(BUILD)/test_sitemap $(BUILD)/test_fingerprint $(BUILD)/test_cookiejar $(BUILD)/test_form $(BUILD)/test_session $(BUILD)/test_linkcheck $(BUILD)/test_search $(BUILD)/test_lang $(BUILD)/test_captcha_inject $(BUILD)/test_html5 $(BUILD)/test_css $(BUILD)/test_xpath $(BUILD)/test_extract_rows
+
+$(BUILD)/test_torrent: $(LIB_SRC) $(TEST_TORRENT_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(LIB_SRC) $(TEST_TORRENT_SRC) $(LDLIBS)
+
+test: $(BUILD)/test_media_ingest $(BUILD)/test_server $(BUILD)/test_render $(BUILD)/test_cache $(BUILD)/test_sanitize $(BUILD)/test_ws $(BUILD)/test_interactive $(BUILD)/test_identify $(BUILD)/test_outbox $(BUILD)/test_rtc $(BUILD)/test_crawl $(BUILD)/test_extract $(BUILD)/test_identity $(BUILD)/test_captcha $(BUILD)/test_frontier $(BUILD)/test_impersonate $(BUILD)/test_antibot $(BUILD)/test_browser_headers $(BUILD)/test_politeness $(BUILD)/test_condget $(BUILD)/test_html $(BUILD)/test_charset $(BUILD)/test_structured $(BUILD)/test_sitemap $(BUILD)/test_fingerprint $(BUILD)/test_cookiejar $(BUILD)/test_form $(BUILD)/test_session $(BUILD)/test_linkcheck $(BUILD)/test_search $(BUILD)/test_lang $(BUILD)/test_captcha_inject $(BUILD)/test_html5 $(BUILD)/test_css $(BUILD)/test_xpath $(BUILD)/test_extract_rows $(BUILD)/test_torrent
 	$(BUILD)/test_media_ingest
 	$(BUILD)/test_server
 	$(BUILD)/test_render

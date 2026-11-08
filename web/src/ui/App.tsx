@@ -44,6 +44,7 @@ import {
   IngestSkeleton,
   type SiteSearchValue,
   type VideoSitesValue,
+  type TorrentsValue,
 } from './pages';
 import {
   useDownloads,
@@ -62,6 +63,8 @@ import {
   useExtract,
   type ExtractEntry,
   type ExtractResult,
+  useTorrentInspect,
+  type TorrentInfo,
   useLiveVideo,
   useSetStorageLocation,
   useEgressSettings,
@@ -232,6 +235,22 @@ function persistBrowse(value: BrowseMemory): void {
 export interface AppProps {
   /** Optional initial view; useful for tests and deep links. */
   initialView?: ViewId;
+}
+
+/**
+ * A byte array as base64, for a `.torrent` sent to the server.
+ *
+ * `btoa` takes a binary string, so the bytes are chunked to avoid the argument
+ * limit on a large file and to keep the stack shallow. A `.torrent` is small
+ * (tens of KB) but the same helper is honest about the general case.
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
 }
 
 /** Turns a thrown transport/API error into something a user can act on. */
@@ -1107,6 +1126,152 @@ export function App({ initialView = 'overview' }: AppProps) {
     (entry: ExtractEntry) => void downloadVideo(entry.url, entry.title),
     [downloadVideo],
   );
+
+  /*
+   * Torrents: search an index, or open a magnet / .torrent.
+   *
+   * A torrent index is a search box, so a search is the *extractor* asked with a
+   * bare term and a site — the same call a video search is, which is why there is
+   * no separate search request. Opening a magnet or a `.torrent` is its own
+   * request (`/api/v1/torrent/inspect`), because it reads metadata rather than
+   * searching. The state lives here so leaving the tab does not lose it.
+   */
+  const torrentInspect = useTorrentInspect();
+  const [torrents, setTorrents] = useState<TorrentsValue>({
+    term: '',
+    limit: 10,
+    magnet: '',
+  });
+  const [torrentResult, setTorrentResult] = useState<ExtractResult | null>(null);
+  const [torrentError, setTorrentError] = useState<string | null>(null);
+  const [torrentQueueing, setTorrentQueueing] = useState<string | null>(null);
+  const [torrentInfo, setTorrentInfo] = useState<TorrentInfo | null>(null);
+  const [torrentInspectError, setTorrentInspectError] = useState<string | null>(null);
+  const torrentAbortRef = useRef<AbortController | null>(null);
+
+  /** Search the torrent index by name. */
+  const runTorrentSearch = useCallback(async () => {
+    setTorrentError(null);
+    setTorrentResult(null);
+    const controller = new AbortController();
+    torrentAbortRef.current = controller;
+    try {
+      const result = await extract.mutateAsync({
+        search: torrents.term.trim(),
+        site: '1337x',
+        limit: torrents.limit,
+        signal: controller.signal,
+      });
+      setTorrentResult(result);
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        setTorrentError(describeError(e));
+        setTorrentResult(null);
+      }
+    } finally {
+      torrentAbortRef.current = null;
+    }
+  }, [extract, torrents.term, torrents.limit]);
+
+  const stopTorrentSearch = useCallback(() => {
+    torrentAbortRef.current?.abort();
+    torrentAbortRef.current = null;
+  }, []);
+
+  /** Read a magnet's metadata — its hash and name. */
+  const inspectTorrentMagnet = useCallback(
+    async (magnet: string) => {
+      if (!magnet) return;
+      setTorrentInspectError(null);
+      setTorrentInfo(null);
+      try {
+        const info = await torrentInspect.mutateAsync({ magnet });
+        setTorrentInfo(info);
+      } catch (e) {
+        setTorrentInspectError(describeError(e));
+      }
+    },
+    [torrentInspect],
+  );
+
+  /**
+   * Read a `.torrent` file the user opened.
+   *
+   * The bytes go to the server base64-encoded, because a `.torrent` *is* the
+   * metadata: everything inside it — every file, its size, the trackers — is
+   * known without a network round trip to a swarm.
+   */
+  const openTorrentFile = useCallback(
+    async (file: File) => {
+      setTorrentInspectError(null);
+      setTorrentInfo(null);
+      try {
+        const buf = await file.arrayBuffer();
+        const base64 = bytesToBase64(new Uint8Array(buf));
+        const info = await torrentInspect.mutateAsync({ base64 });
+        setTorrentInfo(info);
+      } catch (e) {
+        setTorrentInspectError(describeError(e));
+      }
+    },
+    [torrentInspect],
+  );
+
+  const clearTorrentInspect = useCallback(() => {
+    setTorrentInfo(null);
+    setTorrentInspectError(null);
+  }, []);
+
+  /**
+   * Download a torrent — a magnet, with a chosen file selection when one was made.
+   *
+   * The file indices are 1-based into the torrent's own list, which is what the
+   * server passes to aria2's `--select-file`. Absent means the whole torrent.
+   */
+  const downloadTorrent = useCallback(
+    async (opts: { magnet: string; name: string; files?: number[] }) => {
+      if (!opts.magnet) return;
+      setTorrentQueueing(opts.magnet);
+      try {
+        await createDownload.mutateAsync({
+          input: {
+            url: opts.magnet,
+            connections: draft.connections,
+            hls: draft.hls,
+            upload: draft.upload,
+            purge: draft.purge,
+            durationSeconds: draft.durationSeconds,
+            // A torrent's payload is media but is not at the URL, so the
+            // detector's refusal must not pre-empt the client.
+            allowNonMedia: true,
+            ...(opts.files && opts.files.length > 0 ? { magnetFiles: opts.files } : {}),
+          },
+        });
+        toast.success(
+          'Torrent queued',
+          opts.files && opts.files.length > 0
+            ? `${opts.files.length} file${opts.files.length === 1 ? '' : 's'} from ${opts.name}`
+            : opts.name,
+        );
+      } catch (e) {
+        toast.error('Could not queue that torrent', describeError(e));
+      } finally {
+        setTorrentQueueing(null);
+      }
+    },
+    [createDownload, draft, toast],
+  );
+
+  /** Download a search result at its whole torrent. */
+  const downloadTorrentEntry = useCallback(
+    (entry: ExtractEntry) => {
+      void downloadTorrent({
+        magnet: entry.url,
+        name: entry.title,
+      });
+    },
+    [downloadTorrent],
+  );
   const [siteSearch, setSiteSearch] = useState<SiteSearchValue>({
     url: '',
     term: '',
@@ -1816,6 +1981,25 @@ export function App({ initialView = 'overview' }: AppProps) {
               onResolve: (entry) => void resolveVideoEntry(entry),
               onDownload: (url, title, height) => void downloadVideo(url, title, height),
               onDownloadEntry: downloadVideoEntry,
+            }}
+            torrents={{
+              value: torrents,
+              onChange: setTorrents,
+              result: torrentResult,
+              running: extract.isPending,
+              error: torrentError,
+              available: Boolean(capabilities?.extract?.available),
+              queueingUrl: torrentQueueing,
+              onSearch: () => void runTorrentSearch(),
+              onStop: stopTorrentSearch,
+              onDownloadEntry: downloadTorrentEntry,
+              inspected: torrentInfo,
+              inspecting: torrentInspect.isPending,
+              inspectError: torrentInspectError,
+              onInspectMagnet: (magnet) => void inspectTorrentMagnet(magnet),
+              onOpenTorrentFile: (file) => void openTorrentFile(file),
+              onClearInspect: clearTorrentInspect,
+              onDownloadTorrent: (opts) => void downloadTorrent(opts),
             }}
             onStart={() => void beginDownload()}
           />

@@ -86,7 +86,31 @@ Two tools do the two halves:
 
 Routing is by host: a `1337x` URL goes to the torrent extractor automatically. A
 **bare search** — "find this on the index" — has no host to go on, so it is only
-routed when `torrent_site` is configured (`MI_TORRENT_SITE`).
+routed when `torrent_site` is configured (`MI_TORRENT_SITE`) or the request names
+a `site`.
+
+### In the console
+
+The torrent feature is its own tab on **New download**, with three ways in:
+
+- **Search by name** — type a release name and the index is searched. Results are
+  a table of the index's own columns: name, seeders, leechers, size, category and
+  when it was posted. Seeders are tinted by health (green well-seeded, amber
+  thin, red dead), but the number is the fact — colour is never the only signal.
+- **Paste a magnet** — a magnet names a hash and a name and nothing else, so the
+  console shows exactly that and says the file list arrives with the download.
+- **Open a .torrent** — a `.torrent` file *is* the metadata, so opening one shows
+  everything inside it: every file with its size, the piece length and count, the
+  trackers, the info-hash, the private flag and the creator.
+
+The detail panel reuses the **quality picker** for the file list (`variant="file"`):
+each row is a file and its size, and any subset can be selected. The chosen
+1-based indices are sent as `magnet_files` and become aria2's `--select-file`, so
+taking one episode out of a season pack fetches only that episode.
+
+Both a magnet and a `.torrent` end at the same place — a magnet the client
+fetches — because a `.torrent` is converted to one server-side. That keeps the
+download path single-shaped.
 
 **1337x sits behind Cloudflare**, and answers a datacenter address with a JS
 challenge (HTTP 403, "Just a moment…") that no client clears — not plain
@@ -95,7 +119,8 @@ wrapper routes its requests through `curl_cffi`'s browser fingerprint, which is
 strictly better than plain requests but is not a guarantee. On such a host a
 torrent search returns **zero results with no error**, which is why the crawl
 reports `pages_failed`/`blocked` rather than claiming the index is empty. A
-residential or proxied egress is what actually fixes it.
+residential or proxied egress is what actually fixes it. Opening a magnet or a
+`.torrent` does not touch the index, so those work regardless.
 
 ## HLS ladder (transcode)
 

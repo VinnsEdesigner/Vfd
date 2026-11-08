@@ -87,6 +87,10 @@ void mi_extract_result_free(mi_extract_result *res) {
         free(res->entries[i].url);
         free(res->entries[i].uploader);
         free(res->entries[i].thumbnail);
+        free(res->entries[i].category);
+        free(res->entries[i].size_text);
+        free(res->entries[i].uploaded_text);
+        free(res->entries[i].page_url);
     }
     free(res->entries);
     memset(res, 0, sizeof *res);
@@ -1141,12 +1145,30 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
                 if (eu && *eu) dst->url = mi_strdup(eu);
                 const char *etype = mi_json_get_string(e, "_type", NULL);
                 dst->is_playlist = etype && strcmp(etype, "url") != 0;
+                /*
+                 * The torrent fields, when this list came from an index. Absent
+                 * on a video list, which is why they default to -1 ("not
+                 * reported") rather than 0 — a torrent with no seeders is dead
+                 * and one whose seeders were not reported is merely unknown.
+                 */
+                dst->seeders = (int64_t)mi_json_get_number(e, "seeders", -1);
+                dst->leechers = (int64_t)mi_json_get_number(e, "leechers", -1);
+                dst->bytes = (int64_t)mi_json_get_number(e, "bytes", -1);
+                dst->category = dup_string(e, "category");
+                dst->size_text = dup_string(e, "size_text");
+                dst->uploaded_text = dup_string(e, "uploaded_text");
+                dst->page_url = dup_string(e, "page_url");
+                dst->is_torrent = mi_json_get_bool(e, "is_torrent", 0);
                 /* An entry with no title and no id is not something to offer. */
                 if (!dst->title && !dst->id) {
                     free(dst->id);
                     free(dst->url);
                     free(dst->uploader);
                     free(dst->thumbnail);
+                    free(dst->category);
+                    free(dst->size_text);
+                    free(dst->uploaded_text);
+                    free(dst->page_url);
                     continue;
                 }
                 out->entry_count++;

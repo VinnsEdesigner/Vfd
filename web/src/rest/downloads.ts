@@ -59,6 +59,10 @@ function toWireRequest(input: CreateDownloadInput): WireCreateDownloadRequest {
   if (input.quality) req.quality = input.quality;
   if (input.prefix) req.prefix = input.prefix;
   if (input.hlsDir) req.hls_dir = input.hlsDir;
+  // A `.torrent` file, or a file selection within a torrent. Either way the
+  // server turns it into a magnet the client can fetch.
+  if (input.torrentFile) req.torrent_file = input.torrentFile;
+  if (input.magnetFiles && input.magnetFiles.length > 0) req.magnet_files = input.magnetFiles;
   return req;
 }
 

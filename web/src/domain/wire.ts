@@ -215,6 +215,64 @@ export interface WireExtractEntry {
   duration_seconds: number;
   /** True when this entry is itself a playlist rather than a video. */
   is_playlist: boolean;
+  /*
+   * The torrent fields, absent on a video list.
+   *
+   * -1 means "the index did not say", which is not the same as 0: a torrent with
+   * no seeders is dead, one whose seeders were not reported is merely unknown.
+   */
+  seeders?: number;
+  leechers?: number;
+  bytes?: number;
+  category?: string | null;
+  /** The size as shown, e.g. "1.4 GB". */
+  size_text?: string | null;
+  /** When it was posted, as shown, e.g. "3 years ago". */
+  uploaded_text?: string | null;
+  /** The index page, which a magnet does not carry. */
+  page_url?: string | null;
+  /** True when this entry is a magnet a client can fetch directly. */
+  is_torrent?: boolean;
+}
+
+/** One file inside a torrent, as the metadata reports it. */
+export interface WireTorrentFile {
+  path: string;
+  bytes: number;
+}
+
+/**
+ * What a torrent contains, from `POST /api/v1/torrent/inspect`.
+ *
+ * `complete` distinguishes the two answers: a `.torrent` file *is* the metadata,
+ * so its file list is here and `complete` is true; a magnet names only the hash
+ * and the name, so the list is empty and `complete` is false.
+ */
+export interface WireTorrentInfo {
+  ok: boolean;
+  complete: boolean;
+  name: string | null;
+  info_hash: string | null;
+  magnet: string | null;
+  total_bytes?: number;
+  piece_length?: number;
+  piece_count?: number;
+  private?: boolean;
+  comment?: string | null;
+  created_by?: string | null;
+  /** Unix epoch seconds, 0 when the file did not say. */
+  created_at?: number;
+  file_count?: number;
+  files?: WireTorrentFile[];
+  tracker_count?: number;
+  trackers?: string[];
+}
+
+export interface WireTorrentInspectRequest {
+  /** The bytes of a `.torrent`, base64. */
+  base64?: string;
+  /** A magnet link, when there is no file. */
+  magnet?: string;
 }
 
 export interface WireExtractResult {
@@ -239,6 +297,13 @@ export interface WireExtractRequest {
   url?: string;
   /** A term to search for. Omit when resolving a URL. */
   search?: string;
+  /**
+   * A torrent index to search, e.g. "1337x".
+   *
+   * Only meaningful for a bare search (no URL): a URL routes by its host. The
+   * server falls back to its own configured site when this is absent.
+   */
+  site?: string;
   /** How many search results. */
   limit?: number;
   /** List a playlist or channel instead of resolving one item. */
@@ -448,6 +513,19 @@ export interface WireActionRequest {
 
 export interface WireCreateDownloadRequest {
   url: string;
+  /**
+   * A `.torrent` file, base64, instead of a URL.
+   *
+   * A `.torrent` is the metadata, so the server converts it to a magnet and
+   * downloads the same content; the two ways in converge there. Mutually
+   * exclusive with `url`.
+   */
+  torrent_file?: string;
+  /**
+   * Which files of a torrent to fetch, 1-based indices into its own file list.
+   * Absent means the whole torrent.
+   */
+  magnet_files?: number[];
   /** Chosen format label, e.g. "1080p". Recorded for display. */
   quality?: string;
   hls?: boolean;

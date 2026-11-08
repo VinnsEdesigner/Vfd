@@ -46,6 +46,12 @@ export function createExtractResource(client: ApiClient): ExtractResource {
       const body: WireExtractRequest = {};
       if (query.url) body.url = query.url;
       if (query.search) body.search = query.search;
+      /*
+       * The index to search, for a torrent search with no URL. A URL routes by
+       * its host, so this only matters for a bare term — which is exactly the
+       * "just enter the filename" case.
+       */
+      if (query.site) body.site = query.site;
       if (query.limit !== undefined) body.limit = query.limit;
       if (query.enumerate) body.enumerate = true;
       /*

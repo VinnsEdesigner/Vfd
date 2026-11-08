@@ -18,6 +18,7 @@ import { createDownloadsResource, type DownloadsResource } from './downloads';
 import { createMediaResource, type MediaResource } from './media';
 import { createCrawlResource, type CrawlResource } from './crawl';
 import { createExtractResource, type ExtractResource } from './extract';
+import { createTorrentResource, type TorrentResource } from './torrent';
 import { createSystemResource, type SystemResource } from './system';
 
 export interface RestApi {
@@ -29,6 +30,8 @@ export interface RestApi {
   crawl: CrawlResource;
   /** Resolve a page, search by name, or list a channel. */
   extract: ExtractResource;
+  /** Read what a magnet or a `.torrent` file contains. */
+  torrent: TorrentResource;
   /** List the media a page or directory offers, via Vyzor. */
   browse: BrowseResource;
   /** Show a page itself, via Vyzor, when the site allows framing. */
@@ -50,6 +53,7 @@ export function createRestApi(config: TransportConfig): RestApi {
     system: createSystemResource(client),
     crawl: createCrawlResource(client),
     extract: createExtractResource(client),
+    torrent: createTorrentResource(client),
     browse: createBrowseResource(client),
     page: createPageResource(client),
     render: createRenderResource(client),
@@ -66,4 +70,5 @@ export type { DownloadsResource } from './downloads';
 export type { MediaResource } from './media';
 export type { CrawlResource } from './crawl';
 export type { ExtractResource } from './extract';
+export type { TorrentResource } from './torrent';
 export type { SystemResource } from './system';

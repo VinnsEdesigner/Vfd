@@ -30,6 +30,8 @@ import { SiteSearch } from './SiteSearch';
 import type { SiteSearchProps } from './SiteSearch';
 import { VideoSites } from './VideoSites';
 import type { VideoSitesProps } from './VideoSites';
+import { Torrents } from './Torrents';
+import type { TorrentsProps } from './Torrents';
 import type { QualityOption } from '../../hooks/view-models';
 
 export interface IngestFormValue {
@@ -77,6 +79,8 @@ export interface NewIngestPageProps {
   siteSearch: SiteSearchProps;
   /** The video-site feature, passed in whole for the same reason. */
   videoSites: VideoSitesProps;
+  /** The torrent feature, passed in whole for the same reason. */
+  torrents: TorrentsProps;
 }
 
 export function NewIngestPage(props: NewIngestPageProps) {
@@ -91,6 +95,7 @@ export function NewIngestPage(props: NewIngestPageProps) {
     onSelectQuality,
     siteSearch,
     videoSites,
+    torrents,
   } = props;
   const set = (patch: Partial<IngestFormValue>) => onChange({ ...value, ...patch });
 
@@ -100,7 +105,7 @@ export function NewIngestPage(props: NewIngestPageProps) {
    * Local state, not lifted: it is a view choice with no meaning outside this
    * page, and nothing else needs to know which tab is showing.
    */
-  const [mode, setMode] = useState<'source' | 'site' | 'video'>('source');
+  const [mode, setMode] = useState<'source' | 'site' | 'video' | 'torrent'>('source');
 
   if (mode === 'site') {
     return (
@@ -116,6 +121,15 @@ export function NewIngestPage(props: NewIngestPageProps) {
       <>
         <ModeTabs mode={mode} onChange={setMode} />
         <VideoSites {...videoSites} />
+      </>
+    );
+  }
+
+  if (mode === 'torrent') {
+    return (
+      <>
+        <ModeTabs mode={mode} onChange={setMode} />
+        <Torrents {...torrents} />
       </>
     );
   }
@@ -251,8 +265,8 @@ function ModeTabs({
   mode,
   onChange,
 }: {
-  mode: 'source' | 'site' | 'video';
-  onChange: (mode: 'source' | 'site' | 'video') => void;
+  mode: 'source' | 'site' | 'video' | 'torrent';
+  onChange: (mode: 'source' | 'site' | 'video' | 'torrent') => void;
 }) {
   return (
     <div className="browse__modes" role="group" aria-label="How to start a download">
@@ -279,6 +293,14 @@ function ModeTabs({
         onClick={() => onChange('video')}
       >
         Find a video
+      </button>
+      <button
+        type="button"
+        className={mode === 'torrent' ? 'browse__mode is-active' : 'browse__mode'}
+        aria-pressed={mode === 'torrent'}
+        onClick={() => onChange('torrent')}
+      >
+        Find a torrent
       </button>
     </div>
   );
