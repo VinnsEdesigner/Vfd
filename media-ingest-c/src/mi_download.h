@@ -91,6 +91,21 @@ typedef struct {
     const char *extractor_path;
     /* The gallery extractor's binary; NULL uses "gallery-dl" from PATH. */
     const char *gallery_extractor_path;
+    /* The torrent extractor's binary; NULL uses "py1337x" from PATH. */
+    const char *torrent_extractor_path;
+    /* A BitTorrent index to search, e.g. "1337x"; NULL uses the default. */
+    const char *torrent_site;
+    /*
+     * The BitTorrent downloader binary, for a magnet link; NULL uses "aria2c"
+     * from PATH.
+     *
+     * A magnet is not a file and not a manifest: it names a swarm, and the bytes
+     * arrive from peers. No HTTP client can fetch it, so it is handed to a
+     * BitTorrent client — the same division of labour as ffmpeg for a manifest
+     * and yt-dlp for a page. aria2c is the one that is a single static binary
+     * with a magnet on its command line, so it is the default.
+     */
+    const char *magnet_downloader_path;
     /*
      * Cookies for a site that refuses an anonymous request.
      *

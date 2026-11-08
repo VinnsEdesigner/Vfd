@@ -692,6 +692,8 @@ static void offer_extracted(const mi_browse_config *cfg, const char *url,
     mi_extract_config_init(&ecfg);
     ecfg.binary = cfg->extractor_path;
     ecfg.gallery_binary = cfg->gallery_extractor_path;
+    ecfg.torrent_binary = cfg->torrent_extractor_path;
+    ecfg.torrent_site = cfg->torrent_site;
     ecfg.cookies_text = cfg->cookies_text;
     ecfg.cookies_from_browser = cfg->cookies_from_browser;
     ecfg.proxy = cfg->proxy;

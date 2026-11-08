@@ -115,16 +115,25 @@ console does it, so a credential is never written to a config file. See
 
 ## Extractors
 
-Vyzor finds `yt-dlp` (video) and `gallery-dl` (images) **by name on `PATH`**;
-there is no flag for the path. Whichever binary is first on `PATH` is the one
-used, which is why a run started by `server.sh` puts the workspace venv in front
-of `PATH` before exec'ing Vyzor.
+Vyzor finds `yt-dlp` (video), `gallery-dl` (images) and `py1337x` (torrents)
+**by name on `PATH`**; there is no flag for the path. Whichever binary is first on
+`PATH` is the one used, which is why a run started by `server.sh` puts the
+workspace venv in front of `PATH` before exec'ing Vyzor.
+
+`py1337x` is the one exception to "the tool is a CLI": it is a Python *library*,
+so the name on `PATH` is the wrapper `scripts/py1337x-json.py`, which
+`install-toolchain.sh` links into the venv as `py1337x`. The magnet downloader,
+`aria2c`, is found the same way.
 
 This matters more than it looks. A distribution's copy can lag a site's changes
 by months, and this is the one component whose whole job is to keep up with them.
 A stale extractor is the single most common cause of a "page could not be
 resolved" failure — and it fails fast (exit 2, no output) rather than timing out,
 which is the tell.
+
+A torrent index adds one setting: `MI_TORRENT_SITE` (e.g. `1337x`) names the
+index a *bare search* should hit. A 1337x URL needs no setting — the host routes
+it. See [media-pipeline.md](media-pipeline.md#torrents).
 
 ## A worked example
 

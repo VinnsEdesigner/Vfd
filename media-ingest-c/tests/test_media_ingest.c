@@ -1100,6 +1100,59 @@ static void test_mp4_dimensions(void) {
     mi_media_info_free(&bare);
 }
 
+/*
+ * A magnet link is fetched by the BitTorrent client, not by HTTP.
+ *
+ * The client is stubbed: the contract under test is that `mi_download` routes a
+ * `magnet:` URL to the client, finds the file the client wrote, and moves it to
+ * the destination — not the swarm, which no test can rely on. A stub that writes
+ * a file into its `--dir` exercises exactly that path.
+ */
+static void test_magnet_uses_the_torrent_client(void) {
+    const char *script = "/tmp/mi-test-magnet-stub.sh";
+    const char *payload = "MAGNET-DOWNLOAD-OK-0123456789";
+    FILE *f = fopen(script, "w");
+    if (!f) { CHECK(0, "write magnet stub"); return; }
+    fprintf(f, "#!/bin/sh\n");
+    /* Find the --dir value the way the real client would receive it. */
+    fprintf(f, "dir=. ; while [ $# -gt 0 ]; do\n");
+    fprintf(f, "  if [ \"$1\" = \"--dir\" ]; then dir=\"$2\"; shift 2; else shift; fi\n");
+    fprintf(f, "done\n");
+    fprintf(f, "mkdir -p \"$dir\"\n");
+    fprintf(f, "printf '%%s' '%s' > \"$dir/ubuntu-24.04.iso\"\n", payload);
+    fclose(f);
+    chmod(script, 0755);
+
+    mi_download_config cfg;
+    mi_download_config_init(&cfg);
+    cfg.magnet_downloader_path = script;
+
+    char dest[] = "/tmp/mi-test-magnet.bin";
+    unlink(dest);
+    mi_download_result res;
+    int rc = mi_download(&cfg, "magnet:?xt=urn:btih:0123456789abcdef", dest,
+                         NULL, NULL, &res);
+    CHECK(rc == MI_OK, "a magnet link is downloaded");
+    CHECK(res.bytes_written == (int64_t)strlen(payload), "the client's file is moved to dest");
+
+    FILE *g = fopen(dest, "rb");
+    CHECK(g != NULL, "the destination exists");
+    if (g) {
+        char got[64] = {0};
+        size_t n = fread(got, 1, sizeof got - 1, g);
+        fclose(g);
+        CHECK(n == strlen(payload) && strcmp(got, payload) == 0,
+              "the destination holds the client's bytes");
+    }
+    unlink(dest);
+    /* The work directory the client wrote into is swept. */
+    char work[128];
+    snprintf(work, sizeof work, "%s.magnet", dest);
+    CHECK(access(work, F_OK) != 0, "the magnet work directory is removed");
+    mi_download_result_free(&res);
+    unlink(script);
+}
+
 int main(void) {
     mi_log_set_level(MI_LOG_ERROR); /* keep test output clean */
     signal(SIGPIPE, SIG_IGN);
@@ -1122,6 +1175,7 @@ int main(void) {
     test_refuse_non_video();
     test_resume();
     test_streaming_fallback();
+    test_magnet_uses_the_torrent_client();
     test_hmac_vectors();
     test_sigv4_known_vector();
     test_s3_upload_live();

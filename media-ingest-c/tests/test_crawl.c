@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -665,6 +666,63 @@ static void test_crawl_obey_robots_can_be_overridden(void) {
     stop_site(pid);
 }
 
+/*
+ * A torrent *search* returns a list, and each item must become a hit.
+ *
+ * The extractor's list answer (`entries`) is what a torrent index returns: a set
+ * of torrents, each with its own magnet. Before entries were handled the walk
+ * gated on `format_count > 0`, so a torrent search — which has no formats — was
+ * read as "nothing found" and the whole point of the feature was lost. Driven
+ * through a stub extractor so the test needs no network and no 1337x.
+ */
+static void test_crawl_turns_extractor_entries_into_hits(void) {
+    static const route routes[] = {
+        {"/", "<html><body><h1>1337x</h1><p>search results</p></body></html>"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 1, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    const char *script = "/tmp/mi-test-torrent-extractor.sh";
+    FILE *f = fopen(script, "w");
+    if (!f) { CHECK(0, "write stub extractor"); stop_site(pid); return; }
+    fprintf(f, "#!/bin/sh\n");
+    fprintf(f, "echo '{\"title\":\"ubuntu\",\"extractor\":\"1337x\",\"entries\":["
+               "{\"id\":\"a1\",\"title\":\"Ubuntu 24.04 Desktop\","
+               "\"url\":\"magnet:?xt=urn:btih:a1\"},"
+               "{\"id\":\"a2\",\"title\":\"Ubuntu 24.04 Server\","
+               "\"url\":\"magnet:?xt=urn:btih:a2\"}]}'\n");
+    fclose(f);
+    chmod(script, 0755);
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 0;
+    cfg.use_browser_fallback = 0;
+    cfg.use_sitemap = 0;
+    cfg.extractor_path = script;
+    cfg.gallery_extractor_path = script;
+
+    mi_crawl_result res;
+    CHECK(mi_crawl(&cfg, url, "ubuntu", &res) == MI_OK, "crawl ran");
+    CHECK(res.hit_count == 2, "both torrent entries became hits");
+    if (res.hit_count == 2) {
+        int magnets = 0, resolved = 0;
+        for (size_t i = 0; i < res.hit_count; i++) {
+            if (res.hits[i].url && strncmp(res.hits[i].url, "magnet:", 7) == 0) magnets++;
+            if (res.hits[i].resolved) resolved++;
+        }
+        CHECK(magnets == 2, "each hit's URL is the magnet link");
+        CHECK(resolved == 2, "each entry hit is marked resolved");
+    }
+    mi_crawl_result_free(&res);
+    unlink(script);
+    stop_site(pid);
+}
+
 int main(void) {
     test_score();
     test_crawl_finds_and_ranks();
@@ -678,6 +736,7 @@ int main(void) {
     test_crawl_rewrites_a_viewer_to_the_direct_url();
     test_crawl_leaves_a_direct_url_alone();
     test_crawl_ranks_a_resolved_hit_first();
+    test_crawl_turns_extractor_entries_into_hits();
     test_crawl_unreachable_site_is_not_an_error();
     test_crawl_rejects_a_bad_url();
     test_crawl_obey_robots_can_be_overridden();

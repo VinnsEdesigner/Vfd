@@ -136,6 +136,29 @@ typedef struct {
      */
     const char *gallery_extractor_path;
     /*
+     * The torrent extractor's binary (py1337x).
+     *
+     * A third tool for a third question: yt-dlp resolves video streams,
+     * gallery-dl lists the images on a page, and py1337x resolves a torrent index
+     * to magnet links. NULL means "py1337x" from PATH; when it is absent the
+     * console offers no torrent mode rather than one that cannot work.
+     */
+    const char *torrent_extractor_path;
+    /*
+     * A BitTorrent index to search, e.g. "1337x", or NULL for the extractor's
+     * default. A torrent index is a search box, so a search of it needs to name
+     * which one.
+     */
+    const char *torrent_site;
+    /*
+     * The BitTorrent downloader binary (aria2c) for a magnet link.
+     *
+     * A magnet is fetched from a swarm, which no HTTP client can do; NULL means
+     * "aria2c" from PATH. When it is absent a magnet download fails with a clear
+     * message rather than a network error from a scheme libcurl cannot open.
+     */
+    const char *magnet_downloader_path;
+    /*
      * Cookies for a site that refuses an anonymous request.
      *
      * Netscape format. Set from the settings endpoint or MI_COOKIES_FILE, and

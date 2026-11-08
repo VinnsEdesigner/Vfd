@@ -110,24 +110,31 @@ void mi_extract_result_free(mi_extract_result *res);
 /*
  * Which extractor to ask.
  *
- * Two tools, complementary rather than competing:
+ * Three tools, complementary rather than competing:
  *
  *   yt-dlp      video. Streams, formats, and it knows how to pick a rendition.
  *   gallery-dl  images, galleries and posts. 4,927 sites against yt-dlp's
  *               1,755, and most of the extra are image hosts.
+ *   py1337x     torrents. A BitTorrent index carries no media URL and no file
+ *               listing in its HTML: the download is a magnet link, and the
+ *               files behind it are only known to a BitTorrent client. Neither
+ *               yt-dlp nor gallery-dl resolves one, so a torrent index is its
+ *               own kind.
  *
- * A photo site is gallery-dl's job and a video site is yt-dlp's, so the choice is
- * made per URL. `AUTO` prefers gallery-dl for a host it recognises, because
- * asking yt-dlp about an image gallery usually returns nothing at all.
+ * A photo site is gallery-dl's job, a video site is yt-dlp's and a torrent index
+ * is py1337x's, so the choice is made per URL. `AUTO` prefers gallery-dl for a
+ * host it recognises and the torrent extractor for a host that indexes torrents,
+ * because asking yt-dlp about either usually returns nothing at all.
  *
- * The host list is deliberately short and explicit: guessing from a URL's shape
+ * The host lists are deliberately short and explicit: guessing from a URL's shape
  * would send a video to the wrong tool, and a wrong guess costs the user an empty
  * result they cannot explain.
  */
 typedef enum {
     MI_EXTRACT_AUTO = 0, /* pick by host */
     MI_EXTRACT_VIDEO,    /* yt-dlp */
-    MI_EXTRACT_GALLERY   /* gallery-dl */
+    MI_EXTRACT_GALLERY,  /* gallery-dl */
+    MI_EXTRACT_TORRENT   /* py1337x, for a torrent index */
 } mi_extract_kind;
 
 typedef struct {
@@ -146,6 +153,26 @@ typedef struct {
      * have" — and returns a different shape, so it has its own parser.
      */
     const char *gallery_binary;
+    /*
+     * The torrent extractor's binary. NULL uses "py1337x" from PATH.
+     *
+     * py1337x is a Python library, not a CLI, so this is a wrapper script that
+     * prints one yt-dlp-shaped JSON object per call — see `scripts/py1337x-json.py`.
+     * Named rather than hardcoded so an operator can point at their own copy, the
+     * same reason the other two are.
+     */
+    const char *torrent_binary;
+    /*
+     * A BitTorrent index to search instead of a URL, e.g. "1337x".
+     *
+     * A torrent index is not a single page you resolve; it is a search box. When
+     * this is set, the torrent extractor searches it for `search_term` and returns
+     * one result per torrent. The name is the extractor's own key, so the wrapper
+     * decides which index a name means.
+     *
+     * NULL searches the extractor's default index.
+     */
+    const char *torrent_site;
     /* Which extractor to use. AUTO picks by host. */
     mi_extract_kind kind;
     /* Seconds allowed for the resolve. It is a network operation against a
@@ -311,6 +338,14 @@ mi_extract_kind mi_extract_pick(const mi_extract_config *cfg, const char *url);
  * cannot work. Cached after the first call — it does not change at runtime.
  */
 int mi_extract_available_kind(const mi_extract_config *cfg, mi_extract_kind kind);
+
+/*
+ * The name of a tool, for a log line: "yt-dlp", "gallery-dl" or "py1337x".
+ *
+ * Exposed so a caller can name the tool it asked without repeating the mapping,
+ * and so the mapping can be tested.
+ */
+const char *mi_extract_kind_name(mi_extract_kind kind);
 
 /*
  * Ask the extractor what `url` offers.

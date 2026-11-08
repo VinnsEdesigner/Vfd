@@ -45,6 +45,8 @@ void mi_extract_config_init(mi_extract_config *cfg) {
     memset(cfg, 0, sizeof *cfg);
     cfg->binary = NULL;
     cfg->gallery_binary = NULL;
+    cfg->torrent_binary = NULL;
+    cfg->torrent_site = NULL;
     cfg->kind = MI_EXTRACT_AUTO;
     cfg->timeout_seconds = 60.0;
     cfg->cookies_file = NULL;
@@ -103,6 +105,19 @@ static const char *binary_for(const mi_extract_config *cfg) {
 static const char *gallery_binary_for(const mi_extract_config *cfg) {
     return (cfg && cfg->gallery_binary && *cfg->gallery_binary) ? cfg->gallery_binary
                                                                 : "gallery-dl";
+}
+
+/*
+ * The torrent extractor's binary.
+ *
+ * py1337x is a library, not a CLI, so the default is a wrapper script that
+ * imports it and prints one yt-dlp-shaped JSON object. The wrapper is looked up
+ * from PATH like the other two, so an operator who installs it can point at it
+ * without rebuilding.
+ */
+static const char *torrent_binary_for(const mi_extract_config *cfg) {
+    return (cfg && cfg->torrent_binary && *cfg->torrent_binary) ? cfg->torrent_binary
+                                                                 : "py1337x";
 }
 
 /*
@@ -261,6 +276,20 @@ const char *const MI_GALLERY_HOSTS[] = {
     "naver", "bcy.net", "lofter", "wikiart", "manga", "comic", NULL
 };
 
+/*
+ * Torrent indexes, matched the same way.
+ *
+ * Only hosts the wrapper can actually resolve belong here: py1337x speaks 1337x
+ * and nothing else, so the list is 1337x and its mirrors (the fragment matches
+ * `1337x.to`, `1337x.st`, `1337x.gd`, ...). Adding a host here means teaching the
+ * wrapper that host too — listing one the wrapper cannot read would route a
+ * search to a tool that returns nothing, which is exactly the empty result this
+ * table exists to avoid.
+ */
+const char *const MI_TORRENT_HOSTS[] = {
+    "1337x", NULL
+};
+
 /** Does any fragment appear in the host of `url`? */
 static int host_matches(const char *url, const char *const *fragments) {
     /* The host, between the scheme and the first path separator. */
@@ -283,29 +312,50 @@ static int host_matches(const char *url, const char *const *fragments) {
 mi_extract_kind mi_extract_pick(const mi_extract_config *cfg, const char *url) {
     if (cfg && cfg->kind != MI_EXTRACT_AUTO) return cfg->kind;
     /*
-     * AUTO: gallery-dl for a host it is known for, yt-dlp otherwise.
+     * AUTO: by host.
      *
-     * yt-dlp is the default because it is the one that handles video, which is
-     * the commoner case; a host on the gallery list is the exception where
-     * yt-dlp would return nothing.
+     * A URL is classified by its host, and a torrent index is checked first
+     * because its hosts are unambiguous and neither other tool resolves one —
+     * yt-dlp and gallery-dl both return nothing for a magnet-link page. A gallery
+     * host is next, and yt-dlp is the default because it handles video, the
+     * commoner case.
+     *
+     * A configured `torrent_site` is consulted only when there is *no* URL, so it
+     * can never hijack a URL-based call: a crawl or a resolve always names a host,
+     * and that host decides. It exists for a bare search — "find this on the
+     * index" — which has no host to go on.
      */
-    if (url && host_matches(url, MI_GALLERY_HOSTS)) return MI_EXTRACT_GALLERY;
+    if (url && *url) {
+        if (host_matches(url, MI_TORRENT_HOSTS)) return MI_EXTRACT_TORRENT;
+        if (host_matches(url, MI_GALLERY_HOSTS)) return MI_EXTRACT_GALLERY;
+        return MI_EXTRACT_VIDEO;
+    }
+    if (cfg && cfg->torrent_site && *cfg->torrent_site) return MI_EXTRACT_TORRENT;
     return MI_EXTRACT_VIDEO;
 }
 
 /*
  * The URL or query to hand the extractor.
  *
- * A search is expressed as a pseudo-URL: `ytsearch5:term`. Building it here
- * keeps the rest of the argv the same for both cases — the difference between
- * "resolve this address" and "find something matching this" is the argument,
- * not the invocation.
+ * A yt-dlp search is expressed as a pseudo-URL: `ytsearch5:term`. Building it
+ * here keeps the rest of the argv the same for both cases — the difference
+ * between "resolve this address" and "find something matching this" is the
+ * argument, not the invocation. A torrent search has no such convention, so it is
+ * passed as the bare term and the tool is told which index via `--site`.
  *
  * Returns an owned string, or NULL on a bad argument.
  */
-static char *query_for(const mi_extract_config *cfg, const char *url) {
+static char *query_for(const mi_extract_config *cfg, mi_extract_kind kind, const char *url) {
     if (cfg && cfg->search_term && *cfg->search_term) {
         int limit = cfg->search_limit > 0 ? cfg->search_limit : 10;
+        /*
+         * A torrent index is searched by a plain term, not a `ytsearch` pseudo-URL:
+         * the wrapper takes the term as a positional and a `--site` flag, so the
+         * index is named on the command line rather than encoded in the query. The
+         * kind is passed in rather than re-derived, so the search and the command
+         * always agree on which tool is being asked.
+         */
+        if (kind == MI_EXTRACT_TORRENT) return mi_strdup(cfg->search_term);
         return mi_asprintf("ytsearch%d:%s", limit, cfg->search_term);
     }
     return url ? mi_strdup(url) : NULL;
@@ -383,8 +433,10 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
     int pipefd[2];
     if (pipe(pipefd) != 0) return NULL;
 
-    const char *binary = (kind == MI_EXTRACT_GALLERY) ? gallery_binary_for(cfg)
-                                                      : binary_for(cfg);
+    const char *binary;
+    if (kind == MI_EXTRACT_GALLERY) binary = gallery_binary_for(cfg);
+    else if (kind == MI_EXTRACT_TORRENT) binary = torrent_binary_for(cfg);
+    else binary = binary_for(cfg);
     /*
      * Sized for the fixed options plus every per-site argument.
      *
@@ -401,6 +453,10 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
     /* The normalised impersonation target, when one was given. Owned here and
      * freed on every exit path, like the cookie temp. */
     char *imp_tmp = NULL;
+    /* Holds the torrent `--limit` value, which must outlive the block that
+     * formats it: the argv is consumed at execvp, after the branch has ended. A
+     * stack array here, not a static, so concurrent resolves do not race. */
+    char limit_buf[16];
     int a = 0;
     argv[a++] = binary;
     if (probe_only) {
@@ -424,6 +480,47 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
             argv[a++] = "--proxy";
             argv[a++] = cfg->proxy;
         }
+        argv[a++] = "--";
+        argv[a++] = url;
+    } else if (kind == MI_EXTRACT_TORRENT) {
+        /*
+         * The torrent wrapper: search an index, print one yt-dlp-shaped object.
+         *
+         * py1337x is a Python library rather than a CLI, so the wrapper script is
+         * the tool here and its own flags are used. It prints the same JSON shape
+         * yt-dlp does, so the parser below needs no torrent branch.
+         *
+         *   --json         one JSON object on stdout, nothing else
+         *   --site NAME    which index to search (its own key, e.g. "1337x")
+         *   --limit N      how many torrents to return
+         *   --proxy URL    egress for the requests
+         *   POSITIONAL     a term to search, or a URL to resolve
+         *
+         * The positional is the query from `query_for`: a bare term when a site
+         * is named, otherwise a 1337x URL. The wrapper tells them apart by shape
+         * (a URL has a scheme), so "search this index" and "resolve this page"
+         * are the same invocation.
+         */
+        argv[a++] = "--json";
+        if (cfg && cfg->torrent_site && *cfg->torrent_site) {
+            argv[a++] = "--site";
+            argv[a++] = cfg->torrent_site;
+        }
+        if (cfg && cfg->search_limit > 0) {
+            argv[a++] = "--limit";
+            snprintf(limit_buf, sizeof limit_buf, "%d", cfg->search_limit);
+            argv[a++] = limit_buf;
+        }
+        if (cfg && cfg->proxy && *cfg->proxy) {
+            argv[a++] = "--proxy";
+            argv[a++] = cfg->proxy;
+        }
+        /*
+         * A URL that is itself a 1337x *search* path carries the term in its
+         * path, and the wrapper reads it. Anything else is a torrent page to
+         * resolve. The distinction is the wrapper's, made from the URL it is
+         * given, so both are passed the same way.
+         */
         argv[a++] = "--";
         argv[a++] = url;
     } else {
@@ -640,20 +737,49 @@ static char *run_extractor_kind(const mi_extract_config *cfg, mi_extract_kind ki
 /*
  * A cached answer per extractor: which binaries exist cannot change at runtime.
  *
- * Two entries rather than one, because the tools are independent — a host may
+ * Three entries rather than one, because the tools are independent — a host may
  * have yt-dlp and not gallery-dl, and the console should then offer video search
  * and not the gallery list.
  */
-static int g_available[2] = {-1, -1};
+static int g_available[3] = {-1, -1, -1};
+
+static int available_slot(mi_extract_kind kind) {
+    switch (kind) {
+    case MI_EXTRACT_GALLERY: return 1;
+    case MI_EXTRACT_TORRENT: return 2;
+    default: return 0;
+    }
+}
+
+/*
+ * Whether the caller named its own binary for this kind.
+ *
+ * The cache exists because *the default* tools do not appear or vanish while
+ * Vyzor runs — so the probe is done once. A caller-supplied binary breaks that
+ * assumption: it can differ per call, and a cached answer for one would shadow
+ * the other (a torrent-only host was silently skipped because the yt-dlp probe
+ * had already cached "unavailable"). A named binary is therefore probed, and not
+ * cached, every time.
+ */
+static int binary_is_custom(const mi_extract_config *cfg, mi_extract_kind kind) {
+    if (!cfg) return 0;
+    switch (kind) {
+    case MI_EXTRACT_GALLERY: return cfg->gallery_binary && *cfg->gallery_binary;
+    case MI_EXTRACT_TORRENT: return cfg->torrent_binary && *cfg->torrent_binary;
+    default: return cfg->binary && *cfg->binary;
+    }
+}
 
 int mi_extract_available_kind(const mi_extract_config *cfg, mi_extract_kind kind) {
-    int slot = (kind == MI_EXTRACT_GALLERY) ? 1 : 0;
-    if (g_available[slot] >= 0) return g_available[slot];
+    int slot = available_slot(kind);
+    int cacheable = !binary_is_custom(cfg, kind);
+    if (cacheable && g_available[slot] >= 0) return g_available[slot];
     int code = -1;
     char *out = run_extractor_kind(cfg, kind, NULL, 1, &code);
-    g_available[slot] = (out != NULL && code == 0) ? 1 : 0;
+    int ok = (out != NULL && code == 0) ? 1 : 0;
     free(out);
-    return g_available[slot];
+    if (cacheable) g_available[slot] = ok;
+    return ok;
 }
 
 int mi_extract_available(const mi_extract_config *cfg) {
@@ -810,10 +936,36 @@ static int parse_gallery(const mi_json *doc, mi_extract_result *out) {
     return MI_OK;
 }
 
+/*
+ * The name of a tool, for a log line and for tests.
+ *
+ * Three kinds now, so a `gallery ? "gallery-dl" : "yt-dlp"` ternary would misname
+ * a torrent failure as a yt-dlp one.
+ */
+const char *mi_extract_kind_name(mi_extract_kind kind) {
+    switch (kind) {
+    case MI_EXTRACT_GALLERY: return "gallery-dl";
+    case MI_EXTRACT_TORRENT: return "py1337x";
+    default: return "yt-dlp";
+    }
+}
+
 int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result *out) {
     if (!cfg || !out) return MI_ERR_ARG;
     memset(out, 0, sizeof *out);
     out->duration_seconds = -1;
+
+    /*
+     * Which tool to ask.
+     *
+     * A photo site, a video site and a torrent index are three questions, and the
+     * three tools answer one each: yt-dlp returns streams and formats, gallery-dl
+     * the images on a page, py1337x the torrents matching a term. The choice is
+     * made before the query because a torrent search is expressed differently
+     * (a bare term plus a site, not a `ytsearch` pseudo-URL), and it decides both
+     * the command and the parser.
+     */
+    mi_extract_kind kind = mi_extract_pick(cfg, url);
 
     /*
      * The argument is a URL or a search query.
@@ -823,25 +975,15 @@ int mi_extract(const mi_extract_config *cfg, const char *url, mi_extract_result 
      * (`ytsearch5:term` for the second), so the choice is made here and the rest
      * of the invocation is identical.
      */
-    char *query = query_for(cfg, url);
+    char *query = query_for(cfg, kind, url);
     if (!query) return MI_ERR_ARG;
-
-    /*
-     * Which tool to ask.
-     *
-     * A photo site and a video site are different questions, and the two tools
-     * answer one each: yt-dlp returns streams and formats, gallery-dl returns the
-     * images on a page. The choice is by host (or an explicit setting), and it
-     * decides both the command and the parser.
-     */
-    mi_extract_kind kind = mi_extract_pick(cfg, url);
 
     int code = -1;
     char *json = run_extractor_kind(cfg, kind, query, 0, &code);
     free(query);
     if (!json) {
         mi_logf(MI_LOG_ERROR, "extract: %s produced no output (exit %d)",
-                kind == MI_EXTRACT_GALLERY ? "gallery-dl" : "yt-dlp", code);
+                mi_extract_kind_name(kind), code);
         return MI_ERR_NET;
     }
     /*

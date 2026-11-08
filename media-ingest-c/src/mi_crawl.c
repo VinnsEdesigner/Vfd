@@ -58,6 +58,8 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->extract_enabled = 1;
     cfg->extractor_path = NULL;
     cfg->gallery_extractor_path = NULL;
+    cfg->torrent_extractor_path = NULL;
+    cfg->torrent_site = NULL;
     cfg->cookies_text = NULL;
     cfg->cookies_from_browser = NULL;
     cfg->proxy = NULL;
@@ -298,6 +300,39 @@ static mi_crawl_hit *add_hit(mi_crawl_result *res, const mi_browse_item *item,
     h->via_browser = via_browser;
     h->resolved = 0;
     return h;
+}
+
+/*
+ * Add one entry of an extractor list as a hit.
+ *
+ * An *entry* is a list item rather than a stream: yt-dlp returns entries for a
+ * search or a channel (`--flat-playlist`) and py1337x returns them for a torrent
+ * search. Each carries a title and a page URL but no formats, so the hit's URL is
+ * the item's *page* — which is what a later resolve or download acts on.
+ *
+ * Returns 1 when a hit was added.
+ */
+static int add_entry_hit(mi_crawl_result *res, const mi_extract_entry *e,
+                         const char *term, const char *found_on) {
+    const char *page = (e->url && *e->url) ? e->url : NULL;
+    if (!page) return 0; /* an entry with nowhere to go is not a result */
+    const char *label = (e->title && *e->title) ? e->title : page;
+    int score = mi_crawl_score(label, label, term);
+    if (score <= 0) return 0;
+    mi_browse_item item;
+    memset(&item, 0, sizeof item);
+    item.url = (char *)page;
+    item.filename = (char *)label;
+    item.title = (char *)label;
+    item.mime = (char *)"";
+    item.bytes = -1;
+    if (!add_hit(res, &item, score, found_on, 0)) return 0;
+    mi_crawl_hit *h = &res->hits[res->hit_count - 1];
+    /* The extractor's answer is the authority for this page, so it ranks above a
+     * link the walk happened to find at an equal score. */
+    h->resolved = 1;
+    if (e->thumbnail && *e->thumbnail) h->thumbnail = mi_strdup(e->thumbnail);
+    return 1;
 }
 
 static void add_page(mi_crawl_result *res, const char *url, int links, int hits,
@@ -789,19 +824,33 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         mi_extract_config_init(&ecfg);
         ecfg.binary = cfg->extractor_path;
         ecfg.gallery_binary = cfg->gallery_extractor_path;
+        ecfg.torrent_binary = cfg->torrent_extractor_path;
+        ecfg.torrent_site = cfg->torrent_site;
         ecfg.cookies_text = cfg->cookies_text;
         ecfg.cookies_from_browser = cfg->cookies_from_browser;
         ecfg.proxy = cfg->proxy;
         ecfg.impersonate = cfg->impersonate;
-        if (mi_extract_available(&ecfg)) {
+        /*
+         * The availability gate must be for the tool this URL *routes to*, not
+         * for yt-dlp. A torrent index routes to the torrent extractor and a
+         * gallery host to gallery-dl, and a host with py1337x but no yt-dlp would
+         * otherwise never be asked — the crawl would silently report nothing.
+         */
+        mi_extract_kind ekind = mi_extract_pick(&ecfg, url);
+        if (mi_extract_available_kind(&ecfg, ekind)) {
             mi_extract_result er;
-            if (mi_extract(&ecfg, url, &er) == MI_OK && er.format_count > 0) {
+            if (mi_extract(&ecfg, url, &er) == MI_OK &&
+                (er.format_count > 0 || er.entry_count > 0)) {
                 extracted = 1;
                 /*
-                 * Scored on the page's title, because that is what the caller
-                 * searched for — the format list is a technical detail.
+                 * The page itself is a result only when the extractor resolved a
+                 * *single item*. A list answer (a torrent search, a channel, a
+                 * search) carries its results in `entries` — one hit each, added
+                 * below — and its top-level title is the *query*, not a file, so
+                 * adding a page hit for it would point the caller at the search
+                 * page it already knows about.
                  */
-                int score = mi_crawl_score(er.title, er.title, term);
+                int score = er.entry_count > 0 ? 0 : mi_crawl_score(er.title, er.title, term);
                 if (score > 0) {
                     mi_browse_item item;
                     memset(&item, 0, sizeof item);
@@ -867,6 +916,20 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                         }
                         if (h->quality_count > 0) h->qualities[0].best = 1;
                     }
+                }
+                /*
+                 * A *list* answer: one hit per entry.
+                 *
+                 * A torrent search is a list — each result is a torrent with its
+                 * own page, and the caller wants all of them, not the first. yt-dlp
+                 * returns the same shape for a search or a channel, so both are
+                 * handled here. Entries carry no formats, so there are no
+                 * renditions to attach; the hit's URL is the entry's page, which a
+                 * later resolve (for a video) or magnet fetch (for a torrent) acts
+                 * on.
+                 */
+                for (size_t ei = 0; ei < er.entry_count; ei++) {
+                    if (add_entry_hit(res, &er.entries[ei], term, url)) hits++;
                 }
             }
             mi_extract_result_free(&er);

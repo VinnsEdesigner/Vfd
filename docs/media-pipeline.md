@@ -67,6 +67,36 @@ When the page resolves to a *listing* rather than a video — archive.org's
 entries and zero formats — the walk resolves the last usable entry and uses its
 formats.
 
+## Torrents
+
+A torrent index is a third kind of source, and it is not a stream or a file. The
+page carries no media URL and no file listing; the download is a **magnet link**,
+and the bytes arrive from a swarm. Neither yt-dlp nor gallery-dl resolves one, so
+the torrent index is its own extractor kind.
+
+Two tools do the two halves:
+
+- **`py1337x`** (via the `scripts/py1337x-json.py` wrapper) resolves an index —
+  1337x — to magnet links. It answers a *search* as a list, one entry per
+  torrent, and each entry's URL is the magnet.
+- **`aria2`** fetches the magnet. A crawl or a download of a magnet is handed to
+  `aria2c`, which joins the swarm, writes the files, and is stopped once the
+  first file is complete. The largest completed file is what the caller gets —
+  the video, for a media torrent.
+
+Routing is by host: a `1337x` URL goes to the torrent extractor automatically. A
+**bare search** — "find this on the index" — has no host to go on, so it is only
+routed when `torrent_site` is configured (`MI_TORRENT_SITE`).
+
+**1337x sits behind Cloudflare**, and answers a datacenter address with a JS
+challenge (HTTP 403, "Just a moment…") that no client clears — not plain
+requests, not a TLS-impersonating client, not headless or headful Chromium. The
+wrapper routes its requests through `curl_cffi`'s browser fingerprint, which is
+strictly better than plain requests but is not a guarantee. On such a host a
+torrent search returns **zero results with no error**, which is why the crawl
+reports `pages_failed`/`blocked` rather than claiming the index is empty. A
+residential or proxied egress is what actually fixes it.
+
 ## HLS ladder (transcode)
 
 `vyzor hls` (and `--hls` on ingest) transcodes to an adaptive-bitrate ladder

@@ -290,6 +290,9 @@ void mi_server_config_init(mi_server_config *cfg) {
      */
     cfg->extractor_path = NULL;
     cfg->gallery_extractor_path = NULL;
+    cfg->torrent_extractor_path = NULL;
+    cfg->torrent_site = NULL;
+    cfg->magnet_downloader_path = NULL;
     /*
      * Cookies for a site that refuses an anonymous request.
      *
@@ -1633,6 +1636,9 @@ static void *download_worker(void *arg) {
     dcfg.extract_pages = 1;
     dcfg.extractor_path = srv->cfg.extractor_path;
     dcfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
+    dcfg.torrent_extractor_path = srv->cfg.torrent_extractor_path;
+    dcfg.torrent_site = srv->cfg.torrent_site;
+    dcfg.magnet_downloader_path = srv->cfg.magnet_downloader_path;
     dcfg.cookies_text = srv->cfg.cookies_text;
         dcfg.cookies_from_browser = srv->cfg.cookies_from_browser;
     /*
@@ -3129,6 +3135,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_extract_config_init(&ecfg);
         ecfg.binary = srv->cfg.extractor_path;
         ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
+        ecfg.torrent_binary = srv->cfg.torrent_extractor_path;
+        ecfg.torrent_site = srv->cfg.torrent_site;
         ecfg.cookies_text = srv->cfg.cookies_text;
         ecfg.cookies_from_browser = srv->cfg.cookies_from_browser;
         ecfg.proxy = srv->cfg.proxy;
@@ -3257,6 +3265,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_extract_config_init(&ecfg);
         ecfg.binary = srv->cfg.extractor_path;
         ecfg.gallery_binary = srv->cfg.gallery_extractor_path;
+        ecfg.torrent_binary = srv->cfg.torrent_extractor_path;
+        ecfg.torrent_site = srv->cfg.torrent_site;
         ecfg.cookies_text = srv->cfg.cookies_text;
         ecfg.cookies_from_browser = srv->cfg.cookies_from_browser;
         ecfg.proxy = srv->cfg.proxy;
@@ -3574,6 +3584,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         ccfg.extract_enabled = mi_json_get_bool(in, "use_extractor", 1);
         ccfg.extractor_path = srv->cfg.extractor_path;
         ccfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
+        ccfg.torrent_extractor_path = srv->cfg.torrent_extractor_path;
+        ccfg.torrent_site = srv->cfg.torrent_site;
         ccfg.cookies_text = srv->cfg.cookies_text;
         ccfg.cookies_from_browser = srv->cfg.cookies_from_browser;
         ccfg.proxy = srv->cfg.proxy;
@@ -3778,6 +3790,8 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         bcfg.impersonate = srv->cfg.impersonate;
         bcfg.extractor_path = srv->cfg.extractor_path;
         bcfg.gallery_extractor_path = srv->cfg.gallery_extractor_path;
+        bcfg.torrent_extractor_path = srv->cfg.torrent_extractor_path;
+        bcfg.torrent_site = srv->cfg.torrent_site;
         /* Ask the extractor when the markup yields no playable media: a page
          * built by JavaScript (a video watch page) references none, so without
          * this the listing is only the site's chrome — favicons and a logo. The

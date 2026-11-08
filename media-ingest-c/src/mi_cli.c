@@ -486,10 +486,14 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
                      int interactive_silence, int rtc, int rtc_concurrent, int rtc_fps,
                      int rtc_bitrate, const char *rtc_stun, const char *proxy,
                      const char *impersonate, int identity_retries,
-                     const char *frontier_db, const char *persistent_profile) {
+                     const char *frontier_db, const char *persistent_profile,
+                     const char *torrent_site) {
     mi_server_config cfg;
     mi_server_config_init(&cfg);
     if (host) cfg.host = host;
+    /* The torrent index a bare search should hit. A 1337x URL needs no setting:
+     * the host routes it. */
+    cfg.torrent_site = (torrent_site && *torrent_site) ? torrent_site : NULL;
     if (persistent_profile && *persistent_profile) {
         cfg.persistent_profile = persistent_profile;
         /* The same ergonomic default as the env path: the profile is also the
@@ -691,6 +695,7 @@ int main(int argc, char **argv) {
     int serve_identity_retries = 0;
     const char *serve_frontier_db = getenv("MI_FRONTIER_DB");
     const char *serve_persistent_profile = getenv("MI_PERSISTENT_PROFILE");
+    const char *serve_torrent_site = getenv("MI_TORRENT_SITE");
     /* Rendering is opt-in: it costs about half a gigabyte per render and needs
      * a browser on the host. MI_RENDER=1 turns it on without a flag. */
     int serve_render = getenv("MI_RENDER") != NULL;
@@ -927,7 +932,8 @@ int main(int argc, char **argv) {
                            serve_interactive_silence, serve_rtc, serve_rtc_concurrent,
                            serve_rtc_fps, serve_rtc_bitrate, serve_rtc_stun,
                            serve_proxy, serve_impersonate, serve_identity_retries,
-                           serve_frontier_db, serve_persistent_profile);
+                           serve_frontier_db, serve_persistent_profile,
+                           serve_torrent_site);
             break;
         default: rc = 2;
     }

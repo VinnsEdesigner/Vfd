@@ -19,6 +19,8 @@
 #                                      video fails at runtime with a null pad
 #   ffmpeg                             HLS transcoding and conversion
 #   yt-dlp, gallery-dl (pip)           resolve video and gallery sites
+#   py1337x (pip)                      resolve torrent indexes to magnets
+#   aria2                              fetch a magnet link (BitTorrent)
 #   nodejs, npm                        build and test the console
 #
 # GStreamer is only needed for live video, and Chromium/Xvfb only for the
@@ -133,7 +135,7 @@ BUILD_PKGS="build-essential pkg-config libcurl4-openssl-dev libsqlite3-dev zlib1
 GST_BUILD_PKGS="libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev"
 MEDIA_PKGS="chromium xvfb fonts-liberation fonts-dejavu-core fonts-noto-core fonts-noto-color-emoji \
 gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice ffmpeg yt-dlp"
+gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice ffmpeg yt-dlp aria2"
 
 WANT=""
 [ "$RUNTIME_ONLY" -eq 0 ] && WANT="$WANT $BUILD_PKGS $GST_BUILD_PKGS"
@@ -414,6 +416,12 @@ fi
 #   yt-dlp      video streams, formats, renditions                    #
 #   gallery-dl  the images and posts on a page (4,927 sites, most of  #
 #               them image hosts yt-dlp does not touch)               #
+#   py1337x     torrents from a BitTorrent index (a magnet link)      #
+#                                                                    #
+# py1337x is a *library*, not a CLI, so it is paired with the wrapper  #
+# `scripts/py1337x-json.py`, which prints the yt-dlp-shaped JSON Vyzor #
+# parses. The wrapper is linked into the venv as `py1337x`, so Vyzor   #
+# finds it on PATH the same way it finds the other two tools.          #
 #                                                                    #
 # Both come from pip rather than apt, and the difference matters:     #
 # Debian trixie ships yt-dlp 2025.04.30, eighteen months behind, which #
@@ -431,15 +439,22 @@ if [ "$NO_MEDIA" -eq 0 ]; then
     if ! command -v python3 >/dev/null 2>&1; then
         warn "no python3, so yt-dlp and gallery-dl cannot be installed"
     elif [ "$DRY_RUN" -eq 1 ]; then
-        note "would install into $VENV: yt-dlp gallery-dl curl_cffi"
+        note "would install into $VENV: yt-dlp gallery-dl py1337x curl_cffi"
     elif ensure_venv; then
         # A virtualenv INSIDE THE WORKSPACE, because the sandbox wipes
         # everything outside /workspace. Installing to ~/.local/bin works until
         # the next restart and then silently disappears, which is exactly the
         # failure this avoids.
-        if "$VENV/bin/pip" install --quiet --upgrade yt-dlp gallery-dl curl_cffi 2>/dev/null; then
+        if "$VENV/bin/pip" install --quiet --upgrade yt-dlp gallery-dl py1337x curl_cffi 2>/dev/null; then
             ok "yt-dlp $("$VENV/bin/yt-dlp" --version 2>/dev/null || echo '?')"
             ok "gallery-dl $("$VENV/bin/gallery-dl" --version 2>/dev/null || echo '?')"
+            # py1337x is a library; the wrapper is what Vyzor execs. Link it into
+            # the venv under the name the engine looks for ("py1337x" on PATH).
+            if [ -f "$ROOT/scripts/py1337x-json.py" ]; then
+                chmod +x "$ROOT/scripts/py1337x-json.py"
+                ln -sf "$ROOT/scripts/py1337x-json.py" "$VENV/bin/py1337x"
+                ok "py1337x wrapper linked at $VENV/bin/py1337x"
+            fi
             ok "in $VENV (survives a restart)"
             # A binary in the venv is not on PATH for a service started by
             # systemd or a container entrypoint, which is how Vyzor runs.
@@ -496,6 +511,8 @@ check "ffmpeg" ffmpeg
 check "chromium" chromium
 check "yt-dlp" "$VENV/bin/yt-dlp"
 check "gallery-dl" "$VENV/bin/gallery-dl"
+check "py1337x" "$VENV/bin/py1337x"
+check "aria2c" aria2c
 
 if command -v pkg-config >/dev/null 2>&1; then
     if pkg-config --exists gstreamer-webrtc-1.0 2>/dev/null; then

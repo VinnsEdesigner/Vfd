@@ -95,6 +95,10 @@ typedef struct {
     const char *impersonate;
     const char *extractor_path;
     const char *gallery_extractor_path;
+    /* The torrent extractor's binary; NULL uses "py1337x" from PATH. */
+    const char *torrent_extractor_path;
+    /* A BitTorrent index to search, e.g. "1337x"; NULL uses the default. */
+    const char *torrent_site;
     /* When non-zero, a page whose markup references no playable media is asked
      * of the extractor, which is the only way a JavaScript-built page (a video
      * watch page) yields its media at all. */

@@ -201,6 +201,22 @@ typedef struct {
      */
     const char *gallery_extractor_path;
     /*
+     * The torrent extractor's binary; NULL uses "py1337x" from PATH.
+     *
+     * A third tool for a third question — a torrent index resolves to a magnet
+     * link, which neither yt-dlp nor gallery-dl returns — so a walk of such a
+     * site can ask the one that can.
+     */
+    const char *torrent_extractor_path;
+    /*
+     * A BitTorrent index to search, e.g. "1337x", or NULL.
+     *
+     * A torrent index is a search box rather than a page: with this set, the walk
+     * of such a site asks the extractor to *search* it for the term and reports
+     * one result per torrent. NULL leaves the index to the extractor's default.
+     */
+    const char *torrent_site;
+    /*
      * Cookies for a site that refuses an anonymous request.
      *
      * Netscape format, the same input the download path takes. A crawl of a

@@ -1276,6 +1276,9 @@ void mi_download_config_init(mi_download_config *cfg) {
     cfg->extract_pages = 0;
     cfg->extractor_path = NULL;
     cfg->gallery_extractor_path = NULL;
+    cfg->torrent_extractor_path = NULL;
+    cfg->torrent_site = NULL;
+    cfg->magnet_downloader_path = NULL;
     cfg->cookies_text = NULL;
     cfg->cookies_from_browser = NULL;
     cfg->jar = NULL;
@@ -1723,6 +1726,8 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
     mi_extract_config_init(&ecfg);
     ecfg.binary = cfg->extractor_path;
     ecfg.gallery_binary = cfg->gallery_extractor_path;
+    ecfg.torrent_binary = cfg->torrent_extractor_path;
+    ecfg.torrent_site = cfg->torrent_site;
     /* The same cookies the download was given: resolving a page and fetching its
      * media are two requests to the same host, and a site that needs a sign-in
      * needs it for both. */
@@ -1941,6 +1946,234 @@ static int download_stream_page(const mi_download_config *cfg, const char *page_
     return MI_OK;
 }
 
+/*
+ * Download a magnet link with a BitTorrent client.
+ *
+ * A magnet names a swarm, not a file: there is no HTTP object to range and no
+ * manifest to mux, so the bytes come from peers and the only tool that can fetch
+ * them is a BitTorrent client. This is the same division of labour as ffmpeg for
+ * a manifest — Vyzor decides *what* to fetch, the specialist tool does the
+ * fetching.
+ *
+ * The swarm is allowed to settle briefly before the transfer is judged, because
+ * a magnet has no metadata until a peer supplies it: a client that gives up in
+ * the first seconds reports failure for a torrent that is merely slow to find a
+ * peer. It is stopped once the *first* file is complete, so the caller gets a
+ * playable file rather than waiting for a multi-gigabyte whole-swarm download.
+ *
+ * The completed file is the largest one the client wrote, which is the video for
+ * a media torrent and the only sensible default when it is a set.
+ */
+static int download_magnet(const mi_download_config *cfg, const char *magnet,
+                           const char *dest, mi_progress_fn on_progress, void *user,
+                           mi_download_result *out) {
+    const char *aria2 = (cfg->magnet_downloader_path && *cfg->magnet_downloader_path)
+                            ? cfg->magnet_downloader_path
+                            : "aria2c";
+
+    /* A private work directory, so the files the client writes are unambiguous
+     * and can be swept afterwards. Removed on every exit path below. */
+    char *work = mi_asprintf("%s.magnet", dest);
+    if (!work) return MI_ERR_NOMEM;
+    mi_rm_rf(work);
+    if (mi_mkdir_p(work) != 0) {
+        free(work);
+        return MI_ERR_IO;
+    }
+
+    const char *argv[32];
+    int a = 0;
+    argv[a++] = aria2;
+    /* No progress bars or console output: Vyzor reports progress itself, and the
+     * client's own rendering would be interleaved into the log. */
+    argv[a++] = "--quiet=true";
+    argv[a++] = "--summary-interval=0";
+    argv[a++] = "--console-log-level=warn";
+    /* Stop as soon as the first file is complete, then seed nothing. A media
+     * torrent's first file is the video; waiting for the rest is minutes of
+     * upload for no benefit to the caller. */
+    argv[a++] = "--seed-time=0";
+    argv[a++] = "--bt-stop-timeout=0";
+    /* A short listen port window; the client may not be able to accept inbound
+     * connections in a container, which is fine for a well-seeded swarm. */
+    argv[a++] = "--enable-dht=true";
+    argv[a++] = "--bt-enable-lpd=true";
+    argv[a++] = "--follow-torrent=true";
+    if (cfg->proxy && *cfg->proxy) {
+        argv[a++] = "--all-proxy";
+        argv[a++] = cfg->proxy;
+    }
+    argv[a++] = "--dir";
+    argv[a++] = work;
+    argv[a++] = magnet;
+    argv[a] = NULL;
+
+    mi_logf(MI_LOG_INFO, "download: fetching the magnet with %s", aria2);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        mi_rm_rf(work);
+        free(work);
+        return MI_ERR_IO;
+    }
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+        }
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+
+    /*
+     * Poll until the first file is complete, the client exits, or the deadline
+     * passes. The deadline is generous because a swarm can be slow to hand over
+     * metadata, but it is a deadline: a magnet with no peers must fail rather
+     * than hold a worker forever.
+     */
+    double deadline = mi_now() + (cfg->timeout_seconds > 0 ? cfg->timeout_seconds : 900.0);
+    int64_t seen_bytes = 0;
+    int status = 0;
+    int rc = MI_OK;
+    int finished = 0;
+    for (;;) {
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) {
+            finished = 1;
+            break;
+        }
+        if (r < 0 && errno != EINTR) break;
+
+        if (cfg->control && cfg->control->stop && cfg->control->stop(cfg->control->user)) {
+            kill(pid, SIGTERM);
+            struct timespec grace = {.tv_sec = 2, .tv_nsec = 0};
+            nanosleep(&grace, NULL);
+            if (waitpid(pid, &status, WNOHANG) != pid) kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            rc = MI_ERR_ABORTED;
+            break;
+        }
+        if (mi_now() > deadline) {
+            mi_logf(MI_LOG_INFO, "download: the magnet did not finish in %.0fs",
+                    cfg->timeout_seconds > 0 ? cfg->timeout_seconds : 900.0);
+            kill(pid, SIGTERM);
+            struct timespec grace = {.tv_sec = 2, .tv_nsec = 0};
+            nanosleep(&grace, NULL);
+            if (waitpid(pid, &status, WNOHANG) != pid) kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            rc = MI_ERR_NET;
+            break;
+        }
+
+        /*
+         * Report progress from the bytes on disk: aria2's own output is silenced,
+         * so the directory's growth is the only honest signal. Completion is not
+         * detected here — the file scan below is what judges it — so this only
+         * sums what is present.
+         */
+        int64_t total = 0;
+        DIR *d = opendir(work);
+        if (d) {
+            struct dirent *ent;
+            while ((ent = readdir(d)) != NULL) {
+                if (ent->d_name[0] == '.') continue;
+                size_t n = strlen(ent->d_name);
+                /* The control file and the metadata are not results. */
+                if (n > 6 && strcmp(ent->d_name + n - 6, ".aria2") == 0) continue;
+                char *full = mi_path_join(work, ent->d_name);
+                if (!full) continue;
+                int64_t sz = mi_file_size(full);
+                if (sz > 0) total += sz;
+                free(full);
+            }
+            closedir(d);
+        }
+        seen_bytes = total;
+        if (on_progress) {
+            mi_progress p;
+            memset(&p, 0, sizeof p);
+            p.total_bytes = -1;
+            p.downloaded_bytes = seen_bytes;
+            on_progress(&p, user);
+        }
+        struct timespec ts = {.tv_sec = 1, .tv_nsec = 0};
+        nanosleep(&ts, NULL);
+    }
+
+    if (rc == MI_OK && finished) {
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            mi_logf(MI_LOG_INFO, "download: %s exited %d on the magnet", aria2,
+                    WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+            rc = MI_ERR_NET;
+        }
+    }
+
+    /*
+     * The largest file the client wrote, which is the media for a media torrent.
+     * Chosen whether the client exited cleanly or was stopped on completion: a
+     * `--seed-time=0` client exits by itself, but a slow shutdown must not lose a
+     * file that is already whole.
+     */
+    char *produced = NULL;
+    {
+        int64_t best = -1;
+        DIR *d = opendir(work);
+        if (d) {
+            struct dirent *ent;
+            while ((ent = readdir(d)) != NULL) {
+                if (ent->d_name[0] == '.') continue;
+                size_t n = strlen(ent->d_name);
+                if (n > 6 && strcmp(ent->d_name + n - 6, ".aria2") == 0) continue;
+                char *full = mi_path_join(work, ent->d_name);
+                if (!full) continue;
+                int64_t sz = mi_file_size(full);
+                /* A file still growing has its `.aria2` control file beside it;
+                 * a complete one does not. That is the completeness test. */
+                char *ctl = mi_asprintf("%s.aria2", full);
+                int complete = ctl && !mi_path_exists(ctl);
+                free(ctl);
+                if (complete && sz > best) {
+                    best = sz;
+                    free(produced);
+                    produced = full;
+                } else {
+                    free(full);
+                }
+            }
+            closedir(d);
+        }
+    }
+
+    if (!produced) {
+        mi_logf(MI_LOG_ERROR, "download: the magnet produced no complete file "
+                              "(no peers, or the torrent is not a single file)");
+        mi_rm_rf(work);
+        free(work);
+        return rc == MI_OK ? MI_ERR_NET : rc;
+    }
+
+    if (rename(produced, dest) != 0) {
+        int crc = copy_file_bytes(produced, dest);
+        unlink(produced);
+        if (crc != 0) {
+            free(produced);
+            mi_rm_rf(work);
+            free(work);
+            return MI_ERR_IO;
+        }
+    }
+    free(produced);
+    mi_rm_rf(work);
+    free(work);
+
+    int64_t written = mi_file_size(dest);
+    if (written <= 0) return MI_ERR_IO;
+    out->bytes_written = written;
+    mi_detect_file(dest, MI_HEADER_SNIFF, &out->media);
+    return MI_OK;
+}
+
 static int mi_download_once(const mi_download_config *cfg, const char *url,
                             const char *dest, mi_progress_fn on_progress, void *user,
                             mi_download_result *out, int *status_out,
@@ -1962,6 +2195,26 @@ static int mi_download_once(const mi_download_config *cfg, const char *url,
             return MI_OK;
         }
         mi_media_info_free(&existing);
+    }
+
+    /*
+     * A magnet link is not an HTTP object, so it is handed to the BitTorrent
+     * client *before* the probe. Probing it would ask libcurl to open a scheme it
+     * does not speak and fail with a network error that names neither the tool
+     * nor the reason.
+     */
+    if (strncasecmp(url, "magnet:?", 8) == 0) {
+        const char *downloader = (cfg->magnet_downloader_path && *cfg->magnet_downloader_path)
+                                     ? cfg->magnet_downloader_path
+                                     : "aria2c";
+        if (!mi_which(downloader)) {
+            mi_logf(MI_LOG_ERROR,
+                    "download: %s is not installed, so a magnet link cannot be fetched",
+                    downloader);
+            mi_download_result_free(out);
+            return MI_ERR;
+        }
+        return download_magnet(cfg, url, dest, on_progress, user, out);
     }
 
     mi_download_plan plan;
@@ -1994,9 +2247,9 @@ static int mi_download_once(const mi_download_config *cfg, const char *url,
         mi_extract_config_init(&xcfg);
         xcfg.binary = cfg->extractor_path;
         xcfg.gallery_binary = cfg->gallery_extractor_path;
+        xcfg.torrent_binary = cfg->torrent_extractor_path;
         mi_logf(MI_LOG_INFO, "download: extractor %s for %s",
-                mi_extract_pick(&xcfg, url) == MI_EXTRACT_GALLERY ? "gallery-dl" : "yt-dlp",
-                url);
+                mi_extract_kind_name(mi_extract_pick(&xcfg, url)), url);
         int src = download_stream_page(cfg, plan.final_url ? plan.final_url : url, dest,
                                        on_progress, user, out);
         mi_logf(MI_LOG_INFO, "download: the extractor returned %d", src);

@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "mi_extract.h"
@@ -244,6 +245,81 @@ static void test_normalize_impersonate(void) {
     CHECK(mi_extract_normalize_impersonate("") == NULL, "an empty target normalises to NULL");
 }
 
+static void test_torrent_routing(void) {
+    mi_extract_config cfg;
+    mi_extract_config_init(&cfg);
+
+    /* A 1337x host, and its mirrors, go to the torrent extractor. */
+    CHECK(mi_extract_pick(&cfg, "https://1337x.to/search/ubuntu/1/") == MI_EXTRACT_TORRENT,
+          "1337x.to goes to the torrent extractor");
+    CHECK(mi_extract_pick(&cfg, "https://1337x.st/torrent/123/x/") == MI_EXTRACT_TORRENT,
+          "a 1337x mirror goes to the torrent extractor");
+    /* A torrent host must not be mistaken for a gallery host. */
+    CHECK(mi_extract_pick(&cfg, "https://1337x.to/") != MI_EXTRACT_GALLERY,
+          "a torrent host is not the gallery extractor");
+
+    /* An explicit torrent site routes a *bare search* (no URL) to the torrent
+     * tool — that is the case the setting exists for. */
+    cfg.torrent_site = "1337x";
+    CHECK(mi_extract_pick(&cfg, NULL) == MI_EXTRACT_TORRENT,
+          "a configured torrent site routes a URL-less search to the torrent tool");
+    /* But it must NOT hijack a URL-based call: the host decides there. */
+    CHECK(mi_extract_pick(&cfg, "https://www.youtube.com/watch?v=x") == MI_EXTRACT_VIDEO,
+          "a configured torrent site does not hijack a video URL");
+    CHECK(mi_extract_pick(&cfg, "https://imgur.com/gallery/abc") == MI_EXTRACT_GALLERY,
+          "a configured torrent site does not hijack a gallery URL");
+    cfg.torrent_site = NULL;
+
+    /* An explicit kind always wins. */
+    cfg.kind = MI_EXTRACT_TORRENT;
+    CHECK(mi_extract_pick(&cfg, "https://www.youtube.com/watch?v=x") == MI_EXTRACT_TORRENT,
+          "an explicit torrent kind overrides the host");
+    cfg.kind = MI_EXTRACT_AUTO;
+
+    /* The torrent binary default is the wrapper, not yt-dlp. */
+    CHECK(strcmp(mi_extract_kind_name(MI_EXTRACT_TORRENT), "py1337x") == 0,
+          "the torrent kind is named py1337x");
+}
+
+/*
+ * The wrapper prints the yt-dlp shape, so the *parser* must read a torrent
+ * search as entries. Driven through a stub binary so the test needs no network
+ * and no 1337x: the contract under test is the JSON, not the site.
+ */
+static void test_torrent_search_parses_entries(void) {
+    const char *script = "/tmp/mi-test-py1337x-stub.sh";
+    FILE *f = fopen(script, "w");
+    if (!f) { CHECK(0, "write stub"); return; }
+    fprintf(f, "#!/bin/sh\n");
+    fprintf(f, "echo '{\"title\":\"ubuntu\",\"extractor\":\"1337x\",\"entries\":["
+               "{\"id\":\"abc\",\"title\":\"Ubuntu 24.04\","
+               "\"url\":\"magnet:?xt=urn:btih:abc\",\"thumbnail\":null},"
+               "{\"id\":\"def\",\"title\":\"Ubuntu Server\","
+               "\"url\":\"magnet:?xt=urn:btih:def\"}]}'\n");
+    fclose(f);
+    chmod(script, 0755);
+
+    mi_extract_config cfg;
+    mi_extract_config_init(&cfg);
+    cfg.torrent_binary = script;
+    cfg.torrent_site = "1337x";
+    cfg.search_term = "ubuntu";
+
+    mi_extract_result res;
+    int rc = mi_extract(&cfg, NULL, &res);
+    CHECK(rc == MI_OK, "the torrent wrapper's JSON is read");
+    CHECK(res.entry_count == 2, "both torrents become entries");
+    CHECK(res.format_count == 0, "a torrent search resolves no stream formats");
+    if (res.entry_count == 2) {
+        CHECK(res.entries[0].url && strncmp(res.entries[0].url, "magnet:", 7) == 0,
+              "an entry's URL is the magnet link");
+        CHECK(res.entries[0].title && strcmp(res.entries[0].title, "Ubuntu 24.04") == 0,
+              "an entry keeps its title");
+    }
+    mi_extract_result_free(&res);
+    unlink(script);
+}
+
 int main(void) {
     test_pick_by_host();
     test_cookies_for_ffmpeg();
@@ -251,6 +327,8 @@ int main(void) {
     test_extract_needs_a_url_or_a_search();
     test_video_resolve();
     test_gallery_resolve();
+    test_torrent_routing();
+    test_torrent_search_parses_entries();
 
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
