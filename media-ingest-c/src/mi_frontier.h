@@ -52,6 +52,20 @@ mi_frontier *mi_frontier_new_turso(const char *url, const char *token,
 int mi_frontier_push(mi_frontier *f, const char *url, int depth);
 
 /*
+ * Append a URL with a priority, so the walk can fetch the pages most likely to
+ * answer first rather than in the order they happened to be linked.
+ *
+ * A crawl has a small budget and a large site, so *which* pages it reads decides
+ * whether it finds anything. With a term in hand, a URL whose path carries the
+ * term is a far better next fetch than an "About us" page, and the frontier is
+ * where that choice has to be made. Higher `priority` is taken first; ties keep
+ * insertion order (breadth-first), so an unprioritised walk is unchanged.
+ *
+ * Returns 0 on success.
+ */
+int mi_frontier_push_prio(mi_frontier *f, const char *url, int depth, int priority);
+
+/*
  * Take the next URL to visit.
  *
  * Returns 1 and sets `*url` (owned by the caller) and `*depth` when one is

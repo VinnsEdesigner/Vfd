@@ -109,6 +109,37 @@ static void test_not_a_sitemap(void) {
           "an HTML page is not a sitemap");
 }
 
+/*
+ * A decompression bomb is refused, not obeyed.
+ *
+ * A few kilobytes of gzip can inflate to gigabytes; without a ceiling the
+ * doubling buffer turns a hostile `.xml.gz` into an out-of-memory. The cap is
+ * 50 MB, so a stream that inflates past it must come back NULL rather than
+ * allocating its way there.
+ */
+static void test_gzip_bomb_is_capped(void) {
+    /* 60 MB of zeros compresses to a few tens of kilobytes and would inflate
+     * past the 50 MB ceiling. */
+    size_t raw_len = 60u * 1024u * 1024u;
+    unsigned char *raw = calloc(1, raw_len);
+    CHECK(raw != NULL, "the bomb input is allocated");
+    if (!raw) return;
+
+    size_t bound = compressBound(raw_len) + 64;
+    unsigned char *gz = malloc(bound);
+    CHECK(gz != NULL, "the bomb output buffer is allocated");
+    if (!gz) { free(raw); return; }
+    size_t gzlen = bound;
+    CHECK(compress2(gz, &gzlen, raw, raw_len, 9) == Z_OK, "the bomb compresses");
+    free(raw);
+
+    size_t out_len = 0;
+    unsigned char *out = mi_gzip_decompress(gz, gzlen, &out_len);
+    CHECK(out == NULL, "an over-sized decompression is refused");
+    free(out);
+    free(gz);
+}
+
 /* The robots Sitemap: directive is captured, unscoped to any user-agent. */
 static void test_robots_sitemap_directive(void) {
     mi_politeness *p = mi_politeness_new();
@@ -138,6 +169,7 @@ int main(void) {
     test_entities();
     test_gzip();
     test_not_a_sitemap();
+    test_gzip_bomb_is_capped();
     test_robots_sitemap_directive();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

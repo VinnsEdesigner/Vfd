@@ -19,12 +19,21 @@ unsigned char *mi_gzip_decompress(const unsigned char *in, size_t len, size_t *o
     *out_len = 0;
     if (!mi_gzip_is_gzip(in, len)) return NULL;
 
+    /*
+     * A ceiling on the decompressed size. The buffer below doubles on demand,
+     * which a crafted stream ("gzip bomb") turns into unbounded memory: a few
+     * hundred compressed kilobytes can inflate to gigabytes. 50 MB is far more
+     * than any real sitemap and small enough that a bomb is refused, not obeyed.
+     */
+    const size_t GZIP_MAX_OUT = 50u * 1024u * 1024u;
+
     z_stream zs;
     memset(&zs, 0, sizeof zs);
     /* 15 + 16: a gzip header, not a bare zlib stream. */
     if (inflateInit2(&zs, 15 + 16) != Z_OK) return NULL;
 
     size_t cap = len * 6 + 4096; /* a sitemap compresses several-fold */
+    if (cap > GZIP_MAX_OUT) cap = GZIP_MAX_OUT;
     unsigned char *out = mi_malloc(cap + 1);
     if (!out) { inflateEnd(&zs); return NULL; }
 
@@ -38,9 +47,17 @@ unsigned char *mi_gzip_decompress(const unsigned char *in, size_t len, size_t *o
         if (rc == Z_STREAM_END) break;
         if (rc == Z_OK || rc == Z_BUF_ERROR) {
             if (zs.avail_out == 0) {
+                if (cap >= GZIP_MAX_OUT) {
+                    /* The stream is bigger than any real sitemap; refuse it
+                     * rather than grow without bound. */
+                    free(out);
+                    inflateEnd(&zs);
+                    return NULL;
+                }
                 /* Grow and continue. */
                 size_t used = (size_t)zs.total_out;
                 cap *= 2;
+                if (cap > GZIP_MAX_OUT) cap = GZIP_MAX_OUT;
                 unsigned char *grown = mi_realloc(out, cap + 1);
                 if (!grown) { free(out); inflateEnd(&zs); return NULL; }
                 out = grown;

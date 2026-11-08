@@ -251,6 +251,147 @@ char *mi_url_encode(const char *s) {
     return out;
 }
 
+/* Whether `key` is one of the tracking parameters that never changes what a
+ * server returns, so dropping it cannot lose a resource. */
+static int is_tracking_param(const char *key, size_t klen) {
+    static const char *NAMES[] = {
+        "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+        "utm_id", "utm_name", "utm_reader", "utm_referrer",
+        "fbclid", "gclid", "gclsrc", "dclid", "msclkid", "mc_eid", "mc_cid",
+        "igshid", "yclid", "_ga", "_gl", "ref_src", "ref_url", "spm", "scm",
+    };
+    for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) {
+        if (strlen(NAMES[i]) == klen && !strncasecmp(key, NAMES[i], klen)) return 1;
+    }
+    /* A `ref`/`referrer` key is often tracking and occasionally meaningful, so
+     * it is only dropped when it looks like a campaign tag rather than a
+     * resource selector; the conservative choice is to keep it. */
+    return 0;
+}
+
+/* Rebuild a query string without the tracking parameters, or NULL when nothing
+ * is left. Returns the length through `*out_len`. */
+static char *strip_tracking_params(const char *query, size_t qlen, size_t *out_len) {
+    char *out = mi_malloc(qlen + 1);
+    if (!out) return NULL;
+    size_t o = 0;
+    const char *p = query;
+    const char *end = query + qlen;
+    while (p < end) {
+        const char *amp = memchr(p, '&', (size_t)(end - p));
+        const char *seg_end = amp ? amp : end;
+        const char *eq = memchr(p, '=', (size_t)(seg_end - p));
+        size_t klen = eq ? (size_t)(eq - p) : (size_t)(seg_end - p);
+        if (klen > 0 && !is_tracking_param(p, klen)) {
+            if (o > 0) out[o++] = '&';
+            memcpy(out + o, p, (size_t)(seg_end - p));
+            o += (size_t)(seg_end - p);
+        }
+        if (!amp) break;
+        p = amp + 1;
+    }
+    out[o] = '\0';
+    *out_len = o;
+    return out;
+}
+
+char *mi_url_normalize(const char *url) {
+    if (!url || !*url) return NULL;
+    const char *sep = strstr(url, "://");
+    if (!sep) return mi_strdup(url);
+
+    size_t scheme_len = (size_t)(sep - url);
+    const char *after = sep + 3;
+    const char *auth_end = after;
+    while (*auth_end && *auth_end != '/' && *auth_end != '?' && *auth_end != '#') auth_end++;
+
+    /* Lowercase the scheme. */
+    char scheme[16];
+    size_t sc = scheme_len < sizeof scheme - 1 ? scheme_len : sizeof scheme - 1;
+    for (size_t i = 0; i < sc; i++) scheme[i] = (char)tolower((unsigned char)url[i]);
+    scheme[sc] = '\0';
+
+    /* Split the authority into userinfo (kept verbatim) and host[:port]. */
+    const char *host_start = after;
+    const char *at = NULL;
+    for (const char *q = after; q < auth_end; q++) {
+        if (*q == '@') at = q;
+    }
+    size_t userinfo_len = 0;
+    if (at) {
+        userinfo_len = (size_t)(at - after) + 1;
+        host_start = at + 1;
+    }
+    size_t host_len = (size_t)(auth_end - host_start);
+
+    /* Find a port suffix on the host. */
+    const char *colon = NULL;
+    for (const char *q = host_start; q < auth_end; q++) {
+        if (*q == ':') colon = q;
+    }
+    size_t bare_host_len = host_len;
+    const char *port = NULL;
+    size_t port_len = 0;
+    if (colon) {
+        bare_host_len = (size_t)(colon - host_start);
+        port = colon + 1;
+        port_len = (size_t)(auth_end - port);
+    }
+
+    /* Lowercase the host; keep the port as given unless it is the scheme's
+     * default, which is the same resource with or without it. */
+    char *host = mi_malloc(bare_host_len + 1);
+    if (!host) return NULL;
+    for (size_t i = 0; i < bare_host_len; i++)
+        host[i] = (char)tolower((unsigned char)host_start[i]);
+    host[bare_host_len] = '\0';
+    int drop_port = 0;
+    if (port) {
+        if ((!strcmp(scheme, "http") && port_len == 2 && !strncmp(port, "80", 2)) ||
+            (!strcmp(scheme, "https") && port_len == 3 && !strncmp(port, "443", 3))) {
+            drop_port = 1;
+        }
+    }
+
+    /* The path and query, with the fragment dropped. */
+    const char *path = auth_end;
+    const char *frag = strchr(auth_end, '#');
+    const char *qmark = strchr(auth_end, '?');
+    const char *path_end = frag ? frag : url + strlen(url);
+    if (qmark && qmark < path_end) path_end = qmark;
+    size_t path_len = (size_t)(path_end - path);
+    if (path_len == 0) path = "/", path_len = 1;
+
+    size_t qlen = 0;
+    char *query = NULL;
+    if (qmark && (!frag || qmark < frag)) {
+        const char *qend = frag ? frag : url + strlen(url);
+        query = strip_tracking_params(qmark + 1, (size_t)(qend - (qmark + 1)), &qlen);
+    }
+
+    /*
+     * Reassemble. The port is built into a small buffer rather than spliced
+     * with two separate conversions: a `%.*s` for the length and a `%s` for the
+     * colon do not compose, and getting the argument count wrong here reads an
+     * int as a pointer.
+     */
+    char portbuf[16];
+    portbuf[0] = '\0';
+    if (!drop_port && port && port_len > 0 && port_len + 1 < sizeof portbuf) {
+        portbuf[0] = ':';
+        memcpy(portbuf + 1, port, port_len);
+        portbuf[port_len + 1] = '\0';
+    }
+
+    char *out = mi_asprintf("%s://%.*s%s%s%.*s%s%s",
+                            scheme, (int)userinfo_len, after, host, portbuf,
+                            (int)path_len, path,
+                            (query && qlen) ? "?" : "", query ? query : "");
+    free(host);
+    free(query);
+    return out;
+}
+
 ssize_t mi_read_head(const char *path, size_t max, unsigned char **out) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;

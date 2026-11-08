@@ -66,6 +66,23 @@ double mi_politeness_delay(const mi_politeness *p, const char *host);
 void mi_politeness_note_request(mi_politeness *p, const char *host);
 
 /*
+ * Reserve the next slot to request `host`, atomically, and return how long to
+ * wait before sending.
+ *
+ * This is the form a *parallel* crawl needs. `mi_politeness_delay` followed by
+ * `mi_politeness_note_request` is correct for one caller, but two workers can
+ * both read a delay of zero and then both send, which doubles the rate to that
+ * host — exactly what pacing exists to prevent. Reserving the slot under the
+ * lock and returning the wait means every caller gets its own turn, and the
+ * sleeping happens outside the lock so other hosts are not held up.
+ *
+ * Returns the seconds to wait (0 to send now). The caller should sleep, then
+ * send; a caller that abandons the reservation without sending has only made the
+ * next request wait a little longer, which is the safe direction to be wrong.
+ */
+double mi_politeness_reserve(mi_politeness *p, const char *host);
+
+/*
  * The default minimum interval, in seconds, for a host that published no
  * Crawl-delay. 0 disables pacing. Set once at start-up.
  */

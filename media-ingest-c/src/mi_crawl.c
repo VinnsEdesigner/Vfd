@@ -15,6 +15,7 @@
 #include "mi_crawl.h"
 
 #include <ctype.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -39,7 +40,14 @@
 #define CRAWL_MAX_BODY (2 * 1024 * 1024)
 /* The most pages one walk may read, whatever the config says, so a mistake in a
  * caller cannot turn into an unbounded crawl. */
-#define CRAWL_HARD_MAX_PAGES 200
+#define CRAWL_HARD_MAX_PAGES 5000
+/* The most pages to fetch at once, when the caller did not say. Parallel fetches
+ * are what make the budget buy coverage; the per-host politeness interval keeps
+ * any one host's rate honest, so this spreads across hosts. */
+#define CRAWL_DEFAULT_WORKERS 4
+#define CRAWL_MAX_WORKERS 16
+/* How many candidate hits one walk may probe to confirm they are media. */
+#define CRAWL_DEFAULT_MAX_VERIFY 24
 /* How long to let a click's effect arrive before reading, and how long to let a
  * page settle after load. Short on purpose: a crawl drives many pages, and a
  * per-page cost of ten seconds makes the walk useless even when it is right. */
@@ -48,13 +56,17 @@
 
 void mi_crawl_config_init(mi_crawl_config *cfg) {
     memset(cfg, 0, sizeof *cfg);
-    cfg->max_depth = 2;
-    cfg->max_pages = 40;
+    cfg->max_depth = 3;
+    cfg->max_pages = 200;
     cfg->max_hits = 50;
-    cfg->budget_seconds = 45.0;
-    cfg->same_host_only = 0;
+    cfg->budget_seconds = 90.0;
+    cfg->same_host_only = 1;
     cfg->use_browser_fallback = 1;
-    cfg->max_browser_pages = 3;
+    cfg->max_browser_pages = 8;
+    cfg->workers = CRAWL_DEFAULT_WORKERS;
+    cfg->verify_hits = 1;
+    cfg->max_verify = CRAWL_DEFAULT_MAX_VERIFY;
+    cfg->browser_scroll = 1;
     cfg->extract_enabled = 1;
     cfg->extractor_path = NULL;
     cfg->gallery_extractor_path = NULL;
@@ -141,14 +153,6 @@ static void dedup_add(dedup_set *d, mi_simhash fp) {
  */
 typedef mi_frontier frontier;
 
-static int frontier_push(frontier *f, const char *url, int depth) {
-    return mi_frontier_push(f, url, depth);
-}
-
-static int frontier_empty(const frontier *f) {
-    return mi_frontier_empty((mi_frontier *)f);
-}
-
 /* Take the next URL. Returns 1 and sets the out-params, 0 when empty. The URL is
  * owned by the caller. */
 static int frontier_take(frontier *f, char **url, int *depth) {
@@ -189,6 +193,77 @@ static char *fold(const char *s) {
     return out;
 }
 
+/*
+ * Bounded Levenshtein distance between two short strings.
+ *
+ * Returns the number of edits, or `max + 1` when they are further apart than
+ * `max` (which lets the caller stop early). Used only on folded names, which are
+ * short, so the quadratic cost is nothing.
+ */
+static int edit_distance(const char *a, const char *b, int max) {
+    size_t la = strlen(a), lb = strlen(b);
+    if (la == 0) return (int)lb > max ? max + 1 : (int)lb;
+    if (lb == 0) return (int)la > max ? max + 1 : (int)la;
+    if ((int)(la > lb ? la - lb : lb - la) > max) return max + 1;
+    /* Two rolling rows of the DP table. */
+    int *prev = mi_malloc((lb + 1) * sizeof *prev);
+    int *cur = mi_malloc((lb + 1) * sizeof *cur);
+    if (!prev || !cur) { free(prev); free(cur); return max + 1; }
+    for (size_t j = 0; j <= lb; j++) prev[j] = (int)j;
+    for (size_t i = 1; i <= la; i++) {
+        cur[0] = (int)i;
+        int row_min = cur[0];
+        for (size_t j = 1; j <= lb; j++) {
+            int cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
+            int del = prev[j] + 1;
+            int ins = cur[j - 1] + 1;
+            int sub = prev[j - 1] + cost;
+            int v = del < ins ? del : ins;
+            if (sub < v) v = sub;
+            cur[j] = v;
+            if (v < row_min) row_min = v;
+        }
+        if (row_min > max) { free(prev); free(cur); return max + 1; }
+        int *tmp = prev; prev = cur; cur = tmp;
+    }
+    int d = prev[lb];
+    free(prev);
+    free(cur);
+    return d > max ? max + 1 : d;
+}
+
+/*
+ * Whether `needle` appears in `hay` within `max_dist` edits — the fuzzy form of
+ * `strstr`, so a name misspelled by a character or two still matches. Only a
+ * window the length of the needle (plus or minus the budget) is compared at each
+ * position, so an unrelated long name cannot match by accident.
+ */
+static int fuzzy_contains(const char *hay, const char *needle, int max_dist) {
+    size_t hn = strlen(hay), nn = strlen(needle);
+    if (nn == 0) return 0;
+    /* The whole-string case first: the name is the term, misspelled. */
+    if (edit_distance(hay, needle, max_dist) <= max_dist) return 1;
+    if (hn < nn) return 0;
+    for (size_t i = 0; i + nn <= hn + (size_t)max_dist; i++) {
+        size_t take = nn + (size_t)max_dist;
+        if (i + take > hn) take = hn - i;
+        char *win = mi_strndup(hay + i, take);
+        if (!win) return 0;
+        int d = edit_distance(win, needle, max_dist);
+        free(win);
+        if (d <= max_dist) return 1;
+    }
+    return 0;
+}
+
+/* How many edits a term of this length may be misspelled by. Short terms get no
+ * slack, because one edit in a three-letter term matches almost anything. */
+static int fuzzy_budget(size_t term_len) {
+    if (term_len < 5) return 0;
+    if (term_len < 10) return 1;
+    return 2;
+}
+
 int mi_crawl_score(const char *filename, const char *title, const char *term) {
     if (!term || !*term) return 50; /* no term: everything is equally interesting */
 
@@ -213,26 +288,84 @@ int mi_crawl_score(const char *filename, const char *title, const char *term) {
         score = 55;
     } else {
         /*
-         * Fall back to "every word appears somewhere", which catches a term
-         * typed in a different order from the filename ("datasheet stm32").
+         * Fall back to the term's words, *weighted by their length*.
+         *
+         * Every word appearing somewhere is the same 45 as before, but a partial
+         * match now reports how much of the term was covered rather than a flat
+         * 20: "stm32 datasheet" matching only "datasheet" is a weaker answer than
+         * matching only "stm32", and a caller ranking results should be able to
+         * tell. The long words are what discriminate, so their weight is their
+         * length.
          */
         char *copy = mi_strdup(term);
         if (copy) {
-            int words = 0, found = 0;
+            int words = 0, found = 0, weight = 0, matched_weight = 0;
             char *save = NULL;
             for (char *w = strtok_r(copy, " -_./+", &save); w; w = strtok_r(NULL, " -_./+", &save)) {
                 words++;
                 char *wf = fold(w);
                 if (wf) {
-                    if ((f && strstr(f, wf)) || (ti && strstr(ti, wf))) found++;
+                    int wlen = (int)strlen(wf);
+                    if (wlen == 0) wlen = 1;
+                    weight += wlen;
+                    if ((f && strstr(f, wf)) || (ti && strstr(ti, wf))) {
+                        found++;
+                        matched_weight += wlen;
+                    }
                     free(wf);
                 }
             }
             free(copy);
-            if (words > 0 && found == words) score = 45;
-            else if (words > 0 && found > 0) score = 20;
+            if (words > 0 && found == words) {
+                score = 45;
+            } else if (found > 0 && weight > 0) {
+                score = 10 + (35 * matched_weight) / weight;
+            }
         }
     }
+
+    /*
+     * Fuzzy matching, for a name misspelled by a character or two.
+     *
+     * "STM32 Datasheet" folds and matches cleanly, but a site's file called
+     * "stm32-datashet.pdf" would score 0 on a plain substring test and be lost.
+     * The slack scales with the term's length so a short term cannot match by
+     * accident, and it only runs when the exact tests found nothing — so it can
+     * add a hit but never displace a real one.
+     */
+    if (score == 0 && t[0]) {
+        int budget = fuzzy_budget(strlen(t));
+        if (budget > 0) {
+            if ((f && fuzzy_contains(f, t, budget)) ||
+                (ti && fuzzy_contains(ti, t, budget))) {
+                score = 30;
+            } else {
+                /* Per-word, so one misspelled word among correct ones still
+                 * carries the match. */
+                char *copy = mi_strdup(term);
+                if (copy) {
+                    int words = 0, fuzzed = 0;
+                    char *save = NULL;
+                    for (char *w = strtok_r(copy, " -_./+", &save); w;
+                         w = strtok_r(NULL, " -_./+", &save)) {
+                        char *wf = fold(w);
+                        if (!wf) continue;
+                        words++;
+                        int b = fuzzy_budget(strlen(wf));
+                        if (b > 0 && ((f && fuzzy_contains(f, wf, b)) ||
+                                      (ti && fuzzy_contains(ti, wf, b)))) {
+                            fuzzed++;
+                        }
+                        free(wf);
+                    }
+                    free(copy);
+                    if (words > 0 && fuzzed == words) score = 25;
+                    else if (fuzzed > 0) score = 12;
+                }
+            }
+        }
+    }
+
     free(t);
     free(f);
     free(ti);
@@ -440,6 +573,307 @@ static int is_asset(const char *url) {
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* Shared state for the parallel walk                                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Everything the workers share.
+ *
+ * The walk fetches several pages at once, so the things that used to be local
+ * variables — the result being built, the page counter, the time the walk
+ * started — are here, guarded by `lock`. The frontier is already thread-safe
+ * (see mi_frontier), and so are the politeness state, the anti-bot brain and the
+ * browser pools, so those are used directly.
+ */
+typedef struct {
+    const mi_crawl_config *cfg;
+    frontier *f;
+    const char *term;
+    const char *start_url;
+    mi_crawl_result *res;
+    double started;
+    double deadline;
+    int max_pages;
+    int max_hits;
+    int pages_read;
+    int verifies;
+    /* The fingerprints of pages already read. Guarded by `lock`, because two
+     * workers may fingerprint a page at once. */
+    dedup_set *dedup;
+    pthread_mutex_t lock;
+} crawl_shared;
+
+/* Whether the crawl may keep going: pages left, hits left, time left. */
+static int crawl_should_continue(crawl_shared *s) {
+    pthread_mutex_lock(&s->lock);
+    int go = s->pages_read < s->max_pages &&
+             (int)s->res->hit_count < s->max_hits &&
+             now_seconds() < s->deadline;
+    pthread_mutex_unlock(&s->lock);
+    return go;
+}
+
+/* Reserve one page slot, so the cap holds across workers. Returns 0 when the
+ * cap is already reached. */
+static int crawl_take_page_slot(crawl_shared *s) {
+    pthread_mutex_lock(&s->lock);
+    int ok = s->pages_read < s->max_pages;
+    if (ok) s->pages_read++;
+    pthread_mutex_unlock(&s->lock);
+    return ok;
+}
+
+/* Whether a candidate hit may still be probed. */
+static int crawl_take_verify_slot(crawl_shared *s) {
+    pthread_mutex_lock(&s->lock);
+    int cap = s->cfg->max_verify > 0 ? s->cfg->max_verify : CRAWL_DEFAULT_MAX_VERIFY;
+    int ok = s->verifies < cap;
+    if (ok) s->verifies++;
+    pthread_mutex_unlock(&s->lock);
+    return ok;
+}
+
+/* ------------------------------------------------------------------ */
+/* URL canonicalisation and term-aware priority                        */
+/* ------------------------------------------------------------------ */
+
+/* Whether a URL's path or query carries the term, folded — the strongest signal
+ * that the page it names is about what the caller asked for. */
+static int url_mentions_term(const char *url, const char *folded_term) {
+    if (!folded_term || !*folded_term) return 0;
+    char *fu = fold(url);
+    if (!fu) return 0;
+    int hit = strstr(fu, folded_term) != NULL;
+    free(fu);
+    return hit;
+}
+
+/*
+ * A priority for a frontier entry: higher is fetched sooner.
+ *
+ * With a small budget on a large site, *which* pages the walk reads decides
+ * whether it finds anything. A URL whose own path carries the term is the best
+ * next fetch, and a shallower page is next (it is closer to the site's index, so
+ * it is more likely to link the rest). A sitemap entry adds the site's own
+ * priority on top of this, in `seed_from_sitemaps`. Everything else keeps
+ * insertion order, so an unprioritised walk is unchanged.
+ */
+static int url_priority(const char *url, int depth, const char *folded_term) {
+    int p = 0;
+    if (url_mentions_term(url, folded_term)) p += 100;
+    /* Shallow pages first: the site's own index pages reach the most. */
+    p += 10 - depth;
+    return p;
+}
+
+/*
+ * Add a URL to the frontier, canonicalised and seen-checked.
+ *
+ * Canonicalising before the seen-set is what stops the same page under
+ * `?utm_source=` and without it from being two entries and two fetches out of a
+ * small budget. The priority is computed here so every enqueue point agrees.
+ */
+static void frontier_add(crawl_shared *s, const char *url, int depth, const char *folded_term) {
+    if (!url || !*url) return;
+    char *norm = mi_url_normalize(url);
+    const char *u = norm ? norm : url;
+    if (!strset_has(s->f, u)) {
+        mi_frontier_push_prio(s->f, u, depth, url_priority(u, depth, folded_term));
+    }
+    free(norm);
+}
+
+/*
+ * Add one candidate hit, with the browser flag.
+ *
+ * The extractor's answer, the anchor pass and the rendered pass all reach here,
+ * so this is where a hit is appended under the lock. Returns the index of the
+ * new hit, or -1.
+ */
+static int res_add_hit(crawl_shared *s, const mi_browse_item *item, int score,
+                       const char *found_on, int via_browser) {
+    pthread_mutex_lock(&s->lock);
+    mi_crawl_hit *h = NULL;
+    if ((int)s->res->hit_count < s->max_hits) {
+        h = add_hit(s->res, item, score, found_on, via_browser);
+    }
+    int idx = h ? (int)s->res->hit_count - 1 : -1;
+    pthread_mutex_unlock(&s->lock);
+    return idx;
+}
+
+static int res_add_page(crawl_shared *s, const char *url, int links, int hits,
+                        int rendered, int status) {
+    pthread_mutex_lock(&s->lock);
+    add_page(s->res, url, links, hits, rendered, status);
+    pthread_mutex_unlock(&s->lock);
+    return 0;
+}
+
+/* Add one extractor *entry* as a hit, under the lock. */
+static int res_add_entry_hit(crawl_shared *s, const mi_extract_entry *e,
+                             const char *found_on) {
+    pthread_mutex_lock(&s->lock);
+    int added = 0;
+    if ((int)s->res->hit_count < s->max_hits) {
+        added = add_entry_hit(s->res, e, s->term, found_on);
+    }
+    pthread_mutex_unlock(&s->lock);
+    return added;
+}
+
+/* Whether the dedup set has seen this fingerprint, and record it. Under the
+ * lock, so two workers fingerprinting at once cannot both add it. */
+static int res_dedup_check(crawl_shared *s, mi_simhash fp) {
+    if (!fp) return 0;
+    pthread_mutex_lock(&s->lock);
+    int seen = dedup_seen(s->dedup, fp, s->cfg->dedup_distance);
+    dedup_add(s->dedup, fp);
+    pthread_mutex_unlock(&s->lock);
+    return seen;
+}
+
+/*
+ * The hit cap and the page cap, under the lock.
+ *
+ * `room` is how many more hits may be added; a worker uses it to stop mid-page
+ * rather than build a list longer than the caller asked for.
+ */
+static int res_hits_left(crawl_shared *s) {
+    pthread_mutex_lock(&s->lock);
+    int room = s->max_hits - (int)s->res->hit_count;
+    pthread_mutex_unlock(&s->lock);
+    return room > 0 ? room : 0;
+}
+
+/*
+ * Confirm a candidate hit from the response rather than the URL string.
+ *
+ * A filename is guessed from the URL, so a signed or extension-less address is
+ * treated as a page and an HTML viewer named like a file is recorded as a hit
+ * with nothing behind it. A ranged probe answers both questions at once: the
+ * Content-Type and the magic bytes say whether this is real media, and the
+ * filename is rewritten when the URL's own name is not what the bytes are.
+ *
+ * Returns 1 when the candidate is confirmed media (and fills `mime`), 0 when it
+ * is a page rather than a file, and -1 when the probe could not tell — in which
+ * case the caller keeps the candidate, because a host that refuses a probe must
+ * not lose a real hit.
+ */
+static int verify_candidate(const mi_crawl_config *cfg, const char *url,
+                            char **mime_out) {
+    mi_download_config dcfg;
+    mi_download_config_init(&dcfg);
+    dcfg.require_media = 0;
+    dcfg.user_agent = cfg->user_agent;
+    dcfg.proxy = cfg->proxy;
+    dcfg.impersonate = cfg->impersonate;
+    dcfg.cookies_text = cfg->cookies_text;
+    dcfg.cookies_from_browser = cfg->cookies_from_browser;
+    dcfg.timeout_seconds = 10;
+
+    mi_download_plan plan;
+    if (mi_probe(&dcfg, url, &plan) != 0) return -1;
+
+    int verdict = -1;
+    if (plan.have_media && plan.media.kind != MI_KIND_UNKNOWN) {
+        verdict = 1;
+        if (mime_out) {
+            const char *name = mi_kind_name(plan.media.kind);
+            if (name && *name) *mime_out = mi_strdup(name);
+        }
+    } else if (plan.content_type && *plan.content_type) {
+        /* No media magic. A response that says it is a document is a page, not a
+         * file, and the candidate was a URL-shape guess. */
+        const char *ct = plan.content_type;
+        if (!strncasecmp(ct, "text/html", 9) || !strncasecmp(ct, "application/xhtml", 17) ||
+            !strncasecmp(ct, "text/xml", 8) || !strncasecmp(ct, "application/xml", 15) ||
+            !strncasecmp(ct, "text/plain", 10)) {
+            verdict = 0;
+        } else if (!strncasecmp(ct, "video/", 6) || !strncasecmp(ct, "audio/", 6) ||
+                   !strncasecmp(ct, "image/", 6) ||
+                   !strncasecmp(ct, "application/vnd.apple.mpegurl", 29) ||
+                   !strncasecmp(ct, "application/dash", 16) ||
+                   !strncasecmp(ct, "application/octet-stream", 24) ||
+                   !strncasecmp(ct, "application/pdf", 15)) {
+            verdict = 1;
+        }
+    }
+    mi_download_plan_free(&plan);
+    return verdict;
+}
+
+/*
+ * Verify the candidate hits a page produced, in place.
+ *
+ * Called once per page, under no lock except the counters', so a probe does not
+ * stall the other workers. A candidate the probe shows is a page is removed from
+ * the result; a candidate it confirms gets the real MIME and a score bump so
+ * verified media outranks an unverified link.
+ */
+static void verify_page_hits(crawl_shared *s, size_t first, size_t count) {
+    if (!s->cfg->verify_hits) return;
+    for (size_t i = 0; i < count; i++) {
+        if (now_seconds() >= s->deadline) return;
+        pthread_mutex_lock(&s->lock);
+        size_t idx = first + i;
+        if (idx >= s->res->hit_count) { pthread_mutex_unlock(&s->lock); return; }
+        char *url = mi_strdup(s->res->hits[idx].url);
+        int resolved = s->res->hits[idx].resolved;
+        pthread_mutex_unlock(&s->lock);
+        if (!url) return;
+        /* The extractor's answer is already authoritative, and a magnet is not
+         * fetchable by a probe. */
+        if (resolved || !strncasecmp(url, "magnet:", 7)) { free(url); continue; }
+        if (!crawl_take_verify_slot(s)) { free(url); continue; }
+
+        char *mime = NULL;
+        int v = verify_candidate(s->cfg, url, &mime);
+        pthread_mutex_lock(&s->lock);
+        if (idx < s->res->hit_count && s->res->hits[idx].url &&
+            !strcmp(s->res->hits[idx].url, url)) {
+            if (v == 1) {
+                s->res->verified++;
+                if (mime) {
+                    free(s->res->hits[idx].mime);
+                    s->res->hits[idx].mime = mime;
+                    mime = NULL;
+                }
+                /* Verified media outranks an unverified link at an equal name
+                 * score, which is what puts a real file above a viewer. */
+                if (s->res->hits[idx].score < 95) s->res->hits[idx].score += 5;
+            } else if (v == 0) {
+                /* A page, not a file: drop it. The candidate was a URL-shape
+                 * guess and the response disproved it. */
+                s->res->dropped_non_media++;
+                free(s->res->hits[idx].url);
+                free(s->res->hits[idx].filename);
+                free(s->res->hits[idx].title);
+                free(s->res->hits[idx].mime);
+                free(s->res->hits[idx].found_on);
+                free(s->res->hits[idx].thumbnail);
+                for (size_t q = 0; q < s->res->hits[idx].quality_count; q++)
+                    free(s->res->hits[idx].qualities[q].label);
+                free(s->res->hits[idx].qualities);
+                memmove(&s->res->hits[idx], &s->res->hits[idx + 1],
+                        (s->res->hit_count - idx - 1) * sizeof *s->res->hits);
+                s->res->hit_count--;
+                /* The array shifted, so the caller's indices move too; the
+                 * simplest correct thing is to stop verifying this page's
+                 * remaining candidates and let the next page re-index. */
+                free(mime);
+                free(url);
+                pthread_mutex_unlock(&s->lock);
+                return;
+            }
+        }
+        pthread_mutex_unlock(&s->lock);
+        free(mime);
+        free(url);
+    }
+}
+
 /**
  * Read a page by *driving* a browser, rather than only looking at it.
  *
@@ -448,16 +882,17 @@ static int is_asset(const char *url) {
  * after settling, or hides it behind a tab, a consent button or a "show all".
  *
  * A session can do both: wait for the network to go quiet, click whatever the
- * caller says needs clicking, and then read the links the browser actually has —
- * including ones the DOM dump misses because they were attached after it was
- * taken.
+ * caller says needs clicking, scroll so a lazy-loaded listing exists at all, and
+ * then read the links the browser actually has — including ones the DOM dump
+ * misses because they were attached after it was taken.
  *
  * Returns the number of hits added. `*rendered` is set when the browser was
  * actually used, so the caller can report that the page needed it.
  */
-static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
-                            frontier *f, const char *url, int depth,
-                            const char *term, double deadline, int *rendered) {
+static int read_page_driven(crawl_shared *s, const char *url, int depth, int *rendered) {
+    const mi_crawl_config *cfg = s->cfg;
+    const char *term = s->term;
+    double deadline = s->deadline;
     *rendered = 0;
     if (!cfg->interactive_pool || !mi_interactive_pool_available(cfg->interactive_pool)) {
         return 0;
@@ -475,14 +910,15 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
     /* Counted on the result as well as reported to the caller: the summary the
      * API returns is built from the result, so a browser that was used but not
      * counted would make the crawl look like it never needed one. */
-    res->rendered++;
+    pthread_mutex_lock(&s->lock);
+    s->res->rendered++;
+    pthread_mutex_unlock(&s->lock);
 
-    int max_hits = cfg->max_hits > 0 ? cfg->max_hits : 50;
     int hits = 0;
     int links = 0;
 
     /*
-     * Settle, then click, then read.
+     * Settle, then click, then scroll, then read.
      *
      * The order matters: clicking before the page has finished loading misses
      * elements that do not exist yet, and reading before clicking misses the
@@ -516,6 +952,43 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
         }
     }
 
+    /*
+     * The scroll pass.
+     *
+     * A modern listing lazy-loads: only the first viewport exists in the DOM
+     * until the page is scrolled, so a listing read without scrolling is a
+     * fraction of itself and everything below the fold is invisible. Scrolling
+     * to the bottom repeatedly, until the link count stops growing, is what
+     * reaches the rest — bounded by a few rounds and the deadline so an infinite
+     * scroller cannot run away.
+     */
+    if (cfg->browser_scroll && !closed) {
+        for (int round = 0; round < 8 && !closed; round++) {
+            if (now_seconds() >= deadline) break;
+            mi_interactive_eval(it, "window.scrollTo(0, document.body.scrollHeight);"
+                                    "document.body.scrollHeight");
+            double until = now_seconds() + 0.5;
+            while (now_seconds() < until && !closed) {
+                if (mi_interactive_pump(it, 150) == MI_IT_EV_CLOSED) closed = 1;
+            }
+            /* Ask for the links and compare the count; if it has stopped
+             * growing there is nothing below. */
+            mi_interactive_read_dom(it);
+            const char *probe = NULL;
+            double read_until = now_seconds() + 1.5;
+            while (now_seconds() < read_until && !closed) {
+                if (mi_interactive_pump(it, 100) == MI_IT_EV_CLOSED) { closed = 1; break; }
+                probe = mi_interactive_dom_links(it);
+                if (probe) break;
+            }
+            if (!probe) break;
+            int now_links = 0;
+            for (const char *q = probe; *q; q++) if (*q == '\n') now_links++;
+            if (now_links <= links) { links = now_links; break; }
+            links = now_links;
+        }
+    }
+
     /* Ask for the links, then pump until the answer arrives. */
     mi_interactive_read_dom(it);
     const char *links_text = NULL;
@@ -529,8 +1002,8 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
     if (links_text && *links_text) {
         /* One URL per line, as the reader returns them. */
         const char *p = links_text;
-        int room = max_hits - (int)res->hit_count;
-        if (room < 0) room = 0;
+        int room = res_hits_left(s);
+        size_t first = s->res->hit_count;
         while (*p && hits < room) {
             const char *nl = strchr(p, '\n');
             size_t n = nl ? (size_t)(nl - p) : strlen(p);
@@ -557,13 +1030,13 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
                                 item.title = NULL;
                                 item.mime = (char *)"";
                                 item.bytes = -1;
-                                if (add_hit(res, &item, score, url, 1)) hits++;
+                                if (res_add_hit(s, &item, score, url, 1) >= 0) hits++;
                             }
                             free(fname);
                         }
                         /* Follow it if it looks like a page to walk into. */
-                        if (is_page(u) && depth < cfg->max_depth && !strset_has(f, u)) {
-                            frontier_push(f, u, depth + 1);
+                        if (is_page(u) && depth < cfg->max_depth) {
+                            frontier_add(s, u, depth + 1, s->term);
                         }
                     }
                     free(u);
@@ -572,10 +1045,11 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
             if (!nl) break;
             p = nl + 1;
         }
+        verify_page_hits(s, first, s->res->hit_count - first);
     }
 
     mi_interactive_close(it);
-    add_page(res, url, links, hits, 1, 200);
+    res_add_page(s, url, links, hits, 1, 200);
     return hits;
 }
 
@@ -586,10 +1060,14 @@ static int read_page_driven(mi_crawl_result *res, const mi_crawl_config *cfg,
  * fallback is allowed, the page is read again through the browser — which is
  * what makes a JavaScript-built listing work.
  */
-static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
-                     frontier *f, dedup_set *dedup, const char *url, int depth,
-                     const char *term, double deadline, double started,
-                     const char *start_url) {
+static int read_page(crawl_shared *s, const char *url, int depth) {
+    const mi_crawl_config *cfg = s->cfg;
+    const char *term = s->term;
+    const char *start_url = s->start_url;
+    double deadline = s->deadline;
+    mi_crawl_result *res = s->res;
+    dedup_set *dedup = s->dedup;
+    frontier *f = s->f;
     mi_download_config dcfg;
     mi_download_config_init(&dcfg);
     dcfg.require_media = 0;
@@ -613,9 +1091,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
      * check only happened between pages would do far more work than the caller
      * asked for — and return a list longer than it wanted to render.
      */
-    int max_hits = cfg->max_hits > 0 ? cfg->max_hits : 50;
-    int room = max_hits - (int)res->hit_count;
-    if (room < 0) room = 0;
+    int room = res_hits_left(s);
 
     /*
      * A host in cooldown is not fetched.
@@ -657,10 +1133,14 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
 
     mi_fetch_info info;
     char *body = mi_download_fetch_document(&dcfg, url, CRAWL_MAX_BODY, &info);
+    pthread_mutex_lock(&s->lock);
     res->fetched++;
+    pthread_mutex_unlock(&s->lock);
     if (info.not_modified) {
         mi_logf(MI_LOG_INFO, "crawl: %s is unchanged (304)", url);
+        pthread_mutex_lock(&s->lock);
         res->not_modified++;
+        pthread_mutex_unlock(&s->lock);
         mi_fetch_info_free(&info);
         free(prev_etag);
         free(prev_lm);
@@ -687,7 +1167,9 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
     if (body) {
         mi_captcha_challenge ch;
         if (mi_captcha_detect(body, strlen(body), &ch)) {
+            pthread_mutex_lock(&s->lock);
             res->challenges_seen++;
+            pthread_mutex_unlock(&s->lock);
             mi_logf(MI_LOG_INFO, "crawl: %s answered with a %s challenge", url,
                     mi_captcha_kind_name(ch.kind));
             mi_captcha_challenge_free(&ch);
@@ -705,7 +1187,9 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
     if (body) {
         mi_block_kind soft = mi_antibot_soft_block(body, strlen(body));
         if (soft != MI_BLOCK_NONE) {
+            pthread_mutex_lock(&s->lock);
             res->blocked++;
+            pthread_mutex_unlock(&s->lock);
             mi_logf(MI_LOG_INFO, "crawl: %s is a soft block (%s)", url,
                     mi_antibot_kind_name(soft));
             if (cfg->brain && host) mi_antibot_note_block(cfg->brain, host, soft);
@@ -724,16 +1208,18 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         mi_html_node *doc = mi_html_parse(body, strlen(body));
         mi_simhash fp = doc ? mi_simhash_page(doc) : 0;
         if (doc) mi_html_free(doc);
-        if (fp && dedup_seen(dedup, fp, cfg->dedup_distance)) dup = 1;
-        if (fp) dedup_add(dedup, fp);
+        dup = res_dedup_check(s, fp);
     }
     if (dup) {
+        pthread_mutex_lock(&s->lock);
         res->duplicates++;
+        pthread_mutex_unlock(&s->lock);
         mi_logf(MI_LOG_WARN, "crawl: %s is a near-duplicate; links only", url);
     }
     if (cfg->brain && host) free(host);
 
     int links = 0, hits = 0, rendered = 0;
+    size_t first_hit = 0;
     if (body) {
         size_t blen = strlen(body);
 
@@ -741,6 +1227,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         mi_browse_result br;
         if (mi_browse_parse(body, blen, url, MI_BROWSE_ALL, &br) == MI_OK) {
             links = (int)br.count;
+            first_hit = res->hit_count;
             for (size_t i = 0; i < br.count; i++) {
                 const mi_browse_item *item = &br.items[i];
                 if (!item->url) continue;
@@ -748,7 +1235,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                 int score = mi_crawl_score(item->filename, item->title, term);
                 if (score > 0) {
                     if (hits >= room) break;
-                    if (add_hit(res, item, score, url, 0)) hits++;
+                    if (res_add_hit(s, item, score, url, 0) >= 0) hits++;
                 }
             }
             /* Follow the pages it links, if depth allows. */
@@ -761,17 +1248,36 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                         int same = h1 && h2 && !strcasecmp(h1, h2);
                         free(h1);
                         free(h2);
-                        if (!same) { res->skipped_offsite++; continue; }
+                        if (!same) {
+                            pthread_mutex_lock(&s->lock);
+                            res->skipped_offsite++;
+                            pthread_mutex_unlock(&s->lock);
+                            continue;
+                        }
                     }
-                    if (strset_has(f, u)) continue;
-                    frontier_push(f, u, depth + 1);
+                    frontier_add(s, u, depth + 1, term);
                 }
             }
             mi_browse_result_free(&br);
         }
         free(body);
     } else {
+        pthread_mutex_lock(&s->lock);
         res->failed++;
+        pthread_mutex_unlock(&s->lock);
+    }
+
+    /*
+     * Confirm the candidates from the response rather than the URL.
+     *
+     * A filename guessed from the URL is a guess: an HTML viewer named like a
+     * file becomes a hit with nothing behind it, and a signed, extension-less
+     * media address is dropped as a page. A ranged probe tells the two apart, so
+     * a verified file outranks an unverified link and a page that looked like a
+     * file is not reported as one.
+     */
+    if (first_hit < res->hit_count) {
+        verify_page_hits(s, first_hit, res->hit_count - first_hit);
     }
 
     /*
@@ -859,7 +1365,11 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                     item.title = er.title;
                     item.mime = (char *)"";
                     item.bytes = -1;
-                    if (add_hit(res, &item, score, url, 0)) {
+                    /* The resolved hit and its qualities are built under the lock,
+                     * because another worker's hit would otherwise realloc the
+                     * array out from under `h`. */
+                    pthread_mutex_lock(&s->lock);
+                    if ((int)res->hit_count < s->max_hits && add_hit(res, &item, score, url, 0)) {
                         hits++;
                         /* Marked so it ranks above the page's own links at an
                          * equal score — a channel link matches a search just as
@@ -916,6 +1426,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                         }
                         if (h->quality_count > 0) h->qualities[0].best = 1;
                     }
+                    pthread_mutex_unlock(&s->lock);
                 }
                 /*
                  * A *list* answer: one hit per entry.
@@ -929,7 +1440,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                  * on.
                  */
                 for (size_t ei = 0; ei < er.entry_count; ei++) {
-                    if (add_entry_hit(res, &er.entries[ei], term, url)) hits++;
+                    if (res_add_entry_hit(s, &er.entries[ei], url)) hits++;
                 }
             }
             mi_extract_result_free(&er);
@@ -953,12 +1464,15 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
      * the result wrong — the first few unreadable pages are exactly the ones a
      * JavaScript site hides its listing behind.
      */
-    if (hits == 0 && !extracted && cfg->use_browser_fallback && now_seconds() < deadline &&
-        res->rendered < (cfg->max_browser_pages > 0 ? cfg->max_browser_pages : 3)) {
-        if (cfg->interactive_pool && mi_interactive_pool_available(cfg->interactive_pool)) {
+    if (hits == 0 && !extracted && cfg->use_browser_fallback && now_seconds() < deadline) {
+        pthread_mutex_lock(&s->lock);
+        int browser_cap = cfg->max_browser_pages > 0 ? cfg->max_browser_pages : 3;
+        int browser_ok = s->res->rendered < browser_cap;
+        pthread_mutex_unlock(&s->lock);
+        if (browser_ok &&
+            cfg->interactive_pool && mi_interactive_pool_available(cfg->interactive_pool)) {
             int was_rendered = 0;
-            hits += read_page_driven(res, cfg, f, url, depth, term, deadline,
-                                     &was_rendered);
+            hits += read_page_driven(s, url, depth, &was_rendered);
             if (was_rendered) {
                 /*
                  * read_page_driven recorded this page's entry itself, so return
@@ -969,31 +1483,36 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
                 return hits;
             }
         }
-        if (cfg->render_pool && mi_render_pool_available(cfg->render_pool)) {
+        if (browser_ok && cfg->render_pool && mi_render_pool_available(cfg->render_pool)) {
             mi_render_result rr;
             memset(&rr, 0, sizeof rr);
             if (mi_render_run(cfg->render_pool, url, MI_RENDER_DOM, &rr) == MI_RENDER_OK &&
                 rr.data && rr.len > 0) {
                 rendered = 1;
+                pthread_mutex_lock(&s->lock);
                 res->rendered++;
+                pthread_mutex_unlock(&s->lock);
                 mi_browse_result br;
                 if (mi_browse_parse((const char *)rr.data, rr.len, url, MI_BROWSE_ALL, &br) == MI_OK) {
                     if ((int)br.count > links) links = (int)br.count;
+                    size_t rfirst = res->hit_count;
                     for (size_t i = 0; i < br.count; i++) {
                         const mi_browse_item *item = &br.items[i];
                         if (!item->url || is_asset(item->url)) continue;
                         int score = mi_crawl_score(item->filename, item->title, term);
                         if (score > 0) {
                             if (hits >= room) break;
-                            if (add_hit(res, item, score, url, 1)) hits++;
+                            if (res_add_hit(s, item, score, url, 1) >= 0) hits++;
                         }
+                    }
+                    if (rfirst < res->hit_count) {
+                        verify_page_hits(s, rfirst, res->hit_count - rfirst);
                     }
                     if (depth < cfg->max_depth) {
                         for (size_t i = 0; i < br.count; i++) {
                             const char *u = br.items[i].url;
                             if (!u || !is_page(u)) continue;
-                            if (strset_has(f, u)) continue;
-                            frontier_push(f, u, depth + 1);
+                            frontier_add(s, u, depth + 1, term);
                         }
                     }
                     mi_browse_result_free(&br);
@@ -1003,8 +1522,7 @@ static int read_page(mi_crawl_result *res, const mi_crawl_config *cfg,
         }
     }
 
-    (void)started;
-    add_page(res, url, links, hits, rendered, body ? 200 : 0);
+    res_add_page(s, url, links, hits, rendered, body ? 200 : 0);
     return hits;
 }
 
@@ -1121,16 +1639,36 @@ static void fetch_robots(const mi_crawl_config *cfg, const char *host, const cha
 }
 
 /*
+ * The most child sitemaps one index may name before the rest are ignored.
+ *
+ * A large site shards its index into hundreds of child sitemaps, and following
+ * every one would spend the whole budget reading sitemaps instead of pages. The
+ * cap keeps the seed useful without letting it take over.
+ */
+#define CRAWL_MAX_CHILD_SITEMAPS 20
+/* The most URLs one walk may take from sitemaps. A sitemap-rich site lists its
+ * whole content, and pushing all of it at depth 0 would consume the page budget
+ * before link-following starts. This bounds the seed so the walk still gets to
+ * follow links; the rest of the budget is the walk's. */
+#define CRAWL_SITEMAP_SEED_FRACTION 4
+
+/*
  * Seed the frontier from the host's sitemaps.
  *
  * The sitemaps come from the robots.txt `Sitemap:` directives when there are
  * any, plus the conventional `/sitemap.xml`. A sitemapindex names further
- * sitemaps, which are followed one level — enough for the sharding real sites
- * use, without a loop that could run away. Every `<loc>` is pushed at depth 0,
- * because a sitemap page is a starting point, not a child of the seed.
+ * sitemaps, which are followed — bounded, so an index that names hundreds of
+ * children cannot run away.
+ *
+ * Every `<loc>` is pushed at depth 0 with a priority from the sitemap's own
+ * `priority` and `lastmod`: a URL the site ranked high, or that changed
+ * recently, is fetched before a stale one. And the seed is *bounded to a
+ * fraction of the page budget*, because pushing every URL a sitemap-rich site
+ * lists would consume the whole walk before link-following started — the
+ * failure this fixes.
  */
 static int seed_from_sitemaps(const mi_crawl_config *cfg, frontier *f,
-                              const char *host, int max_pages) {
+                              const char *host, int max_pages, const char *term) {
     char **maps = cfg->politeness ? mi_politeness_sitemaps(cfg->politeness, host) : NULL;
 
     char **queue = NULL;
@@ -1162,16 +1700,23 @@ static int seed_from_sitemaps(const mi_crawl_config *cfg, frontier *f,
     dcfg.cookies_from_browser = cfg->cookies_from_browser;
     dcfg.timeout_seconds = 15;
 
+    /* The seed is a fraction of the page budget, so the walk still gets to
+     * follow links; and the whole seed is capped regardless. */
+    int seed_cap = max_pages / CRAWL_SITEMAP_SEED_FRACTION;
+    if (seed_cap < 1) seed_cap = 1;
+    int child_seen = 0;
+    char *folded_term = fold(term);
     int pushed = 0;
-    for (size_t qi = 0; qi < queue_n && pushed < max_pages; qi++) {
+    for (size_t qi = 0; qi < queue_n && pushed < seed_cap; qi++) {
         mi_fetch_info info;
         char *body = mi_download_fetch_document(&dcfg, queue[qi], 8 * 1024 * 1024, &info);
         mi_fetch_info_free(&info);
         if (!body) continue;
         mi_sitemap sm;
         if (mi_sitemap_parse((const unsigned char *)body, strlen(body), &sm) == 0) {
-            for (size_t i = 0; i < sm.count && pushed < max_pages; i++) {
+            for (size_t i = 0; i < sm.count && pushed < seed_cap; i++) {
                 if (sm.is_index) {
+                    if (child_seen >= CRAWL_MAX_CHILD_SITEMAPS) break;
                     if (queue_n == queue_cap) {
                         queue_cap = queue_cap ? queue_cap * 2 : 4;
                         char **g = mi_realloc(queue, queue_cap * sizeof *g);
@@ -1179,8 +1724,16 @@ static int seed_from_sitemaps(const mi_crawl_config *cfg, frontier *f,
                         queue = g;
                     }
                     queue[queue_n++] = mi_strdup(sm.entries[i].loc);
+                    child_seen++;
                 } else {
-                    if (mi_frontier_push(f, sm.entries[i].loc, 0) == 0) pushed++;
+                    const mi_sitemap_entry *e = &sm.entries[i];
+                    /* The site's own priority, scaled, plus a bonus for a URL
+                     * whose path carries the term — the same signal the walk's
+                     * own ordering uses. */
+                    int prio = 0;
+                    if (e->priority > 0) prio += (int)(e->priority * 20);
+                    if (url_mentions_term(e->loc, folded_term)) prio += 100;
+                    if (mi_frontier_push_prio(f, e->loc, 0, prio) == 0) pushed++;
                 }
             }
             if (sm.count > 0) {
@@ -1191,9 +1744,80 @@ static int seed_from_sitemaps(const mi_crawl_config *cfg, frontier *f,
         }
         free(body);
     }
+    free(folded_term);
     for (size_t i = 0; i < queue_n; i++) free(queue[i]);
     free(queue);
     return pushed;
+}
+
+/*
+ * One worker: take a URL from the frontier and read it, until the walk is done.
+ *
+ * Several of these run at once. Each takes a URL, honours the host's robots and
+ * pace, reads the page, and repeats. The politeness slot is reserved atomically
+ * (see mi_politeness_reserve), so parallel workers do not defeat the per-host
+ * pacing; the frontier is thread-safe; and everything shared — the result, the
+ * counters — is guarded by the crawl's lock.
+ */
+static void *crawl_worker(void *arg) {
+    crawl_shared *s = arg;
+    const mi_crawl_config *cfg = s->cfg;
+    for (;;) {
+        if (!crawl_should_continue(s)) break;
+        char *url = NULL;
+        int depth = 0;
+        if (frontier_take(s->f, &url, &depth) <= 0) break;
+        if (!crawl_take_page_slot(s)) { free(url); break; }
+
+        /*
+         * robots.txt and pace, before the page is fetched.
+         *
+         * A crawler that ignores robots is a liability, and one that fetches as
+         * fast as the network allows turns a soft block into a hard one. Both
+         * are per host, and the rules are fetched once — the first time the walk
+         * reaches a host — then cached in the shared politeness state.
+         */
+        char *host = mi_antibot_host_of(url);
+        int skip = 0;
+        if (host && cfg->politeness) {
+            if (cfg->obey_robots) {
+                if (!mi_politeness_have_robots(cfg->politeness, host)) {
+                    fetch_robots(cfg, host, url);
+                }
+                if (!mi_politeness_allowed(cfg->politeness, host, url)) {
+                    mi_logf(MI_LOG_WARN, "crawl: robots.txt disallows %s", url);
+                    skip = 1;
+                }
+            }
+            if (!skip) {
+                /*
+                 * Reserve this host's next slot and wait for it.
+                 *
+                 * Reserving (rather than reading a delay and then noting the
+                 * request) is what keeps the pace honest when several workers
+                 * share a host: each gets its own turn, so the interval is the
+                 * host's, not the workers'.
+                 */
+                double wait = mi_politeness_reserve(cfg->politeness, host);
+                if (wait > 0 && now_seconds() + wait >= s->deadline) {
+                    /* The wait would blow the budget. Skip this host rather than
+                     * abandoning the whole walk: a URL on another host may still
+                     * fit, and the deadline check at the top of the loop stops
+                     * the worker once nothing does. */
+                    skip = 1;
+                } else if (wait > 0) {
+                    struct timespec ts = {.tv_sec = (time_t)wait,
+                                          .tv_nsec = (long)((wait - (double)(time_t)wait) * 1e9)};
+                    nanosleep(&ts, NULL);
+                }
+            }
+        }
+        free(host);
+
+        if (!skip) read_page(s, url, depth);
+        free(url);
+    }
+    return NULL;
 }
 
 int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
@@ -1260,8 +1884,11 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
     }
 
     dedup_set dedup = {0};
-    mi_frontier_push(f, site_url, 0);
-    strset_add(f, site_url);
+    char *seed_norm = mi_url_normalize(site_url);
+    mi_frontier_push_prio(f, seed_norm ? seed_norm : site_url, 0,
+                          url_priority(seed_norm ? seed_norm : site_url, 0, NULL));
+    strset_add(f, seed_norm ? seed_norm : site_url);
+    free(seed_norm);
 
     /*
      * Seed from the host's sitemaps, before the walk. A sitemap reaches pages no
@@ -1273,65 +1900,63 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
         if (shost) {
             if (!mi_politeness_have_robots(cfg->politeness, shost))
                 fetch_robots(cfg, shost, site_url);
-            int n = seed_from_sitemaps(cfg, f, shost, max_pages);
+            int n = seed_from_sitemaps(cfg, f, shost, max_pages, term);
             if (n > 0) mi_logf(MI_LOG_INFO, "crawl: seeded %d url(s) from sitemaps", n);
             free(shost);
         }
     }
 
-    int pages_read = 0;
-    while (!frontier_empty(f)) {
-        if (pages_read >= max_pages) break;
-        if ((int)out->hit_count >= max_hits) break;
-        if (now_seconds() >= deadline) break;
+    crawl_shared shared;
+    memset(&shared, 0, sizeof shared);
+    shared.cfg = cfg;
+    shared.f = f;
+    shared.term = term;
+    shared.start_url = site_url;
+    shared.res = out;
+    shared.started = started;
+    shared.deadline = deadline;
+    shared.max_pages = max_pages;
+    shared.max_hits = max_hits;
+    shared.dedup = cfg->dedup ? &dedup : NULL;
+    pthread_mutex_init(&shared.lock, NULL);
 
-        char *next_url = NULL;
-        int next_depth = 0;
-        int got = frontier_take(f, &next_url, &next_depth);
-        if (got <= 0) break;
+    /*
+     * The walk.
+     *
+     * Several workers fetch at once. The frontier hands each one a URL, the
+     * politeness state gives each host its own pace, and the result and counters
+     * are guarded by the shared lock. `workers` of 1 restores the strictly
+     * serial walk, which is what a deterministic test wants; the default is
+     * several, because a serial walk cannot read enough of a large site inside a
+     * budget to matter.
+     */
+    int workers = cfg->workers > 0 ? cfg->workers : CRAWL_DEFAULT_WORKERS;
+    if (workers > CRAWL_MAX_WORKERS) workers = CRAWL_MAX_WORKERS;
+    if (workers < 1) workers = 1;
+    if (workers > max_pages) workers = max_pages;
+    if (workers < 1) workers = 1;
 
-        /*
-         * robots.txt and pace, before the page is fetched.
-         *
-         * A crawler that ignores robots is a liability, and one that fetches as
-         * fast as the network allows turns a soft block into a hard one. Both
-         * are per host, and the rules are fetched once — the first time the walk
-         * reaches a host — then cached in the shared politeness state.
-         */
-        char *host = next_url ? mi_antibot_host_of(next_url) : NULL;
-        if (host && cfg->politeness) {
-            if (cfg->obey_robots) {
-                if (!mi_politeness_have_robots(cfg->politeness, host)) {
-                    fetch_robots(cfg, host, next_url);
-                }
-                if (!mi_politeness_allowed(cfg->politeness, host, next_url)) {
-                    mi_logf(MI_LOG_WARN, "crawl: robots.txt disallows %s", next_url);
-                    free(host);
-                    free(next_url);
-                    continue;
-                }
-            }
-            /* Wait out the host's interval, then record that we are asking. */
-            double wait = mi_politeness_delay(cfg->politeness, host);
-            if (wait > 0) {
-                if (now_seconds() + wait >= deadline) {
-                    /* Waiting would blow the budget; stop rather than overrun. */
-                    free(host);
-                    free(next_url);
+    if (workers == 1) {
+        crawl_worker(&shared);
+    } else {
+        pthread_t *threads = mi_calloc((size_t)workers, sizeof *threads);
+        if (threads) {
+            int started_n = 0;
+            for (int i = 0; i < workers; i++) {
+                if (pthread_create(&threads[i], NULL, crawl_worker, &shared) == 0) {
+                    started_n++;
+                } else {
                     break;
                 }
-                struct timespec ts = {.tv_sec = (time_t)wait,
-                                      .tv_nsec = (long)((wait - (double)(time_t)wait) * 1e9)};
-                nanosleep(&ts, NULL);
             }
-            mi_politeness_note_request(cfg->politeness, host);
+            /* If no thread could start, fall back to walking in this thread so a
+             * crawl still happens. */
+            if (started_n == 0) crawl_worker(&shared);
+            for (int i = 0; i < started_n; i++) pthread_join(threads[i], NULL);
+            free(threads);
+        } else {
+            crawl_worker(&shared);
         }
-        free(host);
-
-        read_page(out, cfg, f, &dedup, next_url, next_depth, term, deadline, started,
-                  site_url);
-        free(next_url);
-        pages_read++;
     }
 
     /* Best match first, and among equals the file rather than a page about it —

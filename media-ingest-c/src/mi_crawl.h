@@ -140,6 +140,14 @@ typedef struct {
      * caller see the walk skipped them rather than that it found nothing.
      */
     int duplicates;
+    /*
+     * Candidate hits that a probe confirmed as real media, and candidates a
+     * probe showed were pages (and so were dropped). Reported because a crawl
+     * that found nothing *and* verified nothing is a different answer from one
+     * that found twenty candidates and confirmed none.
+     */
+    int verified;
+    int dropped_non_media;
 } mi_crawl_result;
 
 void mi_crawl_result_free(mi_crawl_result *res);
@@ -182,6 +190,48 @@ typedef struct {
      * page, not behind every page on the site.
      */
     int max_browser_pages;
+    /*
+     * How many pages to fetch at once.
+     *
+     * The walk was strictly serial: one fetch, then the next. In a 45-second
+     * budget that is 5-15 pages, which leaves a large site untouched however
+     * good the ordering is. Fetching several at once is what turns the budget
+     * into coverage, and the politeness state keeps it honest — the per-host
+     * interval still bounds the rate to any one host, so the parallelism is
+     * spread across hosts rather than hammering one.
+     *
+     * 0 uses the default (4). 1 restores the strictly serial walk, which is
+     * what a test that must be deterministic wants.
+     */
+    int workers;
+    /*
+     * Whether to confirm a candidate hit from the response rather than the URL.
+     *
+     * A hit's filename is guessed from the URL string, so a signed or
+     * extension-less address (`/stream?id=123`) is treated as a page and an
+     * HTML viewer named like a file is recorded as a hit with nothing behind it.
+     * With this on, a candidate is probed with a ranged request and the
+     * Content-Type and magic bytes decide: media is confirmed (and its real MIME
+     * and size recorded), and a URL that answers as HTML while looking like a
+     * file is dropped rather than reported. A probe that fails adds nothing and
+     * drops nothing, so a host that refuses the probe is not punished. On by
+     * default; a caller that wants the old URL-only behaviour turns it off.
+     */
+    int verify_hits;
+    /*
+     * The most candidate hits one walk may probe, so verification cannot consume
+     * the whole budget. 0 uses the default (24).
+     */
+    int max_verify;
+    /*
+     * Whether to scroll a driven page to the bottom before reading its links.
+     *
+     * A modern listing lazy-loads: only the first viewport exists in the DOM
+     * until the page is scrolled, so reading without scrolling sees a fraction
+     * of it. Scrolling until the link count stops growing is what reaches the
+     * rest. On by default; only affects the browser fallback.
+     */
+    int browser_scroll;
     /*
      * Whether the walk may ask a media extractor about a page.
      *

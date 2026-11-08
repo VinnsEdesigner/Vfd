@@ -1,5 +1,5 @@
 /* mi_browse.c - list the media a remote page or directory offers. */
-
+#define _GNU_SOURCE
 #include "mi_browse.h"
 
 #include <ctype.h>
@@ -504,6 +504,170 @@ static char *link_text(const char *from, const char *end, const char *tagname) {
     return out;
 }
 
+/* Offer the URL in a `srcset` list, which is "url descriptor, url descriptor".
+ * Each candidate is a real rendition of the same image, so each is offered. */
+static void offer_srcset(mi_browse_result *out, const char *base, const char *value,
+                         const char *title, mi_browse_filter filter) {
+    const char *p = value;
+    while (*p) {
+        while (*p == ',' || isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != ',' && !isspace((unsigned char)*p)) p++;
+        if (p > start) {
+            char *u = mi_strndup(start, (size_t)(p - start));
+            if (u) {
+                offer(out, base, u, title, -1, filter);
+                free(u);
+            }
+        }
+        /* Skip the width/density descriptor up to the next comma. */
+        while (*p && *p != ',') p++;
+    }
+}
+
+/*
+ * Offer a JSON-LD or inline-script value as a URL when it looks like one.
+ *
+ * A media page often carries its media URL in a JSON blob rather than in markup:
+ * `{"@type":"VideoObject","contentUrl":"…/clip.mp4"}`. Those bytes are already
+ * in the HTML the walk downloaded, so reading them costs nothing and is the
+ * difference between finding the file and not.
+ */
+static void offer_json_urls(mi_browse_result *out, const char *base, const char *json,
+                            mi_browse_filter filter) {
+    static const char *KEYS[] = {"contentUrl", "embedUrl", "url", "thumbnailUrl",
+                                 "image", "video", "audio", "src", "file", "hls",
+                                 "dash", "m3u8", "mpd", "stream", "downloadUrl"};
+    for (size_t k = 0; k < sizeof KEYS / sizeof KEYS[0]; k++) {
+        /* The key is quoted, so `"url"` does not match inside `"thumbnailUrl"`. */
+        char needle[64];
+        int nl = snprintf(needle, sizeof needle, "\"%s\"", KEYS[k]);
+        if (nl <= 0 || (size_t)nl >= sizeof needle) continue;
+        size_t nlen = (size_t)nl;
+        const char *p = json;
+        while ((p = strstr(p, needle)) != NULL) {
+            const char *q = p + nlen;
+            while (*q && isspace((unsigned char)*q)) q++;
+            if (*q == ':') {
+                q++;
+                while (*q && isspace((unsigned char)*q)) q++;
+                char quote = *q;
+                if (quote == '"' || quote == '\'') {
+                    q++;
+                    const char *endq = strchr(q, quote);
+                    if (endq && endq > q) {
+                        char *u = mi_strndup(q, (size_t)(endq - q));
+                        if (u) {
+                            /* An escaped solidus is what a JSON blob uses for "/". */
+                            for (char *r = u; *r; r++) {
+                                if (r[0] == '\\' && r[1] == '/') memmove(r, r + 1, strlen(r));
+                            }
+                            offer(out, base, u, NULL, -1, filter);
+                            free(u);
+                        }
+                    }
+                }
+            }
+            p += nlen;
+        }
+    }
+}
+
+/* Offer every absolute http(s) URL that looks like a manifest or a media file
+ * inside a blob of text — an inline script, a JSON-LD body, a data attribute.
+ * Only URLs whose extension says "media" are taken, so a page's own API URLs
+ * are not swept in. */
+static void offer_media_urls_in_text(mi_browse_result *out, const char *base,
+                                     const char *text, size_t len,
+                                     mi_browse_filter filter) {
+    static const char *HINTS[] = {".m3u8", ".mpd", ".mp4", ".webm", ".mkv", ".m4v",
+                                  ".mov", ".flv", ".ts", ".mp3", ".m4a", ".aac",
+                                  ".flac", ".opus", ".ogg", ".jpg", ".jpeg",
+                                  ".png", ".webp", ".gif", ".avif"};
+    for (size_t i = 0; i + 8 < len; i++) {
+        if (memcmp(text + i, "http", 4) != 0) continue;
+        if (i > 0) {
+            unsigned char c = (unsigned char)text[i - 1];
+            /* The URL must start at a boundary, not inside another token. */
+            if (isalnum(c) || c == '_' || c == '/' || c == '.') continue;
+        }
+        const char *s = text + i;
+        const char *e = s;
+        while (e < text + len && !isspace((unsigned char)*e) && *e != '"' && *e != '\'' &&
+               *e != '<' && *e != '>' && *e != ')' && *e != ',' && *e != '\\' && *e != '}') {
+            e++;
+        }
+        size_t ulen = (size_t)(e - s);
+        if (ulen < 10 || ulen > 2000) continue;
+        /* Only offer it when the URL itself names a media file. */
+        int looks_media = 0;
+        for (size_t h = 0; h < sizeof HINTS / sizeof HINTS[0]; h++) {
+            const char *hit = strcasestr(s, HINTS[h]);
+            if (hit && (size_t)(hit - s) < ulen) { looks_media = 1; break; }
+        }
+        if (!looks_media) continue;
+        char *u = mi_strndup(s, ulen);
+        if (u) {
+            offer(out, base, u, NULL, -1, filter);
+            free(u);
+        }
+    }
+}
+
+/*
+ * The attributes that carry a reference on each element.
+ *
+ * This is the list that decides what the walk can *see*. A crawler that reads
+ * only `<a href>` is blind to most media on a modern page: a `<video>` names its
+ * file in `src`, a `<source>` names a rendition, `<track>` names a subtitle, an
+ * `<img>` may name its real file in `data-src` for a lazy loader, and a `<meta>`
+ * carries a player's or a poster's URL in its `content`.
+ */
+typedef struct {
+    const char *tag;
+    const char *attrs[4];
+    int is_anchor;
+} tag_attrs;
+
+static const tag_attrs TAG_ATTRS[] = {
+    {"a",       {"href", NULL}, 1},
+    {"area",    {"href", NULL}, 1},
+    {"img",     {"src", "data-src", "data-original", "data-lazy-src"}, 0},
+    {"source",  {"src", "data-src", NULL}, 0},
+    {"track",   {"src", NULL}, 0},
+    {"video",   {"src", "poster", "data-src", NULL}, 0},
+    {"audio",   {"src", "data-src", NULL}, 0},
+    {"link",    {"href", NULL}, 0},
+    {"iframe",  {"src", NULL}, 0},
+    {"embed",   {"src", NULL}, 0},
+    {"object",  {"data", NULL}, 0},
+    {"input",   {"src", NULL}, 0},
+};
+
+/* The attribute table entry for a tag name, or NULL. */
+static const tag_attrs *attrs_for_tag(const char *name) {
+    for (size_t i = 0; i < sizeof TAG_ATTRS / sizeof TAG_ATTRS[0]; i++) {
+        if (!strcasecmp(name, TAG_ATTRS[i].tag)) return &TAG_ATTRS[i];
+    }
+    return NULL;
+}
+
+/* The property/name value of a `<meta>`, for the OpenGraph and Twitter cards. */
+static int meta_is_media(const char *prop) {
+    if (!prop) return 0;
+    static const char *NAMES[] = {
+        "og:video", "og:video:url", "og:video:secure_url", "og:audio",
+        "og:audio:url", "og:audio:secure_url", "og:image", "og:image:url",
+        "og:image:secure_url", "twitter:player", "twitter:player:stream",
+        "twitter:image", "twitter:image:src",
+    };
+    for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) {
+        if (!strcasecmp(prop, NAMES[i])) return 1;
+    }
+    return 0;
+}
+
 /* Walk the tags and pull the references out of the attributes that carry them. */
 static void parse_html(const char *body, size_t len, const char *base,
                        mi_browse_filter filter, mi_browse_result *out) {
@@ -530,25 +694,15 @@ static void parse_html(const char *body, size_t len, const char *base,
             char *name = tag_name;
             while (*name == '/') name++;
 
-            const char *attrs[] = {NULL, NULL, NULL, NULL};
+            const tag_attrs *ta = attrs_for_tag(name);
+            /* One spare slot: the `img` entry names four attributes, so the
+             * copied list needs a fifth, always-NULL slot to terminate the walk
+             * below. Without it the loop reads past the array. */
+            const char *attrs[5] = {NULL, NULL, NULL, NULL, NULL};
             int is_anchor = 0;
-            if (!strcasecmp(name, "a") || !strcasecmp(name, "area")) {
-                attrs[0] = "href";
-                is_anchor = 1;
-            } else if (!strcasecmp(name, "img")) {
-                attrs[0] = "src";
-                attrs[1] = "data-src";
-            } else if (!strcasecmp(name, "source")) {
-                attrs[0] = "src";
-                attrs[1] = "data-src";
-            } else if (!strcasecmp(name, "video") || !strcasecmp(name, "audio")) {
-                attrs[0] = "src";
-                attrs[1] = "poster";
-            } else if (!strcasecmp(name, "link")) {
-                attrs[0] = "href";
-            } else if (!strcasecmp(name, "iframe") || !strcasecmp(name, "embed")) {
-                /* A framed document is part of the page a browser shows. */
-                attrs[0] = "src";
+            if (ta) {
+                is_anchor = ta->is_anchor;
+                for (size_t i = 0; i < 4; i++) attrs[i] = ta->attrs[i];
             }
 
             /* The link text is what the destination is called on the page. */
@@ -561,6 +715,78 @@ static void parse_html(const char *body, size_t len, const char *base,
                     free(v);
                 }
             }
+
+            /*
+             * The references an attribute list cannot reach.
+             *
+             * `srcset` holds several URLs in one value; a `<meta>` carries its
+             * URL in `content` and names its kind in `property`/`name`; and a
+             * `<script type="application/ld+json">` (or any inline script) may
+             * hold the media URL inside a JSON blob rather than in markup. Each
+             * of these is a real reference the page downloaded and the anchor
+             * pass would never see.
+             */
+            char *srcset = attr_value(tag, tag_len, "srcset");
+            if (srcset) {
+                offer_srcset(out, base, srcset, text, filter);
+                free(srcset);
+            }
+            char *dsrcset = attr_value(tag, tag_len, "data-srcset");
+            if (dsrcset) {
+                offer_srcset(out, base, dsrcset, text, filter);
+                free(dsrcset);
+            }
+            if (!strcasecmp(name, "meta")) {
+                char *prop = attr_value(tag, tag_len, "property");
+                if (!prop) prop = attr_value(tag, tag_len, "name");
+                char *content = attr_value(tag, tag_len, "content");
+                if (prop && content && meta_is_media(prop)) {
+                    offer(out, base, content, NULL, -1, filter);
+                }
+                free(prop);
+                free(content);
+            }
+            if (!strcasecmp(name, "script")) {
+                /* Everything from here to the matching close tag is script
+                 * text; scan it for media URLs. The `<` guard stops the scan
+                 * running past the script into the rest of the page. */
+                const char *close = find_ci(gt + 1, "</script");
+                const char *send = close ? close : end;
+                if (send > gt + 1) {
+                    char *stype = attr_value(tag, tag_len, "type");
+                    if (stype && !strcasecmp(stype, "application/ld+json")) {
+                        /* Structured data names its media in fields, sometimes
+                         * without a file extension, so the keys are read too. */
+                        char *blob = mi_strndup(gt + 1, (size_t)(send - (gt + 1)));
+                        if (blob) {
+                            offer_json_urls(out, base, blob, filter);
+                            free(blob);
+                        }
+                    }
+                    free(stype);
+                    offer_media_urls_in_text(out, base, gt + 1,
+                                             (size_t)(send - (gt + 1)), filter);
+                }
+                /*
+                 * The script's *body* is not markup. A JSON blob contains `<`
+                 * only rarely, but a `{` or a quoted string is common, and the
+                 * naive walk would read a `{...}` as a tag and offer the `:`
+                 * inside it as a URL. Resume *after* the close tag so the body
+                 * is scanned once, as text, and never parsed as tags — and so
+                 * the close tag itself is consumed rather than read again as a
+                 * new `<script>` (which would skip the rest of the page).
+                 */
+                if (close) {
+                    const char *close_end = strchr(close, '>');
+                    p = close_end ? close_end + 1 : end;
+                } else {
+                    p = end;
+                }
+                free(text);
+                free(tag_name);
+                continue;
+            }
+
             free(text);
             free(tag_name);
         }

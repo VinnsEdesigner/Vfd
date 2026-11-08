@@ -20,6 +20,7 @@ typedef enum { BACKEND_MEMORY, BACKEND_SQLITE, BACKEND_TURSO } backend_kind;
 typedef struct {
     char *url;
     int depth;
+    int priority;
 } mem_entry;
 
 struct mi_frontier {
@@ -62,15 +63,18 @@ mi_frontier *mi_frontier_new_memory(void) { return base_new(BACKEND_MEMORY); }
 static const char *SCHEMA[] = {
     "CREATE TABLE IF NOT EXISTS frontier ("
     " run_id TEXT NOT NULL, url TEXT NOT NULL, depth INTEGER NOT NULL,"
-    " claimed_at TEXT, PRIMARY KEY (run_id, url))",
+    " priority INTEGER NOT NULL DEFAULT 0, claimed_at TEXT,"
+    " PRIMARY KEY (run_id, url))",
     "CREATE TABLE IF NOT EXISTS visited ("
     " run_id TEXT NOT NULL, url TEXT NOT NULL,"
     " etag TEXT, last_modified TEXT, PRIMARY KEY (run_id, url))",
     /* An older database has a `visited` without the validator columns; adding
      * them is idempotent-ish (SQLite errors if they exist, which is ignored) so
-     * an upgrade needs no migration step. */
+     * an upgrade needs no migration step. The same for the frontier's priority
+     * column, which arrived with term-aware ordering. */
     "ALTER TABLE visited ADD COLUMN etag TEXT",
     "ALTER TABLE visited ADD COLUMN last_modified TEXT",
+    "ALTER TABLE frontier ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
 };
 
 /* ------------------------------------------------------------------ */
@@ -150,16 +154,18 @@ static int sqlite_two_arg(sqlite3 *db, const char *sql, const char *a, const cha
     return 0;
 }
 
-static int sqlite_push(mi_frontier *f, const char *url, int depth) {
+static int sqlite_push(mi_frontier *f, const char *url, int depth, int priority) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(f->db,
-            "INSERT OR IGNORE INTO frontier (run_id, url, depth) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO frontier (run_id, url, depth, priority)"
+            " VALUES (?, ?, ?, ?)",
             -1, &st, NULL) != SQLITE_OK) {
         return -1;
     }
     sqlite3_bind_text(st, 1, f->run_id, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(st, 2, url, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(st, 3, depth);
+    sqlite3_bind_int(st, 4, priority);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return rc == SQLITE_DONE ? 0 : -1;
@@ -202,7 +208,7 @@ static int sqlite_take(mi_frontier *f, char **url, int *depth) {
         " WHERE run_id = ? AND claimed_at IS NULL"
         " AND rowid = (SELECT rowid FROM frontier"
         "              WHERE run_id = ? AND claimed_at IS NULL"
-        "              ORDER BY rowid LIMIT 1)"
+        "              ORDER BY priority DESC, rowid LIMIT 1)"
         " RETURNING url, depth",
         -1, &st, NULL);
     if (rc != SQLITE_OK) {
@@ -378,17 +384,20 @@ mi_frontier *mi_frontier_new_turso(const char *url, const char *token,
     return f;
 }
 
-static int turso_push(mi_frontier *f, const char *url, int depth) {
+static int turso_push(mi_frontier *f, const char *url, int depth, int priority) {
     char depth_s[16];
     snprintf(depth_s, sizeof depth_s, "%d", depth);
+    char prio_s[16];
+    snprintf(prio_s, sizeof prio_s, "%d", priority);
     mi_turso_arg args[] = {MI_TURSO_TEXT(f->run_id), MI_TURSO_TEXT(url),
-                           MI_TURSO_INT(depth_s)};
+                           MI_TURSO_INT(depth_s), MI_TURSO_INT(prio_s)};
     char err[160];
     int status = 0;
     mi_json *r = mi_turso_execute(
         f->db_url, f->db_token,
-        "INSERT OR IGNORE INTO frontier (run_id, url, depth) VALUES (?, ?, ?)",
-        args, 3, &status, err, sizeof err);
+        "INSERT OR IGNORE INTO frontier (run_id, url, depth, priority)"
+        " VALUES (?, ?, ?, ?)",
+        args, 4, &status, err, sizeof err);
     if (!r) {
         mi_logf(MI_LOG_ERROR, "frontier push failed: %s", err);
         return -1;
@@ -437,7 +446,7 @@ static int turso_take(mi_frontier *f, char **url, int *depth) {
             " WHERE run_id = ? AND claimed_at IS NULL"
             " AND rowid = (SELECT rowid FROM frontier"
             "              WHERE run_id = ? AND claimed_at IS NULL"
-            "              ORDER BY rowid LIMIT 1)"
+            "              ORDER BY priority DESC, rowid LIMIT 1)"
             " RETURNING url, depth",
             up, 3, &status, err, sizeof err);
         if (!r) {
@@ -574,39 +583,65 @@ static long turso_pending(mi_frontier *f) {
 /* In-memory backend                                                   */
 /* ------------------------------------------------------------------ */
 
-static int mem_push(mi_frontier *f, const char *url, int depth) {
+static int mem_push(mi_frontier *f, const char *url, int depth, int priority) {
+    pthread_mutex_lock(&f->lock);
     if (f->count == f->cap) {
         size_t want = f->cap ? f->cap * 2 : 64;
         mem_entry *grown = mi_realloc(f->items, want * sizeof *grown);
-        if (!grown) return -1;
+        if (!grown) { pthread_mutex_unlock(&f->lock); return -1; }
         f->items = grown;
         f->cap = want;
     }
     f->items[f->count].url = mi_strdup(url);
-    if (!f->items[f->count].url) return -1;
+    if (!f->items[f->count].url) { pthread_mutex_unlock(&f->lock); return -1; }
     f->items[f->count].depth = depth;
+    f->items[f->count].priority = priority;
     f->count++;
+    pthread_mutex_unlock(&f->lock);
     return 0;
 }
 
 static int mem_mark_seen(mi_frontier *f, const char *url) {
+    pthread_mutex_lock(&f->lock);
     for (size_t i = 0; i < f->seen_count; i++) {
-        if (!strcmp(f->seen[i], url)) return 0;
+        if (!strcmp(f->seen[i], url)) { pthread_mutex_unlock(&f->lock); return 0; }
     }
     if (f->seen_count == f->seen_cap) {
         size_t want = f->seen_cap ? f->seen_cap * 2 : 128;
         char **grown = mi_realloc(f->seen, want * sizeof *grown);
-        if (!grown) return 1;
+        if (!grown) { pthread_mutex_unlock(&f->lock); return 1; }
         f->seen = grown;
         f->seen_cap = want;
     }
     f->seen[f->seen_count++] = mi_strdup(url);
+    pthread_mutex_unlock(&f->lock);
     return 1;
 }
 
 static int mem_take(mi_frontier *f, char **url, int *depth) {
-    if (f->head >= f->count) return 0;
-    mem_entry e = f->items[f->head++];
+    pthread_mutex_lock(&f->lock);
+    if (f->head >= f->count) { pthread_mutex_unlock(&f->lock); return 0; }
+    /*
+     * Pick the highest-priority unclaimed entry, keeping insertion order for
+     * ties. A linear scan is nothing next to a network fetch, and it is what
+     * makes "fetch the page whose URL carries the term first" real rather than
+     * a reordering that never happens.
+     */
+    size_t best = f->head;
+    for (size_t i = f->head + 1; i < f->count; i++) {
+        if (f->items[i].priority > f->items[best].priority) best = i;
+    }
+    mem_entry e = f->items[best];
+    /*
+     * Swap the chosen entry with the head slot, then advance the head past it.
+     * A full swap — not a copy — is what keeps every pointer in the array
+     * exactly once: copying the head entry over the chosen slot would leave the
+     * head's pointer in two slots, and `mi_frontier_free` would free it twice.
+     */
+    f->items[best] = f->items[f->head];
+    f->items[f->head] = e;
+    f->head++;
+    pthread_mutex_unlock(&f->lock);
     *url = mi_strdup(e.url);
     *depth = e.depth;
     return *url ? 1 : -1;
@@ -617,11 +652,15 @@ static int mem_take(mi_frontier *f, char **url, int *depth) {
 /* ------------------------------------------------------------------ */
 
 int mi_frontier_push(mi_frontier *f, const char *url, int depth) {
+    return mi_frontier_push_prio(f, url, depth, 0);
+}
+
+int mi_frontier_push_prio(mi_frontier *f, const char *url, int depth, int priority) {
     if (!f || !url) return -1;
     switch (f->kind) {
-        case BACKEND_SQLITE: return sqlite_push(f, url, depth);
-        case BACKEND_TURSO: return turso_push(f, url, depth);
-        default: return mem_push(f, url, depth);
+        case BACKEND_SQLITE: return sqlite_push(f, url, depth, priority);
+        case BACKEND_TURSO: return turso_push(f, url, depth, priority);
+        default: return mem_push(f, url, depth, priority);
     }
 }
 

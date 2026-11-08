@@ -399,3 +399,25 @@ void mi_politeness_note_request(mi_politeness *p, const char *host) {
     if (h) h->last_request = mono();
     pthread_mutex_unlock(&p->lock);
 }
+
+double mi_politeness_reserve(mi_politeness *p, const char *host) {
+    if (!p || !host) return 0;
+    pthread_mutex_lock(&p->lock);
+    host_pol *h = host_for(p, host);
+    double wait = 0;
+    if (h) {
+        double interval = h->crawl_delay > 0 ? h->crawl_delay : p->default_interval;
+        double now = mono();
+        double since = now - h->last_request;
+        if (interval > 0 && h->last_request > 0 && since < interval) {
+            wait = interval - since;
+        }
+        /* The slot is taken now, at the moment it becomes free: the caller sleeps
+         * for `wait` and sends at the end, so the next caller's interval is
+         * measured from that same instant rather than from when this one
+         * returned. */
+        h->last_request = now + wait;
+    }
+    pthread_mutex_unlock(&p->lock);
+    return wait;
+}

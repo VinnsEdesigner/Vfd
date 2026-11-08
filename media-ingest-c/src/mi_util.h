@@ -112,6 +112,20 @@ char *mi_path_join(const char *a, const char *b);
 /* Percent-encode a string for use in a URL query (allocated). */
 char *mi_url_encode(const char *s);
 
+/*
+ * Canonicalise a URL so two spellings of one resource collapse to one.
+ *
+ * A crawl's seen-set is a plain string set, so without this the same page at
+ * `?utm_source=x`, `?fbclid=y` and with no query is three entries — each one a
+ * fetch out of a small budget. The fragment is dropped (it is not a resource),
+ * the scheme and host are lowercased, a default port (`:80`/`:443`) is removed,
+ * a missing path becomes `/`, and the known tracking parameters are stripped.
+ * The path is left alone: it is case-sensitive on most servers.
+ *
+ * Returns a new string, or NULL on allocation failure.
+ */
+char *mi_url_normalize(const char *url);
+
 /* Read the first `max` bytes of a file into a buffer (allocated, NUL-terminated).
  * Returns the number of bytes read, or -1 on error. */
 ssize_t mi_read_head(const char *path, size_t max, unsigned char **out);

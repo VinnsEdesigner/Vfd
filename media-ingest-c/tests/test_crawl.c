@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,12 +74,29 @@ static void serve(int fd) {
             if (!strcmp(g_routes[i].path, path)) { body = g_routes[i].body; break; }
         }
 
+        /* The content type follows the body: markup is a page, and anything else
+         * takes its type from the path. That is what lets a test tell a real
+         * file from a URL that only looks like one. */
+        const char *ctype = "text/html";
+        if (body && body[0] != '<') {
+            const char *dot = strrchr(path, '.');
+            if (dot) {
+                if (!strcasecmp(dot, ".mp4") || !strcasecmp(dot, ".webm") ||
+                    !strcasecmp(dot, ".mkv")) ctype = "video/mp4";
+                else if (!strcasecmp(dot, ".mp3") || !strcasecmp(dot, ".flac"))
+                    ctype = "audio/mpeg";
+                else if (!strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".png"))
+                    ctype = "image/jpeg";
+                else if (!strcasecmp(dot, ".bin")) ctype = "application/octet-stream";
+            }
+        }
+
         char header[256];
         if (body) {
             int hlen = snprintf(header, sizeof header,
-                                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                                "HTTP/1.1 200 OK\r\nContent-Type: %s\r\n"
                                 "Content-Length: %zu\r\nConnection: keep-alive\r\n\r\n",
-                                strlen(body));
+                                ctype, strlen(body));
             (void)!write(fd, header, (size_t)hlen);
             (void)!write(fd, body, strlen(body));
         } else {
@@ -93,16 +111,40 @@ static void serve(int fd) {
     close(fd);
 }
 
-static void server_loop(int listen_fd) {
-    signal(SIGTERM, SIG_DFL);
+/*
+ * A pool of worker threads, so the harness serves several connections at once.
+ *
+ * The crawl fetches pages in parallel, so a server that accepts one connection
+ * at a time is the bottleneck and makes a working crawler look like it hangs.
+ * Threads rather than a fork per connection: a forked child outlives the test
+ * process and holds its stdout open, which is what made the suite appear to
+ * hang after it had finished. Threads die with the process.
+ */
+#define SERVER_THREADS 16
+static pthread_mutex_t g_accept_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *server_thread(void *arg) {
+    int listen_fd = *(int *)arg;
     for (;;) {
+        pthread_mutex_lock(&g_accept_lock);
         int fd = accept(listen_fd, NULL, NULL);
+        pthread_mutex_unlock(&g_accept_lock);
         if (fd < 0) {
             if (errno == EINTR) continue;
             break;
         }
         serve(fd);
     }
+    return NULL;
+}
+
+static void server_loop(int listen_fd) {
+    signal(SIGTERM, SIG_DFL);
+    pthread_t threads[SERVER_THREADS];
+    for (int i = 0; i < SERVER_THREADS; i++) {
+        if (pthread_create(&threads[i], NULL, server_thread, &listen_fd) != 0) break;
+    }
+    for (int i = 0; i < SERVER_THREADS; i++) pthread_join(threads[i], NULL);
     _exit(0);
 }
 
@@ -722,6 +764,261 @@ static void test_crawl_turns_extractor_entries_into_hits(void) {
     unlink(script);
     stop_site(pid);
 }
+/*
+ * URL canonicalisation, which is what keeps the seen-set from treating one page
+ * as several. Without it the same page under `?utm_source=` and without it is
+ * two entries and two fetches out of a small budget.
+ */
+static void test_url_normalization(void) {
+    struct { const char *in; const char *want; } cases[] = {
+        /* Tracking parameters are dropped; a real parameter is kept. */
+        {"http://example.com/a?utm_source=x&id=2", "http://example.com/a?id=2"},
+        {"http://example.com/a?fbclid=abc", "http://example.com/a"},
+        {"http://example.com/a?gclid=1&utm_medium=e&keep=1", "http://example.com/a?keep=1"},
+        /* The fragment is not a resource. */
+        {"http://example.com/a#section", "http://example.com/a"},
+        /* Scheme and host case are normalised; the path is not. */
+        {"HTTP://Example.COM/A/B", "http://example.com/A/B"},
+        /* A default port is the same resource without it; another is not. */
+        {"http://example.com:80/a", "http://example.com/a"},
+        {"https://example.com:443/a", "https://example.com/a"},
+        {"http://example.com:8080/a", "http://example.com:8080/a"},
+        /* A missing path is the root. */
+        {"http://example.com", "http://example.com/"},
+        /* Userinfo is preserved. */
+        {"http://user:pw@example.com/a", "http://user:pw@example.com/a"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char *got = mi_url_normalize(cases[i].in);
+        CHECK(got && !strcmp(got, cases[i].want), cases[i].in);
+        free(got);
+    }
+    char *none = mi_url_normalize(NULL);
+    CHECK(none == NULL, "a NULL URL normalises to NULL");
+}
+
+/*
+ * Fuzzy and weighted scoring: a name misspelled by a character or two is found,
+ * and a partial match reports how much of the term it covered.
+ */
+static void test_score_fuzzy_and_weighted(void) {
+    /* A one-character typo in a long term is matched fuzzily, not lost. */
+    CHECK(mi_crawl_score("stm32-datashet.pdf", NULL, "stm32 datasheet") > 0,
+          "a misspelled long name still matches");
+    /* A short term gets no fuzzy slack, or it would match almost anything. */
+    CHECK(mi_crawl_score("abc.pdf", NULL, "xyz") == 0,
+          "a short unrelated term does not match fuzzily");
+    /* A term that only partly matches scores below a full match but above zero,
+     * and the longer word it matched counts for more. */
+    int only_long = mi_crawl_score("firmware.bin", NULL, "widget firmware");
+    int only_short = mi_crawl_score("widget.bin", NULL, "widget firmware");
+    CHECK(only_long > 0 && only_short > 0, "a partial match is reported");
+    CHECK(only_long > only_short,
+          "matching the longer word counts for more than the shorter");
+}
+
+/*
+ * The media a page offers that is not in an anchor.
+ *
+ * A crawler that reads only `<a href>` is blind to a `<video src>`, a `<source>`
+ * rendition, a `srcset`, an OpenGraph meta and a JSON-LD blob — every one of
+ * which is already in the HTML the walk downloaded.
+ */
+static void test_crawl_sees_media_not_in_an_anchor(void) {
+    static const route routes[] = {
+        {"/", "<html><head>"
+              "<meta property='og:video' content='/media/clip.mp4'>"
+              "<script type='application/ld+json'>"
+              "{\"@type\":\"VideoObject\",\"contentUrl\":\"/media/json-clip.mp4\"}"
+              "</script>"
+              "</head><body>"
+              "<video src='/media/direct.webm'></video>"
+              "<video><source src='/media/source.mkv'></video>"
+              "<img srcset='/media/small.jpg 480w, /media/large.jpg 1080w' src='/media/fallback.jpg'>"
+              "<a href='/about/team'>About</a>"
+              "</body></html>"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 1, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 0;
+    cfg.use_browser_fallback = 0;
+    cfg.verify_hits = 0; /* these URLs are not served; keep the URL-only view */
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "clip", &res);
+    int saw_mp4 = 0, saw_json = 0;
+    for (size_t i = 0; i < res.hit_count; i++) {
+        if (strstr(res.hits[i].url, "/media/clip.mp4")) saw_mp4 = 1;
+        if (strstr(res.hits[i].url, "json-clip.mp4")) saw_json = 1;
+    }
+    CHECK(saw_mp4, "an og:video URL is seen");
+    CHECK(saw_json, "a JSON-LD contentUrl is seen");
+    mi_crawl_result_free(&res);
+
+    mi_crawl(&cfg, url, "direct", &res);
+    CHECK(res.hit_count >= 1, "a <video src> is seen");
+    mi_crawl_result_free(&res);
+
+    mi_crawl(&cfg, url, "source", &res);
+    CHECK(res.hit_count >= 1, "a <source src> is seen");
+    mi_crawl_result_free(&res);
+
+    mi_crawl(&cfg, url, "large", &res);
+    CHECK(res.hit_count >= 1, "a srcset candidate is seen");
+    mi_crawl_result_free(&res);
+
+    stop_site(pid);
+}
+
+/*
+ * A hit is confirmed from the response, not the URL.
+ *
+ * A URL that looks like a file but answers as HTML is dropped; one that answers
+ * as media is kept and gets its real MIME. Without this, an HTML viewer named
+ * like a file is reported as a hit with nothing behind it.
+ */
+static void test_crawl_verifies_hits_from_the_response(void) {
+    static const route routes[] = {
+        {"/", "<a href='/real.mp4'>real</a>"
+              "<a href='/fake.mp4'>fake</a>"},
+        /* Serves bytes that are not media, and says so. */
+        {"/fake.mp4", "<html><body>not a video</body></html>"},
+        /* Serves an MP4 magic byte sequence with a media type. */
+        {"/real.mp4", "\x00\x00\x00\x18" "ftypisom" "...."},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 3, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 0;
+    cfg.use_browser_fallback = 0;
+    cfg.verify_hits = 1;
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "mp4", &res);
+    int saw_real = 0, saw_fake = 0;
+    for (size_t i = 0; i < res.hit_count; i++) {
+        if (strstr(res.hits[i].url, "real.mp4")) saw_real = 1;
+        if (strstr(res.hits[i].url, "fake.mp4")) saw_fake = 1;
+    }
+    CHECK(saw_real, "a file that answers as media is kept");
+    CHECK(!saw_fake, "a URL that answers as HTML is dropped");
+    CHECK(res.dropped_non_media >= 1, "the drop is reported");
+    mi_crawl_result_free(&res);
+
+    stop_site(pid);
+}
+
+/*
+ * The parallel walk finds everything the serial walk does.
+ *
+ * Several workers share the frontier, so the walk must not lose a URL or double
+ * count a hit. This runs a small site with the default worker count and checks
+ * that every page's file is found exactly once.
+ */
+static void test_crawl_parallel_walk_finds_everything(void) {
+    static const route routes[] = {
+        {"/", "<a href='/a'>a</a><a href='/b'>b</a><a href='/c'>c</a>"
+              "<a href='/d'>d</a><a href='/e'>e</a><a href='/f'>f</a>"},
+        {"/a", "<a href='/files/a-target.bin'>a-target</a>"},
+        {"/b", "<a href='/files/b-target.bin'>b-target</a>"},
+        {"/c", "<a href='/files/c-target.bin'>c-target</a>"},
+        {"/d", "<a href='/files/d-target.bin'>d-target</a>"},
+        {"/e", "<a href='/files/e-target.bin'>e-target</a>"},
+        {"/f", "<a href='/files/f-target.bin'>f-target</a>"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 7, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 2;
+    cfg.max_pages = 20;
+    cfg.use_browser_fallback = 0;
+    cfg.workers = 4;
+    cfg.verify_hits = 0;
+
+    mi_crawl_result res;
+    CHECK(mi_crawl(&cfg, url, "target", &res) == MI_OK, "parallel crawl ran");
+    /* Six files, each found once. */
+    CHECK(res.hit_count == 6, "every page's file is found");
+    int seen[6] = {0};
+    for (size_t i = 0; i < res.hit_count; i++) {
+        for (int k = 0; k < 6; k++) {
+            char want[8];
+            snprintf(want, sizeof want, "%c-targ", 'a' + k);
+            if (strstr(res.hits[i].url, want)) seen[k]++;
+        }
+    }
+    int all_once = 1;
+    for (int k = 0; k < 6; k++) if (seen[k] != 1) all_once = 0;
+    CHECK(all_once, "each file is found exactly once");
+    mi_crawl_result_free(&res);
+    stop_site(pid);
+}
+
+/*
+ * Term-aware ordering: the page whose URL carries the term is fetched first.
+ *
+ * With a budget too small to read the whole site, *which* pages are read decides
+ * whether the walk finds anything. A URL whose own path carries the term is the
+ * best next fetch, and this pins that the priority queue delivers that rather
+ * than plain link order.
+ */
+static void test_crawl_priority_fetches_the_term_page_first(void) {
+    static const route routes[] = {
+        /* The term page is linked last, so a breadth-first walk reaches it only
+         * after the two unrelated pages. The budget is one page past the index,
+         * so only the ordering decides what is read. */
+        {"/", "<a href='/about/team'>About</a>"
+              "<a href='/contact'>Contact</a>"
+              "<a href='/downloads/widget-firmware'>Widget</a>"},
+        {"/downloads/widget-firmware", "<a href='/files/widget.bin'>widget</a>"},
+        {"/about/team", "nothing here"},
+        {"/contact", "nothing here"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 4, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 3;
+    cfg.max_pages = 2; /* the index, then one more page */
+    cfg.use_browser_fallback = 0;
+    cfg.workers = 1; /* deterministic ordering */
+    cfg.verify_hits = 0;
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "widget", &res);
+    CHECK(res.hit_count >= 1, "the term page is fetched before the budget runs out");
+    if (res.hit_count > 0) {
+        CHECK(strstr(res.hits[0].url, "widget"), "and the widget file is the hit");
+    }
+    mi_crawl_result_free(&res);
+    stop_site(pid);
+}
+
+
 
 int main(void) {
     test_score();
@@ -740,6 +1037,12 @@ int main(void) {
     test_crawl_unreachable_site_is_not_an_error();
     test_crawl_rejects_a_bad_url();
     test_crawl_obey_robots_can_be_overridden();
+    test_url_normalization();
+    test_score_fuzzy_and_weighted();
+    test_crawl_sees_media_not_in_an_anchor();
+    test_crawl_verifies_hits_from_the_response();
+    test_crawl_parallel_walk_finds_everything();
+    test_crawl_priority_fetches_the_term_page_first();
 
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
