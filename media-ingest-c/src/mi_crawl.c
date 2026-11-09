@@ -48,6 +48,36 @@
 #define CRAWL_MAX_WORKERS 16
 /* How many candidate hits one walk may probe to confirm they are media. */
 #define CRAWL_DEFAULT_MAX_VERIFY 24
+
+/*
+ * The config defaults, named once.
+ *
+ * `mi_crawl_config_init` fills them, and `mi_crawl` falls back to the same
+ * values when a caller zeroed a field after init. They used to be literals in
+ * both places and drifted — the fallbacks still said 40 pages / 45 s after the
+ * defaults moved to 200 / 90 s — so a caller who zeroed `max_pages` got the old
+ * budget back. One name, used in both, cannot drift.
+ */
+#define CRAWL_DEFAULT_MAX_DEPTH 3
+#define CRAWL_DEFAULT_MAX_PAGES 200
+#define CRAWL_DEFAULT_MAX_HITS 50
+#define CRAWL_DEFAULT_BUDGET_SECONDS 90.0
+#define CRAWL_DEFAULT_MAX_BROWSER_PAGES 8
+#define CRAWL_DEFAULT_DEDUP_DISTANCE 3
+#define CRAWL_DEFAULT_SETTLE_SECONDS 2.0
+#define CRAWL_DEFAULT_FRONTIER_LEASE 300
+
+/*
+ * Retry policy for a page fetch.
+ *
+ * A crawl reads hundreds of pages, so one flaky 5xx or a dropped connection
+ * silently costs a page slot and its links. A handful of retries with
+ * exponential backoff turns that into a page read. Bounded, because a hard 5xx
+ * is sometimes the site's answer and hammering it is worse than skipping it.
+ */
+#define CRAWL_FETCH_RETRIES 2
+#define CRAWL_FETCH_BACKOFF_SECONDS 0.5
+
 /* How long to let a click's effect arrive before reading, and how long to let a
  * page settle after load. Short on purpose: a crawl drives many pages, and a
  * per-page cost of ten seconds makes the walk useless even when it is right. */
@@ -56,13 +86,13 @@
 
 void mi_crawl_config_init(mi_crawl_config *cfg) {
     memset(cfg, 0, sizeof *cfg);
-    cfg->max_depth = 3;
-    cfg->max_pages = 200;
-    cfg->max_hits = 50;
-    cfg->budget_seconds = 90.0;
+    cfg->max_depth = CRAWL_DEFAULT_MAX_DEPTH;
+    cfg->max_pages = CRAWL_DEFAULT_MAX_PAGES;
+    cfg->max_hits = CRAWL_DEFAULT_MAX_HITS;
+    cfg->budget_seconds = CRAWL_DEFAULT_BUDGET_SECONDS;
     cfg->same_host_only = 1;
     cfg->use_browser_fallback = 1;
-    cfg->max_browser_pages = 8;
+    cfg->max_browser_pages = CRAWL_DEFAULT_MAX_BROWSER_PAGES;
     cfg->workers = CRAWL_DEFAULT_WORKERS;
     cfg->verify_hits = 1;
     cfg->max_verify = CRAWL_DEFAULT_MAX_VERIFY;
@@ -81,18 +111,18 @@ void mi_crawl_config_init(mi_crawl_config *cfg) {
     cfg->obey_robots = 1;
     cfg->use_sitemap = 1;
     cfg->dedup = 1;
-    cfg->dedup_distance = 3;
+    cfg->dedup_distance = CRAWL_DEFAULT_DEDUP_DISTANCE;
     cfg->user_agent = NULL;
     cfg->frontier_db_url = NULL;
     cfg->frontier_token = NULL;
     cfg->frontier_run_id = NULL;
     cfg->frontier_db_path = NULL;
-    cfg->frontier_lease_seconds = 300;
+    cfg->frontier_lease_seconds = CRAWL_DEFAULT_FRONTIER_LEASE;
     cfg->render_pool = NULL;
     cfg->interactive_pool = NULL;
     cfg->click_selectors = NULL;
     cfg->click_selector_count = 0;
-    cfg->settle_seconds = 2.0;
+    cfg->settle_seconds = CRAWL_DEFAULT_SETTLE_SECONDS;
 }
 
 /* ------------------------------------------------------------------ */
@@ -103,6 +133,16 @@ static double now_seconds(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/* Sleep for a fractional number of seconds, without a signal-time surprise. */
+static void sleep_seconds(double s) {
+    if (s <= 0) return;
+    struct timespec ts;
+    ts.tv_sec = (time_t)s;
+    ts.tv_nsec = (long)((s - (double)ts.tv_sec) * 1e9);
+    if (ts.tv_nsec > 999999999L) ts.tv_nsec = 999999999L;
+    nanosleep(&ts, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -552,7 +592,14 @@ static int is_page(const char *url) {
     }
     if (!dot || dot >= url + n) return 1; /* no extension: could be either */
     static const char *PAGE_EXT[] = {".html", ".htm", ".php", ".asp", ".aspx", ".jsp",
-                                     ".shtml", ".cgi", ".pl", NULL};
+                                     ".shtml", ".cgi", ".pl",
+                                     /* A feed is a page to walk: it names the
+                                      * site's newest items, which the walk then
+                                      * follows and scores. `.xml` is included
+                                      * because `/feed.xml` is the commonest
+                                      * feed URL of all; a non-feed XML yields
+                                      * nothing and costs one page. */
+                                     ".rss", ".atom", ".rdf", ".xml", NULL};
     for (size_t i = 0; PAGE_EXT[i]; i++) {
         if (!strncasecmp(dot, PAGE_EXT[i], strlen(PAGE_EXT[i]))) return 1;
     }
@@ -1063,6 +1110,32 @@ static int read_page_driven(crawl_shared *s, const char *url, int depth, int *re
     return hits;
 }
 
+/*
+ * Fetch one page, retrying a transient failure.
+ *
+ * A 5xx or a dropped connection is usually transient, so one bad response
+ * should not silently cost a page slot and the links it would have reached. A
+ * 4xx or 3xx is the server's answer, so retrying it only wastes budget. The
+ * wait doubles each attempt and never runs past the deadline, so a retry cannot
+ * outlive the walk's budget. Returns the body (NULL on failure) and fills
+ * `info`; on total failure `info` is left zeroed.
+ */
+static char *crawl_fetch_page(const mi_download_config *dcfg, const char *url,
+                              double deadline, mi_fetch_info *info) {
+    for (int attempt = 0; attempt <= CRAWL_FETCH_RETRIES; attempt++) {
+        char *body = mi_download_fetch_document(dcfg, url, CRAWL_MAX_BODY, info);
+        if (body) return body;
+        int st = info->status;
+        int retryable = st == 0 || st == 408 || st == 429 || (st >= 500 && st < 600);
+        if (!retryable || attempt == CRAWL_FETCH_RETRIES) return NULL;
+        double wait = CRAWL_FETCH_BACKOFF_SECONDS * (double)(1 << attempt);
+        if (now_seconds() + wait >= deadline) return NULL;
+        sleep_seconds(wait);
+        mi_fetch_info_free(info); /* the next attempt starts clean */
+    }
+    return NULL;
+}
+
 /**
  * Read one page and record what it yields.
  *
@@ -1142,7 +1215,7 @@ static int read_page(crawl_shared *s, const char *url, int depth) {
     }
 
     mi_fetch_info info;
-    char *body = mi_download_fetch_document(&dcfg, url, CRAWL_MAX_BODY, &info);
+    char *body = crawl_fetch_page(&dcfg, url, deadline, &info);
     pthread_mutex_lock(&s->lock);
     res->fetched++;
     pthread_mutex_unlock(&s->lock);
@@ -1476,7 +1549,8 @@ static int read_page(crawl_shared *s, const char *url, int depth) {
      */
     if (hits == 0 && !extracted && cfg->use_browser_fallback && now_seconds() < deadline) {
         pthread_mutex_lock(&s->lock);
-        int browser_cap = cfg->max_browser_pages > 0 ? cfg->max_browser_pages : 3;
+        int browser_cap = cfg->max_browser_pages > 0 ? cfg->max_browser_pages
+                                            : CRAWL_DEFAULT_MAX_BROWSER_PAGES;
         int browser_ok = s->res->rendered < browser_cap;
         pthread_mutex_unlock(&s->lock);
         if (browser_ok &&
@@ -1663,6 +1737,28 @@ static void fetch_robots(const mi_crawl_config *cfg, const char *host, const cha
 #define CRAWL_SITEMAP_SEED_FRACTION 4
 
 /*
+ * A recency bonus from an entry's `<lastmod>`, higher for newer.
+ *
+ * The date is W3C-ish (`2024-01-01` or `2024-01-01T09:00:00Z`); only the year
+ * and month are read, which is all a *ranking* needs — this orders a frontier,
+ * it does not schedule a crawl. The result is a fixed function of the string,
+ * with no clock in it, so a test is not time-dependent. Bounded to the same
+ * order as the site `priority` contribution so neither signal swamps the other,
+ * and both stay well under the term-match bonus.
+ */
+static int lastmod_bonus(const char *lastmod) {
+    if (!lastmod || !*lastmod) return 0;
+    int y = 0, m = 0;
+    if (sscanf(lastmod, "%d-%d", &y, &m) < 1) return 0;
+    if (y < 1990 || y > 2100) return 0;
+    int bonus = (y - 2000) * 2;
+    if (m >= 1 && m <= 12) bonus += (m - 1) / 3; /* 0..3 within the year */
+    if (bonus < 0) bonus = 0;
+    if (bonus > 60) bonus = 60;
+    return bonus;
+}
+
+/*
  * Seed the frontier from the host's sitemaps.
  *
  * The sitemaps come from the robots.txt `Sitemap:` directives when there are
@@ -1737,11 +1833,12 @@ static int seed_from_sitemaps(const mi_crawl_config *cfg, frontier *f,
                     child_seen++;
                 } else {
                     const mi_sitemap_entry *e = &sm.entries[i];
-                    /* The site's own priority, scaled, plus a bonus for a URL
-                     * whose path carries the term — the same signal the walk's
-                     * own ordering uses. */
+                    /* The site's own priority, scaled; a recency bonus from
+                     * `lastmod`; plus a bonus for a URL whose path carries the
+                     * term — the same signal the walk's own ordering uses. */
                     int prio = 0;
                     if (e->priority > 0) prio += (int)(e->priority * 20);
+                    prio += lastmod_bonus(e->lastmod);
                     if (url_mentions_term(e->loc, folded_term)) prio += 100;
                     if (mi_frontier_push_prio(f, e->loc, 0, prio) == 0) pushed++;
                 }
@@ -1848,10 +1945,11 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
         return MI_ERR_ARG;
     }
 
-    int max_pages = cfg->max_pages > 0 ? cfg->max_pages : 40;
+    int max_pages = cfg->max_pages > 0 ? cfg->max_pages : CRAWL_DEFAULT_MAX_PAGES;
     if (max_pages > CRAWL_HARD_MAX_PAGES) max_pages = CRAWL_HARD_MAX_PAGES;
-    int max_hits = cfg->max_hits > 0 ? cfg->max_hits : 50;
-    double budget = cfg->budget_seconds > 0 ? cfg->budget_seconds : 45.0;
+    int max_hits = cfg->max_hits > 0 ? cfg->max_hits : CRAWL_DEFAULT_MAX_HITS;
+    double budget =
+        cfg->budget_seconds > 0 ? cfg->budget_seconds : CRAWL_DEFAULT_BUDGET_SECONDS;
     double started = now_seconds();
     double deadline = started + budget;
 
@@ -1888,7 +1986,8 @@ int mi_crawl(const mi_crawl_config *cfg, const char *site_url, const char *term,
      * second worker already walking the same run keeps its in-flight pages.
      */
     if (cfg->frontier_run_id && *cfg->frontier_run_id) {
-        int lease = cfg->frontier_lease_seconds > 0 ? cfg->frontier_lease_seconds : 300;
+        int lease = cfg->frontier_lease_seconds > 0 ? cfg->frontier_lease_seconds
+                                                     : CRAWL_DEFAULT_FRONTIER_LEASE;
         int n = mi_frontier_reclaim_stale(f, lease);
         if (n > 0) mi_logf(MI_LOG_INFO, "crawl: reclaimed %d stale claim(s)", n);
     }

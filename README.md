@@ -168,7 +168,8 @@ several minutes on four cores. It rebuilds only what changed.
 Working, verified against real sites:
 
 - Content-based detection; ranged, resumable downloads; HLS and DASH stitching.
-- Crawl with robots, sitemaps, dedup, browser fallback and a shared frontier.
+- Crawl with robots, sitemaps, RSS/Atom feeds, dedup, retry, browser fallback
+  and a shared frontier.
 - Page rendering, live pages, S3 upload and Cloudflare purge.
 
 Known limits, all site-side or environmental rather than defects in Vyzor:

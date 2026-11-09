@@ -57,14 +57,38 @@ Every bound has a default and can be overridden per request.
 
 | Bound | Default | Why |
 |---|---|---|
-| `max_depth` | 2 | 0 reads only the page given; each extra level multiplies requests |
-| `max_pages` | 40 | a hard stop on a site with a large index |
+| `max_depth` | 3 | 0 reads only the page given; each extra level multiplies requests |
+| `max_pages` | 200 | a hard stop on a site with a large index |
 | `max_hits` | 50 | once this many match, the walk stops: the caller has what it came for |
-| `budget_seconds` | 45 | a wall-clock stop |
-| `max_browser_pages` | 3 | the browser fallback is expensive; a JavaScript site hides its listing behind its landing page, not behind every page |
+| `budget_seconds` | 90 | a wall-clock stop |
+| `workers` | 4 | pages are fetched in parallel, so a budget reaches more of the site |
+| `max_browser_pages` | 8 | the browser fallback is expensive; a JavaScript site hides its listing behind its landing page, not behind every page |
 
-`same_host_only` is **off** by default: a datasheet host commonly links its files
-from a CDN on another host, and refusing those would miss the file.
+A crawl also **verifies** a candidate hit before reporting it (`verify_hits`, on by
+default, up to `max_verify` per run): a ranged probe and a magic-byte sniff tell a
+real file from an HTML page that merely has a file-like name, and a verified file
+ranks above an unverified link.
+
+`same_host_only` is **on** by default. A datasheet host commonly links its files
+from a CDN on another host, so a caller that expects off-host files turns it off
+explicitly — the default is to stay on the host the crawl started from.
+
+## Feeds
+
+A feed is the best source a media crawler has: it is the site's own list of what
+is new, in machine-readable form. So the walk treats feeds as first-class:
+
+- A `<link rel="alternate">` in a page's head is followed, so an advertised feed
+  is found without guessing its URL.
+- An RSS 2.0, Atom or RDF/RSS 1.0 document is parsed for its items — the entry
+  `link`, the `guid`, and the `enclosure` — and those become pages the walk reads
+  and files it scores.
+
+## Retry
+
+A page fetch is retried on a *transient* failure — a 5xx, a timeout, a connection
+reset — with a short backoff, so one flaky response does not cost a page from the
+budget. A 4xx is the server's answer and is not retried.
 
 ## Dedup
 

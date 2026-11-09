@@ -1213,6 +1213,94 @@ static void test_browse_parse(void) {
               "browse: a link with no text is listed without a title");
         mi_browse_result_free(&r);
     }
+
+    /* --- A page advertises its feed; that is the best source a media crawler
+     * has, so the feed link is offered. (In "everything" mode the stylesheet is
+     * also listed — it is a real resource — so the feed is what is asserted
+     * here.) --- */
+    {
+        const char *html =
+            "<html><head>"
+            "<link rel=\"stylesheet\" href=\"/style.css\">"
+            "<link rel=\"alternate\" type=\"application/rss+xml\" href=\"/feed.xml\">"
+            "</head><body><a href=\"/about\">About</a></body></html>";
+        mi_browse_result r;
+        mi_browse_parse(html, strlen(html), "https://site.example/", MI_BROWSE_ALL, &r);
+        CHECK(has(&r, "feed.xml"), "browse: a declared RSS feed is discovered");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- A feed link whose type is not a feed is not mistaken for one. --- */
+    {
+        const char *html =
+            "<head><link rel=\"alternate\" type=\"text/html\" href=\"/page.html\">"
+            "</head>";
+        mi_browse_result r;
+        mi_browse_parse(html, strlen(html), "https://site.example/", MI_BROWSE_ALL, &r);
+        CHECK(has(&r, "page.html"), "browse: a non-feed alternate link is still a link");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- The feed link is found with no `type`, from the path alone. --- */
+    {
+        const char *html =
+            "<head><link rel=\"alternate\" href=\"/atom.xml\"></head>";
+        mi_browse_result r;
+        mi_browse_parse(html, strlen(html), "https://site.example/", MI_BROWSE_ALL, &r);
+        CHECK(has(&r, "atom.xml"), "browse: a type-less feed link is found by its path");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- An RSS 2.0 feed: each item's link, its guid and its enclosure are
+     * all real references; the channel's own link is not an item. --- */
+    {
+        const char *rss =
+            "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel>"
+            "<title>Clips</title><link>https://site.example/</link>"
+            "<item><title>First</title>"
+            "<link>https://site.example/clips/first.mp4</link>"
+            "<enclosure url=\"https://site.example/clips/first.mp4\" type=\"video/mp4\"/>"
+            "</item>"
+            "<item><link><![CDATA[https://site.example/clips/second.mp4]]></link>"
+            "<guid>https://site.example/clips/second.mp4</guid></item>"
+            "</channel></rss>";
+        mi_browse_result r;
+        CHECK(mi_browse_parse(rss, strlen(rss), "https://site.example/feed.xml",
+                              MI_BROWSE_MEDIA, &r) == MI_OK, "browse: rss parses");
+        CHECK(has(&r, "first.mp4"), "browse rss: the item link is offered");
+        CHECK(has(&r, "second.mp4"), "browse rss: a CDATA link is offered");
+        CHECK(r.count == 2, "browse rss: the channel link is not an item");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- An Atom feed: the entry's link carries its URL in `href`, and the
+     * enclosure is an attribute too. --- */
+    {
+        const char *atom =
+            "<feed xmlns=\"http://www.w3.org/2005/Atom\">"
+            "<link href=\"https://site.example/\" rel=\"alternate\"/>"
+            "<entry><title>One</title>"
+            "<link href=\"https://site.example/v/one.mp4\" rel=\"alternate\"/>"
+            "<link href=\"https://cdn.example/two.mp3\" rel=\"enclosure\"/>"
+            "</entry></feed>";
+        mi_browse_result r;
+        CHECK(mi_browse_parse(atom, strlen(atom), "https://site.example/atom.xml",
+                              MI_BROWSE_MEDIA, &r) == MI_OK, "browse: atom parses");
+        CHECK(has(&r, "one.mp4"), "browse atom: an entry link is offered");
+        CHECK(has(&r, "two.mp3"), "browse atom: an enclosure link is offered");
+        mi_browse_result_free(&r);
+    }
+
+    /* --- An XML document that is not a feed is not parsed as one, and does
+     * not crash or invent items. --- */
+    {
+        const char *xml = "<?xml version=\"1.0\"?><root><thing>1</thing></root>";
+        mi_browse_result r;
+        CHECK(mi_browse_parse(xml, strlen(xml), "https://h/", MI_BROWSE_MEDIA, &r) == MI_OK,
+              "browse: a non-feed xml does not fail");
+        CHECK(r.count == 0, "browse: a non-feed xml yields nothing");
+        mi_browse_result_free(&r);
+    }
 }
 
 /* ---------------------------------------------------------------- */

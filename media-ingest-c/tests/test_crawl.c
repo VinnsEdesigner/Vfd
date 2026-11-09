@@ -49,6 +49,11 @@ typedef struct {
 
 static const route *g_routes = NULL;
 static int g_route_count = 0;
+/* One path may be told to answer 503 a few times before serving, so a fetch
+ * retry is exercised against a real transient 5xx rather than a mock. */
+static const char *g_flaky_path = NULL;
+static int g_flaky_times = 0;
+static int g_flaky_seen = 0;
 
 static void serve(int fd) {
     /*
@@ -72,6 +77,22 @@ static void serve(int fd) {
         const char *body = NULL;
         for (int i = 0; i < g_route_count; i++) {
             if (!strcmp(g_routes[i].path, path)) { body = g_routes[i].body; break; }
+        }
+
+        /* A path may be told to fail the first N times, so the fetch retry is
+         * exercised against a real transient 5xx rather than a mock. */
+        if (body && g_flaky_path && !strcmp(path, g_flaky_path) &&
+            g_flaky_seen < g_flaky_times) {
+            g_flaky_seen++;
+            const char *err = "temporarily unavailable";
+            char eheader[160];
+            int elen = snprintf(eheader, sizeof eheader,
+                                "HTTP/1.1 503 Service Unavailable\r\n"
+                                "Content-Length: %zu\r\n"
+                                "Connection: keep-alive\r\n\r\n", strlen(err));
+            (void)!write(fd, eheader, (size_t)elen);
+            (void)!write(fd, err, strlen(err));
+            continue;
         }
 
         /* The content type follows the body: markup is a page, and anything else
@@ -1057,7 +1078,158 @@ static void test_crawl_priority_fetches_the_term_page_first(void) {
     stop_site(pid);
 }
 
+/* A page that advertises a feed in its head; the feed's items must become hits
+ * even though no anchor on the page points at them. */
+static void test_crawl_follows_an_advertised_feed(void) {
+    static const route routes[] = {
+        {"/", "<html><head><title>Blog</title>"
+              "<link rel=\"alternate\" type=\"application/rss+xml\" href=\"/feed.xml\">"
+              "</head><body><a href=\"/about.html\">About</a></body></html>"},
+        {"/about.html", "<p>nothing</p>"},
+        /* Relative URLs in the feed resolve against the feed's own URL, so the
+         * fixture needs no knowledge of the port. */
+        {"/feed.xml",
+         "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><title>Blog</title>"
+         "<link>/</link>"
+         "<item><title>Episode one</title>"
+         "<link>/media/podcast-episode-one.mp3</link>"
+         "<enclosure url=\"/media/podcast-episode-one.mp3\" type=\"audio/mpeg\"/>"
+         "</item></channel></rss>"},
+        {"/media/podcast-episode-one.mp3", "ID3-not-really-audio"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 4, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
 
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 3;
+    cfg.max_pages = 50;
+    cfg.use_browser_fallback = 0;
+    cfg.use_sitemap = 0; /* keep the walk to the pages it can see */
+    cfg.workers = 1;
+    cfg.verify_hits = 0; /* the fixture bytes are not real audio */
+    cfg.obey_robots = 0;
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "episode", &res);
+    CHECK(res.hit_count >= 1, "a feed's item is found without an anchor");
+    if (res.hit_count > 0) {
+        CHECK(strstr(res.hits[0].url, "podcast-episode-one.mp3") != NULL,
+              "the feed item's enclosure is the hit");
+    }
+    mi_crawl_result_free(&res);
+    stop_site(pid);
+}
+
+/* A transient 503 is retried, so one flaky page does not cost the walk. */
+static void test_crawl_retries_a_transient_failure(void) {
+    static const route routes[] = {
+        {"/", "<a href=\"/flaky/clip.mp4\">clip</a>"},
+        {"/flaky/clip.mp4", "not-really-media"},
+    };
+    pid_t pid = 0;
+    /* The index fails twice, then serves — set *before* start_site forks, so
+     * the server process inherits it. Two failures plus the success is within
+     * CRAWL_FETCH_RETRIES. */
+    g_flaky_path = "/";
+    g_flaky_times = 2;
+    int port = start_site(routes, 2, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 2;
+    cfg.max_pages = 10;
+    cfg.use_browser_fallback = 0;
+    cfg.use_sitemap = 0;
+    cfg.workers = 1;
+    cfg.verify_hits = 0;
+    cfg.obey_robots = 0;
+    cfg.budget_seconds = 30;
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "clip", &res);
+    CHECK(res.hit_count >= 1, "a page that 503s twice is still read on the retry");
+    mi_crawl_result_free(&res);
+    stop_site(pid);
+    g_flaky_path = NULL;
+    g_flaky_times = 0;
+    g_flaky_seen = 0;
+}
+
+/* A 404 is the server's answer, so it must not be retried (no wasted budget). */
+static void test_crawl_does_not_retry_a_404(void) {
+    static const route routes[] = {
+        {"/", "<a href=\"/missing.html\">gone</a>"},
+    };
+    pid_t pid = 0;
+    int port = start_site(routes, 1, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    cfg.max_depth = 2;
+    cfg.max_pages = 10;
+    cfg.use_browser_fallback = 0;
+    cfg.use_sitemap = 0;
+    cfg.workers = 1;
+    cfg.verify_hits = 0;
+    cfg.obey_robots = 0;
+    cfg.budget_seconds = 30;
+
+    mi_crawl_result res;
+    mi_crawl(&cfg, url, "nothingmatches", &res);
+    /* The walk completes without stalling on the 404. */
+    CHECK(res.page_count >= 1, "a 404 page does not stall the walk");
+    mi_crawl_result_free(&res);
+    stop_site(pid);
+}
+
+/* The fallback constants must agree with the config defaults. */
+static void test_crawl_defaults_match_init(void) {
+    mi_crawl_config cfg;
+    mi_crawl_config_init(&cfg);
+    CHECK(cfg.max_depth == 3, "default depth is 3");
+    CHECK(cfg.max_pages == 200, "default page cap is 200");
+    CHECK(cfg.max_hits == 50, "default hit cap is 50");
+    CHECK(cfg.budget_seconds == 90.0, "default budget is 90s");
+    CHECK(cfg.same_host_only == 1, "default is same-host");
+    CHECK(cfg.max_browser_pages == 8, "default browser page cap is 8");
+    CHECK(cfg.workers == 4, "default workers is 4");
+    CHECK(cfg.verify_hits == 1, "verification is on by default");
+    CHECK(cfg.browser_scroll == 1, "browser scrolling is on by default");
+
+    /* Zeroing a field after init must fall back to the *same* value, not an old
+     * one. This is the bug the named constants fix. */
+    cfg.max_pages = 0;
+    cfg.budget_seconds = 0;
+    static const route routes[] = {{"/", "<p>nothing</p>"}};
+    pid_t pid = 0;
+    int port = start_site(routes, 1, &pid);
+    if (!port) { CHECK(0, "site started"); return; }
+    char url[128];
+    snprintf(url, sizeof url, "http://127.0.0.1:%d/", port);
+    cfg.max_depth = 1;
+    cfg.use_browser_fallback = 0;
+    cfg.use_sitemap = 0;
+    cfg.workers = 1;
+    cfg.obey_robots = 0;
+    mi_crawl_result res;
+    CHECK(mi_crawl(&cfg, url, "x", &res) == MI_OK,
+          "a zeroed page/budget falls back and still crawls");
+    mi_crawl_result_free(&res);
+    stop_site(pid);
+}
 
 int main(void) {
     test_score();
@@ -1082,6 +1254,10 @@ int main(void) {
     test_crawl_verifies_hits_from_the_response();
     test_crawl_parallel_walk_finds_everything();
     test_crawl_priority_fetches_the_term_page_first();
+    test_crawl_follows_an_advertised_feed();
+    test_crawl_retries_a_transient_failure();
+    test_crawl_does_not_retry_a_404();
+    test_crawl_defaults_match_init();
 
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

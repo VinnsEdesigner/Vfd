@@ -666,6 +666,169 @@ static void offer_media_urls_in_text(mi_browse_result *out, const char *base,
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Feeds (RSS 2.0, Atom, RDF/RSS 1.0)                                  */
+/* ------------------------------------------------------------------ */
+
+/* Whether a URL looks like a feed by its path, so a `<link rel="alternate">`
+ * can be recognised without fetching it first. */
+static int looks_like_feed_url(const char *url) {
+    if (!url) return 0;
+    const char *q = strchr(url, '?');
+    size_t n = q ? (size_t)(q - url) : strlen(url);
+    static const char *EXT[] = {".rss", ".atom", ".rdf"};
+    for (size_t i = 0; i < sizeof EXT / sizeof EXT[0]; i++) {
+        size_t elen = strlen(EXT[i]);
+        if (n >= elen && !strncasecmp(url + n - elen, EXT[i], elen)) return 1;
+    }
+    const char *slash = url;
+    for (size_t i = 0; i < n; i++)
+        if (url[i] == '/') slash = url + i;
+    const char *name = slash < url + n ? slash + 1 : url;
+    return !strncasecmp(name, "feed", 4) || !strncasecmp(name, "rss", 3) ||
+           !strncasecmp(name, "atom", 4);
+}
+
+/* Whether the bytes are a feed rather than HTML or JSON. A feed may carry an
+ * XML declaration first, so that is skipped before the root element is read. */
+static int looks_like_feed(const char *body, size_t len) {
+    size_t i = 0;
+    if (len >= 3 && (unsigned char)body[0] == 0xEF && (unsigned char)body[1] == 0xBB &&
+        (unsigned char)body[2] == 0xBF) {
+        i = 3;
+    }
+    if (i + 5 <= len && !strncasecmp(body + i, "<?xml", 5)) {
+        const char *close = strstr(body + i, "?>");
+        if (close) i = (size_t)(close - body) + 2;
+    }
+    while (i < len && isspace((unsigned char)body[i])) i++;
+    size_t rem = len - i;
+    if (rem >= 5 && !strncasecmp(body + i, "<rss", 4)) return 1;
+    if (rem >= 6 && !strncasecmp(body + i, "<feed", 5)) return 1;
+    if (rem >= 5 && !strncasecmp(body + i, "<rdf", 4)) return 1;
+    return 0;
+}
+
+/* Offer the first of `attrs` that the element carries, as a URL. */
+static void offer_feed_attr(mi_browse_result *out, const char *base, const char *el,
+                            size_t el_len, const char *const *attrs, size_t nattrs,
+                            mi_browse_filter filter) {
+    for (size_t i = 0; i < nattrs; i++) {
+        char *v = attr_value(el, el_len, attrs[i]);
+        if (v) {
+            offer(out, base, v, NULL, -1, filter);
+            free(v);
+            return;
+        }
+    }
+}
+
+/*
+ * Offer an element's *text* as a URL.
+ *
+ * RSS puts the item's URL in `<link>`'s text and the permalink in `<guid>`, and
+ * the text is sometimes wrapped in CDATA. Only the content up to the closing tag
+ * is taken, so a `<link>` whose value is an attribute (Atom) contributes nothing
+ * here.
+ */
+static void offer_feed_text(mi_browse_result *out, const char *base, const char *el,
+                            size_t el_len, const char *end, mi_browse_filter filter) {
+    const char *gt = memchr(el, '>', el_len);
+    if (!gt || gt[-1] == '/') return; /* self-closing: no text */
+    const char *s = gt + 1;
+    while (s < end && isspace((unsigned char)*s)) s++;
+    const char *e;
+    if (s + 9 <= end && !strncmp(s, "<![CDATA[", 9)) {
+        s += 9;
+        const char *cend = find_ci(s, "]]>");
+        if (!cend || cend > end) return;
+        e = cend;
+    } else {
+        const char *close = memchr(s, '<', (size_t)(end - s));
+        if (!close) return;
+        e = close;
+    }
+    while (e > s && isspace((unsigned char)e[-1])) e--;
+    if (e <= s) return;
+    char *txt = mi_strndup(s, (size_t)(e - s));
+    if (txt) {
+        offer(out, base, txt, NULL, -1, filter);
+        free(txt);
+    }
+}
+
+/* Offer every URL one feed item/entry carries. */
+static void offer_feed_item(mi_browse_result *out, const char *base, const char *from,
+                            const char *end, mi_browse_filter filter) {
+    static const char *HREF[] = {"href"};
+    static const char *MEDIA[] = {"url", "href", "src"};
+    for (const char *p = from; p < end;) {
+        const char *lt = memchr(p, '<', (size_t)(end - p));
+        if (!lt) break;
+        const char *gt = memchr(lt, '>', (size_t)(end - lt));
+        if (!gt) break;
+        size_t taglen = (size_t)(gt - lt) + 1;
+        if (!strncasecmp(lt, "<link", 5)) {
+            /* Atom carries `href`; RSS carries the URL as text. */
+            offer_feed_attr(out, base, lt, taglen, HREF, 1, filter);
+            offer_feed_text(out, base, lt, taglen, end, filter);
+        } else if (!strncasecmp(lt, "<enclosure", 10) ||
+                   !strncasecmp(lt, "<media:content", 14) ||
+                   !strncasecmp(lt, "<media:thumbnail", 16) ||
+                   !strncasecmp(lt, "<content", 8)) {
+            /* `<content>` is Atom's `src=`; RSS's `<content:encoded>` holds
+             * HTML, so its text is never taken, only an attribute. */
+            offer_feed_attr(out, base, lt, taglen, MEDIA, 3, filter);
+        } else if (!strncasecmp(lt, "<guid", 5)) {
+            offer_feed_text(out, base, lt, taglen, end, filter);
+        }
+        p = gt + 1;
+    }
+}
+
+/*
+ * Read a feed and offer what its items name.
+ *
+ * A feed is the best source a media crawler has: it lists the site's newest
+ * items with their enclosures, and it is exactly the content an HTML walk would
+ * have to page through to find. Only the item/entry elements are read, so the
+ * channel's own `<link>` (the site root, not an item) is not mistaken for one.
+ */
+static void parse_feed(const char *body, size_t len, const char *base,
+                       mi_browse_filter filter, mi_browse_result *out) {
+    const char *stop = body + len;
+    for (const char *p = body; p < stop;) {
+        const char *lt = memchr(p, '<', (size_t)(stop - p));
+        if (!lt) break;
+        size_t name_len;
+        const char *closing;
+        if (!strncasecmp(lt, "<item", 5)) {
+            name_len = 4;
+            closing = "</item";
+        } else if (!strncasecmp(lt, "<entry", 6)) {
+            name_len = 5;
+            closing = "</entry";
+        } else {
+            p = lt + 1;
+            continue;
+        }
+        /* The name must end there: `<items>` is not `<item>`. */
+        if ((size_t)(stop - lt) <= name_len + 1) break;
+        char after = lt[name_len + 1];
+        if (after != '>' && after != ' ' && after != '\t' && after != '\n' &&
+            after != '\r' && after != '/') {
+            p = lt + 1;
+            continue;
+        }
+        const char *gt = memchr(lt, '>', (size_t)(stop - lt));
+        if (!gt) break;
+        const char *close = find_ci(gt + 1, closing);
+        const char *end = close && close < stop ? close : stop;
+        offer_feed_item(out, base, gt + 1, end, filter);
+        p = end;
+    }
+}
+
 /*
  * The attributes that carry a reference on each element.
  *
@@ -786,6 +949,36 @@ static void parse_html(const char *body, size_t len, const char *base,
             if (dsrcset) {
                 offer_srcset(out, base, dsrcset, text, filter);
                 free(dsrcset);
+            }
+            /*
+             * A feed the page advertises in its head. `<link rel="alternate"
+             * type="application/rss+xml" href="/feed.xml">` is how a site names
+             * its feed, and it is the best source a media crawler has. Only the
+             * rel/type that actually mean a feed are taken — the bare
+             * `<link href>` in the attribute table is a stylesheet or a
+             * canonical link, not an item.
+             */
+            if (!strcasecmp(name, "link")) {
+                char *rel = attr_value(tag, tag_len, "rel");
+                char *type = attr_value(tag, tag_len, "type");
+                char *href = attr_value(tag, tag_len, "href");
+                int is_feed_link = 0;
+                if (rel && !strcasecmp(rel, "alternate")) {
+                    /* The `type` is the reliable signal; a site that omits it
+                     * entirely is still advertising a feed when the path says
+                     * so. A stated non-feed type is left alone. */
+                    if (type && (!strncasecmp(type, "application/rss", 15) ||
+                                 !strncasecmp(type, "application/atom", 16) ||
+                                 !strncasecmp(type, "application/rdf", 15))) {
+                        is_feed_link = 1;
+                    } else if (!type && href && looks_like_feed_url(href)) {
+                        is_feed_link = 1;
+                    }
+                }
+                if (is_feed_link && href) offer(out, base, href, NULL, -1, filter);
+                free(rel);
+                free(type);
+                free(href);
             }
             if (!strcasecmp(name, "meta")) {
                 char *prop = attr_value(tag, tag_len, "property");
@@ -917,6 +1110,15 @@ int mi_browse_parse(const char *body, size_t len, const char *base,
                     mi_browse_filter filter, mi_browse_result *out) {
     if (!body || !base || !out) return MI_ERR_ARG;
     result_init(out);
+
+    /*
+     * A feed is checked before HTML: an XML feed begins with `<`, so the HTML
+     * test would claim it and read its `<link>`s as a page's navigation.
+     */
+    if (looks_like_feed(body, len)) {
+        parse_feed(body, len, base, filter, out);
+        return MI_OK;
+    }
 
     if (looks_like_html(body, len)) {
         out->title = extract_title(body, len);

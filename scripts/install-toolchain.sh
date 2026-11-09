@@ -20,6 +20,9 @@
 #   ffmpeg                             HLS transcoding and conversion
 #   yt-dlp, gallery-dl (pip)           resolve video and gallery sites
 #   py1337x (pip)                      resolve torrent indexes to magnets
+#   bgutil PO-token provider (pip)     mint YouTube Proof-of-Origin tokens
+#   deno                               the JS runtime that provider solves
+#                                      YouTube's BotGuard challenge with
 #   aria2                              fetch a magnet link (BitTorrent)
 #   nodejs, npm                        build and test the console
 #
@@ -473,6 +476,105 @@ if [ "$NO_MEDIA" -eq 0 ]; then
 fi
 
 # ------------------------------------------------------------------ #
+# 3c. The YouTube PO-token provider                                  #
+#                                                                    #
+# Since 2024 YouTube requires a Proof-of-Origin (PO) token, and it is #
+# minted by YouTube's own BotGuard JavaScript — yt-dlp cannot produce #
+# it internally. Without one, YouTube answers "Sign in to confirm     #
+# you're not a bot" and the extractor returns no formats.             #
+#                                                                    #
+# The durable fix is a *provider*: a small plugin that mints the      #
+# token and hands it to yt-dlp. Two pieces:                          #
+#                                                                    #
+#   yt-dlp-get-pot                 the framework yt-dlp uses to find  #
+#                                  a provider plugin                  #
+#   bgutil-ytdlp-pot-provider      the plugin itself (Bun/Node server  #
+#                                  that runs YouTube's BotGuard JS)    #
+#   deno                           a JS runtime, which the provider    #
+#                                  uses to solve the challenge         #
+#                                                                    #
+# Both packages are on PyPI. Deno is not in Debian's archive, so it   #
+# is fetched from its own release — the official install script is not #
+# piped into a shell here; the release archive is downloaded and      #
+# unpacked directly, so nothing is executed before it is on disk.     #
+#                                                                    #
+# The provider is only *installed* here. Whether a token is requested  #
+# is still the operator's decision: name the provider in              #
+# MI_EXTRACTOR_ARGS (e.g. `youtube:player_client=mweb`), which is the  #
+# seam mi_server.h documents. Installing it without that changes       #
+# nothing about a crawl or a resolve.                                  #
+# ------------------------------------------------------------------ #
+
+install_deno() {
+    if command -v deno >/dev/null 2>&1; then
+        ok "deno $(deno --version 2>/dev/null | head -1 | awk '{print $2}') already on PATH"
+        return 0
+    fi
+    if [ -x "$TOOLCHAIN/bin/deno" ]; then
+        ok "deno already at $TOOLCHAIN/bin/deno"
+        return 0
+    fi
+
+    local arch
+    case "$(uname -m)" in
+        x86_64|amd64)  arch="x86_64-unknown-linux-gnu" ;;
+        aarch64|arm64) arch="aarch64-unknown-linux-gnu" ;;
+        *) warn "no deno build for $(uname -m); the PO-token provider may not solve challenges"; return 1 ;;
+    esac
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        note "would download deno ($arch) into $TOOLCHAIN/bin"
+        return 0
+    fi
+
+    local url="https://github.com/denoland/deno/releases/latest/download/deno-${arch}.zip"
+    local zip="$TOOLCHAIN/deno-${arch}.zip"
+    mkdir -p "$TOOLCHAIN/bin" 2>/dev/null || true
+    if ! curl -fsSL -o "$zip" "$url" 2>/dev/null; then
+        warn "could not download deno from $url"
+        return 1
+    fi
+    # Python's zipfile, because `unzip` is not guaranteed to be present.
+    if python3 - "$zip" "$TOOLCHAIN/bin/deno" <<'PY' 2>/dev/null
+import sys, zipfile, shutil, os
+zf, dest = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(zf) as z:
+    name = next(n for n in z.namelist() if n.endswith("deno") or n == "deno")
+    with z.open(name) as src, open(dest, "wb") as out:
+        shutil.copyfileobj(src, out)
+os.chmod(dest, 0o755)
+PY
+    then
+        rm -f "$zip"
+        ok "deno installed at $TOOLCHAIN/bin/deno"
+        return 0
+    fi
+    rm -f "$zip"
+    warn "could not unpack the deno archive"
+    return 1
+}
+
+if [ "$NO_MEDIA" -eq 0 ]; then
+    step "YouTube PO-token provider"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        note "would install into $VENV: yt-dlp-get-pot bgutil-ytdlp-pot-provider"
+        note "would install deno into $TOOLCHAIN/bin"
+    elif [ -x "$VENV/bin/python3" ]; then
+        if "$VENV/bin/pip" install --quiet --upgrade yt-dlp-get-pot bgutil-ytdlp-pot-provider 2>/dev/null; then
+            ok "yt-dlp-get-pot and bgutil-ytdlp-pot-provider installed"
+        else
+            warn "could not install the PO-token provider"
+            note "YouTube may report 'Sign in to confirm you're not a bot'"
+        fi
+        install_deno || true
+        note "enable it per host by naming the provider in MI_EXTRACTOR_ARGS,"
+        note "  e.g. MI_EXTRACTOR_ARGS='youtube:player_client=mweb'"
+    else
+        warn "no venv, so the PO-token provider cannot be installed"
+    fi
+fi
+
+# ------------------------------------------------------------------ #
 # 4. Build                                                           #
 # ------------------------------------------------------------------ #
 if [ "$NO_BUILD" -eq 1 ]; then
@@ -513,6 +615,19 @@ check "yt-dlp" "$VENV/bin/yt-dlp"
 check "gallery-dl" "$VENV/bin/gallery-dl"
 check "py1337x" "$VENV/bin/py1337x"
 check "aria2c" aria2c
+check "deno" "$TOOLCHAIN/bin/deno"
+
+# The PO-token provider is a pair of yt-dlp *plugins*, not an importable
+# module — they install into yt_dlp_plugins/extractor/, which is what to look
+# for. yt-dlp picks them up from the venv automatically.
+if [ -d "$VENV" ]; then
+    if find "$VENV" -path '*yt_dlp_plugins/extractor/getpot*' -name '*.py' \
+            -print -quit 2>/dev/null | grep -q .; then
+        ok "PO-token provider: installed (enable with MI_EXTRACTOR_ARGS)"
+    else
+        warn "PO-token provider: not installed (YouTube may demand sign-in)"
+    fi
+fi
 
 if command -v pkg-config >/dev/null 2>&1; then
     if pkg-config --exists gstreamer-webrtc-1.0 2>/dev/null; then

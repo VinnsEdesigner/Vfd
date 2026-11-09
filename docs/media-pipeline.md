@@ -197,11 +197,23 @@ things, and either can refuse:
 |---|---|---|
 | A session's cookies | `MI_COOKIES_FILE`, or the console's Settings → Egress cookies | the bot wall, and a PO-token challenge — works from any address |
 | A residential or mobile address | `MI_PROXY`, or run Vyzor on the device | the address-reputation refusal only |
+| A PO-token provider | installed by `scripts/install-toolchain.sh`; enabled with `MI_EXTRACTOR_ARGS` | the PO-token check, without cookies |
 
 Cookies are the reliable lever, because they do not depend on the host's address
 being trusted. A proxy helps when the refusal is about reputation, but it is the
 same *kind* of signal as the address itself, so it can work today and stop
 working when the checks tighten.
+
+**The PO-token provider.** Since 2024 YouTube's Proof-of-Origin check is the one
+a cookie-less crawler hits first. The token is minted by YouTube's own BotGuard
+JavaScript, so yt-dlp cannot produce it internally; a *provider* plugin runs that
+JavaScript and hands the token back. `install-toolchain.sh` installs the pair
+(`yt-dlp-get-pot` plus `bgutil-ytdlp-pot-provider`) and Deno, the runtime that
+solves the challenge, then reports whether it is present. Installing it changes
+nothing on its own — a token is only requested when the provider is named in
+`MI_EXTRACTOR_ARGS` (e.g. `youtube:player_client=mweb`), which is the same
+per-host setting the rest of the extractor arguments use. Cookies still work, and
+the two can be combined.
 
 **There is no "use the device's IP".** Vyzor's browser is a Chromium on Vyzor's
 own host — the same machine, the same network, the same egress address as the
