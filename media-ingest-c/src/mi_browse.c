@@ -574,43 +574,82 @@ static void offer_json_urls(mi_browse_result *out, const char *base, const char 
     }
 }
 
-/* Offer every absolute http(s) URL that looks like a manifest or a media file
- * inside a blob of text — an inline script, a JSON-LD body, a data attribute.
- * Only URLs whose extension says "media" are taken, so a page's own API URLs
- * are not swept in. */
+/* The media extensions an embedded URL may end with, and a check that the URL
+ * names one of them (ignoring a query or fragment, and requiring the match to
+ * be the whole extension rather than a prefix of a longer one). */
+static int looks_like_media_url(const char *s, size_t len) {
+    static const char *EXTS[] = {"m3u8", "mpd", "mp4", "webm", "mkv", "m4v",
+                                 "mov",  "flv", "ts",  "mp3",  "m4a", "aac",
+                                 "flac", "opus", "ogg", "jpg", "jpeg",
+                                 "png",  "webp", "gif", "avif", "wav", "oga"};
+    /* The path is everything before the first '?' or '#'. */
+    size_t plen = len;
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] == '?' || s[i] == '#') { plen = i; break; }
+    }
+    for (size_t e = 0; e < sizeof EXTS / sizeof EXTS[0]; e++) {
+        size_t xlen = strlen(EXTS[e]);
+        if (plen < xlen + 1) continue;
+        if (s[plen - xlen - 1] != '.') continue;
+        if (strncasecmp(s + plen - xlen, EXTS[e], xlen) != 0) continue;
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Offer every URL inside a blob of text that names a media file — an inline
+ * script, a JSON-LD body, a data attribute.
+ *
+ * Two shapes are read, because a page uses both. A quoted string (`var hls =
+ * '/x/master.m3u8'`) is the common case, and its value is often *relative*, so
+ * it is passed to `offer` to be resolved against the page. A bare absolute
+ * `http…` URL is the other, and is taken as-is. Only a URL whose own path ends
+ * in a media extension is offered, so a page's API endpoints are not swept in.
+ */
 static void offer_media_urls_in_text(mi_browse_result *out, const char *base,
                                      const char *text, size_t len,
                                      mi_browse_filter filter) {
-    static const char *HINTS[] = {".m3u8", ".mpd", ".mp4", ".webm", ".mkv", ".m4v",
-                                  ".mov", ".flv", ".ts", ".mp3", ".m4a", ".aac",
-                                  ".flac", ".opus", ".ogg", ".jpg", ".jpeg",
-                                  ".png", ".webp", ".gif", ".avif"};
-    for (size_t i = 0; i + 8 < len; i++) {
-        if (memcmp(text + i, "http", 4) != 0) continue;
-        if (i > 0) {
-            unsigned char c = (unsigned char)text[i - 1];
-            /* The URL must start at a boundary, not inside another token. */
-            if (isalnum(c) || c == '_' || c == '/' || c == '.') continue;
+    for (size_t i = 0; i < len; i++) {
+        char c = text[i];
+        if (c == '"' || c == '\'' || c == '`') {
+            /* A quoted string: offer its value when it names a media file. */
+            const char *s = text + i + 1;
+            const char *e = s;
+            while (e < text + len && *e != c && *e != '\n') e++;
+            size_t slen = (size_t)(e - s);
+            if (slen > 0 && slen < 2000 && looks_like_media_url(s, slen)) {
+                char *u = mi_strndup(s, slen);
+                if (u) {
+                    offer(out, base, u, NULL, -1, filter);
+                    free(u);
+                }
+            }
+            i = (size_t)(e - text); /* resume after the closing quote */
+            continue;
         }
-        const char *s = text + i;
-        const char *e = s;
-        while (e < text + len && !isspace((unsigned char)*e) && *e != '"' && *e != '\'' &&
-               *e != '<' && *e != '>' && *e != ')' && *e != ',' && *e != '\\' && *e != '}') {
-            e++;
-        }
-        size_t ulen = (size_t)(e - s);
-        if (ulen < 10 || ulen > 2000) continue;
-        /* Only offer it when the URL itself names a media file. */
-        int looks_media = 0;
-        for (size_t h = 0; h < sizeof HINTS / sizeof HINTS[0]; h++) {
-            const char *hit = strcasestr(s, HINTS[h]);
-            if (hit && (size_t)(hit - s) < ulen) { looks_media = 1; break; }
-        }
-        if (!looks_media) continue;
-        char *u = mi_strndup(s, ulen);
-        if (u) {
-            offer(out, base, u, NULL, -1, filter);
-            free(u);
+        /* A bare absolute URL, not inside quotes. */
+        if (c == 'h' && i + 8 < len && memcmp(text + i, "http", 4) == 0) {
+            if (i > 0) {
+                unsigned char prev = (unsigned char)text[i - 1];
+                if (isalnum(prev) || prev == '_' || prev == '/' || prev == '.') continue;
+            }
+            const char *s = text + i;
+            const char *e = s;
+            while (e < text + len && !isspace((unsigned char)*e) && *e != '"' &&
+                   *e != '\'' && *e != '<' && *e != '>' && *e != ')' && *e != ',' &&
+                   *e != '\\' && *e != '}' && *e != ';') {
+                e++;
+            }
+            size_t ulen = (size_t)(e - s);
+            if (ulen >= 10 && ulen <= 2000 && looks_like_media_url(s, ulen)) {
+                char *u = mi_strndup(s, ulen);
+                if (u) {
+                    offer(out, base, u, NULL, -1, filter);
+                    free(u);
+                }
+            }
+            i = (size_t)(e - text) - 1;
         }
     }
 }

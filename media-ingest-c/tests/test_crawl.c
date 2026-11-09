@@ -828,6 +828,7 @@ static void test_crawl_sees_media_not_in_an_anchor(void) {
     static const route routes[] = {
         {"/", "<html><head>"
               "<meta property='og:video' content='/media/clip.mp4'>"
+              "<meta property='og:image' content='/media/poster.png'>"
               "<script type='application/ld+json'>"
               "{\"@type\":\"VideoObject\",\"contentUrl\":\"/media/json-clip.mp4\"}"
               "</script>"
@@ -835,6 +836,7 @@ static void test_crawl_sees_media_not_in_an_anchor(void) {
               "<video src='/media/direct.webm'></video>"
               "<video><source src='/media/source.mkv'></video>"
               "<img srcset='/media/small.jpg 480w, /media/large.jpg 1080w' src='/media/fallback.jpg'>"
+              "<script>var hls='/media/manifest.m3u8';</script>"
               "<a href='/about/team'>About</a>"
               "</body></html>"},
     };
@@ -872,6 +874,30 @@ static void test_crawl_sees_media_not_in_an_anchor(void) {
 
     mi_crawl(&cfg, url, "large", &res);
     CHECK(res.hit_count >= 1, "a srcset candidate is seen");
+    mi_crawl_result_free(&res);
+
+    /*
+     * An image is media, not a page asset. `og:image` and a srcset rendition
+     * are files a media search was asked for, so they must survive the hit
+     * filter — a `.png` in the asset list made this extraction unreachable.
+     */
+    mi_crawl(&cfg, url, "poster", &res);
+    int saw_poster = 0;
+    for (size_t i = 0; i < res.hit_count; i++)
+        if (strstr(res.hits[i].url, "poster.png")) saw_poster = 1;
+    CHECK(saw_poster, "an og:image is a hit, not an asset");
+    mi_crawl_result_free(&res);
+
+    /*
+     * A relative URL in an inline script (`var hls = '/x/master.m3u8'`) is
+     * common and must be read and resolved; scanning only for absolute `http`
+     * URLs missed it entirely.
+     */
+    mi_crawl(&cfg, url, "manifest", &res);
+    int saw_m3u8 = 0;
+    for (size_t i = 0; i < res.hit_count; i++)
+        if (strstr(res.hits[i].url, "manifest.m3u8")) saw_m3u8 = 1;
+    CHECK(saw_m3u8, "a relative media URL in an inline script is seen");
     mi_crawl_result_free(&res);
 
     stop_site(pid);

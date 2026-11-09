@@ -559,13 +559,19 @@ static int is_page(const char *url) {
     return 0;
 }
 
-/** Certainly not content: a page's own scripts, styles, fonts and icons. */
+/** Certainly not content: a page's own scripts, styles, fonts and icons.
+ *
+ * Images are deliberately *not* here. A raster image is media a media crawler
+ * was asked to find — an `og:image`, a gallery's `srcset`, a thumbnail — and
+ * treating `.png` as an asset made the extraction work unreachable at the hit
+ * filter. `.svg` stays: it is almost always a logo or an icon sprite, not a
+ * file anyone asked for by name. */
 static int is_asset(const char *url) {
     const char *q = strchr(url, '?');
     size_t n = q ? (size_t)(q - url) : strlen(url);
     static const char *ASSET_EXT[] = {".css",  ".js",   ".mjs",  ".map",  ".woff",
                                       ".woff2", ".ttf", ".eot",  ".ico",  ".svg",
-                                      ".png",  ".webp", ".avif", NULL};
+                                      NULL};
     for (size_t i = 0; ASSET_EXT[i]; i++) {
         size_t elen = strlen(ASSET_EXT[i]);
         if (n >= elen && !strncasecmp(url + n - elen, ASSET_EXT[i], elen)) return 1;
@@ -785,11 +791,15 @@ static int verify_candidate(const mi_crawl_config *cfg, const char *url,
         }
     } else if (plan.content_type && *plan.content_type) {
         /* No media magic. A response that says it is a document is a page, not a
-         * file, and the candidate was a URL-shape guess. */
+         * file, and the candidate was a URL-shape guess. Any textual type
+         * counts: a viewer page can serve `text/xml`, `text/plain` or
+         * `text/vtt` as easily as `text/html`, and none of those is a file the
+         * walk set out to find. */
         const char *ct = plan.content_type;
-        if (!strncasecmp(ct, "text/html", 9) || !strncasecmp(ct, "application/xhtml", 17) ||
-            !strncasecmp(ct, "text/xml", 8) || !strncasecmp(ct, "application/xml", 15) ||
-            !strncasecmp(ct, "text/plain", 10)) {
+        if (!strncasecmp(ct, "text/", 5) ||
+            !strncasecmp(ct, "application/xhtml", 17) ||
+            !strncasecmp(ct, "application/xml", 15) ||
+            !strncasecmp(ct, "application/json", 16)) {
             verdict = 0;
         } else if (!strncasecmp(ct, "video/", 6) || !strncasecmp(ct, "audio/", 6) ||
                    !strncasecmp(ct, "image/", 6) ||
