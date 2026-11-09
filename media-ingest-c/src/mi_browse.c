@@ -621,7 +621,19 @@ static void offer_media_urls_in_text(mi_browse_result *out, const char *base,
             if (slen > 0 && slen < 2000 && looks_like_media_url(s, slen)) {
                 char *u = mi_strndup(s, slen);
                 if (u) {
-                    offer(out, base, u, NULL, -1, filter);
+                    /*
+                     * A JSON blob escapes the solidus (`https:\/\/…`). Left as
+                     * written the value does not start with `http`, so it would
+                     * be resolved as a relative path and become a bogus URL. The
+                     * escape is undone here; a string with any *other* backslash
+                     * is skipped, because it is not a plain URL.
+                     */
+                    int odd = 0;
+                    for (char *r = u; *r; r++) {
+                        if (r[0] == '\\' && r[1] == '/') { memmove(r, r + 1, strlen(r)); }
+                        else if (*r == '\\') { odd = 1; break; }
+                    }
+                    if (!odd) offer(out, base, u, NULL, -1, filter);
                     free(u);
                 }
             }

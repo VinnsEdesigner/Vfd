@@ -830,7 +830,8 @@ static void test_crawl_sees_media_not_in_an_anchor(void) {
               "<meta property='og:video' content='/media/clip.mp4'>"
               "<meta property='og:image' content='/media/poster.png'>"
               "<script type='application/ld+json'>"
-              "{\"@type\":\"VideoObject\",\"contentUrl\":\"/media/json-clip.mp4\"}"
+              "{\"@type\":\"VideoObject\",\"contentUrl\":\"/media/json-clip.mp4\","
+              "\"embedUrl\":\"https:\\/\\/cdn.example.com\\/e\\/escaped-clip.mp4\"}"
               "</script>"
               "</head><body>"
               "<video src='/media/direct.webm'></video>"
@@ -898,6 +899,18 @@ static void test_crawl_sees_media_not_in_an_anchor(void) {
     for (size_t i = 0; i < res.hit_count; i++)
         if (strstr(res.hits[i].url, "manifest.m3u8")) saw_m3u8 = 1;
     CHECK(saw_m3u8, "a relative media URL in an inline script is seen");
+    mi_crawl_result_free(&res);
+
+    /*
+     * A JSON-escaped solidus (`https:\/\/…`) must be unescaped, not resolved as
+     * a relative path. Without it the value does not start with `http` and
+     * becomes a bogus URL like `<page>/https://…`.
+     */
+    mi_crawl(&cfg, url, "escaped", &res);
+    int saw_escaped = 0;
+    for (size_t i = 0; i < res.hit_count; i++)
+        if (strstr(res.hits[i].url, "cdn.example.com/e/escaped-clip.mp4")) saw_escaped = 1;
+    CHECK(saw_escaped, "a JSON-escaped solidus in a URL is unescaped");
     mi_crawl_result_free(&res);
 
     stop_site(pid);
