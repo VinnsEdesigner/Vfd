@@ -140,11 +140,25 @@ terminal from the Vyzorix dashboard and browse to `http://127.0.0.1:8787/`, or s
 `expose = "lan"` (with a `port`) to reach it from the local network with a token.
 `expose = "cloud"` is refused in v1.
 
-## Not deployed here: the extractors
+## The extractors artifact
 
-`yt-dlp`, `gallery-dl`, `py1337x`, `aria2` and `ffmpeg` are **not** in the bundle.
-They are large and they go stale, and a device without them still downloads direct
-URLs and HLS manifests. When they are present on the container's `PATH`, the
-console offers video and gallery modes. Install them into the container's overlay
-(`/usr/local`) if you want them; the engine resolves each by name and reports the
-capability it actually has.
+`yt-dlp`, `gallery-dl`, `py1337x`, `aria2c`, `ffmpeg` and `ffprobe` ship as a
+**third artifact**, per ABI, built by `deploy/extractors/Dockerfile`. The engine
+resolves each by name on `PATH` (`mi_extract.c`), and `run.sh` puts the bundle's
+`bin/` first, so they light up the video, gallery and torrent modes.
+
+They are optional by design: a device without the artifact still downloads a
+direct URL or an HLS manifest, and the engine reports the capability it actually
+has rather than failing. Keeping them out of the engine artifact means the engine
+can be updated without re-shipping ~100 MB.
+
+Nothing here is compiled or executed during the build — ffmpeg/ffprobe are a
+prebuilt **static** arm64 release, `aria2c` comes from Debian's arm64 archive
+(only unpacked), and pip resolves the Python wheels for the target platform — so
+a foreign ABI needs **no qemu**.
+
+ffmpeg is static on purpose. Debian's is dynamic and its closure is **199
+libraries, ~200 MB** (opencv, blas, lapack, icu, flite, codec2, …), several in
+subdirectories a flat soname search misses — and a closure that is subtly wrong
+is a tool that fails only on the device. A static build is one file with no
+closure to get wrong.

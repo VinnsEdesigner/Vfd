@@ -71,3 +71,16 @@ theme_color = "#be123c"
   url    = "__BASE_URL__/vfd-console.tar.gz"
   sha256 = "__SHA_CONSOLE__"
   kind   = "webroot"
+
+  # The extractors: ffmpeg, ffprobe, aria2c, yt-dlp, gallery-dl, py1337x, with
+  # the libraries and Python modules they need. Architecture-specific, like the
+  # engine, so it carries this device's ABI too.
+  #
+  # They are optional: a device without this artifact still downloads a direct
+  # URL or an HLS manifest, and the engine reports the capability it has rather
+  # than failing. With them, video sites and torrents resolve.
+  [[app.artifact]]
+  name   = "extractors"
+  arch   = "__ARCH__"
+  url    = "__BASE_URL__/vfd-extractors-__ARTIFACT__.tar.gz"
+  sha256 = "__SHA_EXTRACTORS__"

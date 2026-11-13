@@ -99,6 +99,41 @@ build_engine() { # abi, out-file
     docker rmi -f "$tag" >/dev/null 2>&1 || true
 }
 
+# The extractors, per ABI. Everything is downloaded and unpacked — nothing is
+# compiled or executed — so a foreign ABI needs no qemu; only the multiarch tuple,
+# the Debian architecture and the ffmpeg release name change.
+build_extractors() { # abi, out-file
+    local abi="$1" out_file="$2"
+    local tag="vfd-extractors-build:$abi" tuple="" debarch="" ff="" cross="" machine="" pyplatform="" cid
+    case "$abi" in
+        arm64)
+            tuple="aarch64-linux-gnu"; debarch="arm64"; ff="arm64"
+            cross="binutils-aarch64-linux-gnu"; machine="AArch64"; pyplatform="manylinux2014_aarch64" ;;
+        armeabi-v7a)
+            tuple="arm-linux-gnueabihf"; debarch="armhf"; ff="armhf"
+            cross="binutils-arm-linux-gnueabihf"; machine="ARM"; pyplatform="manylinux2014_armv7l" ;;
+        x86_64)
+            tuple="x86_64-linux-gnu"; debarch="amd64"; ff="amd64"
+            cross=""; machine="Advanced Micro Devices X86-64"; pyplatform="manylinux2014_x86_64" ;;
+    esac
+
+    DOCKER_BUILDKIT=0 docker build \
+        --build-arg MULTIARCH="$tuple" \
+        --build-arg DEB_ARCH="$debarch" \
+        --build-arg CROSS_BINUTILS="$cross" \
+        --build-arg STRIP="${tuple}-strip" \
+        --build-arg EXPECT_MACHINE="$machine" \
+        --build-arg PY_VER=311 \
+        --build-arg PY_PLATFORM="$pyplatform" \
+        --build-arg FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${ff}-static.tar.xz" \
+        -t "$tag" -f "$ROOT/deploy/extractors/Dockerfile" "$ROOT" || return 1
+
+    cid=$(docker create "$tag") || return 1
+    docker cp "$cid:/out/vyzor-extractors.tar.gz" "$out_file" || { docker rm -f "$cid" >/dev/null; return 1; }
+    docker rm -f "$cid" >/dev/null
+    docker rmi -f "$tag" >/dev/null 2>&1 || true
+}
+
 log() { printf '\n=== %s\n' "$*"; }
 die() { printf 'build: %s\n' "$*" >&2; exit 1; }
 
@@ -109,7 +144,9 @@ mkdir -p "$OUT"
 # Remove only what this run will rebuild: building one ABI must not delete another
 # ABI's artifact. SHA256SUMS is rewritten from whatever artifacts are present.
 rm -f "$OUT/vfd-console.tar.gz" "$OUT/SHA256SUMS"
-for abi in $ABIS; do rm -f "$OUT/vfd-engine-$abi.tar.gz"; done
+for abi in $ABIS; do
+    rm -f "$OUT/vfd-engine-$abi.tar.gz" "$OUT/vfd-extractors-$abi.tar.gz"
+done
 
 # ------------------------------------------------------------------ #
 # The console — architecture-free, built once                        #
@@ -140,10 +177,23 @@ for abi in $ABIS; do
 done
 
 # ------------------------------------------------------------------ #
+# The extractors — one tarball per architecture                       #
+# ------------------------------------------------------------------ #
+for abi in $ABIS; do
+    log "Building the extractors for $abi"
+    out_file="$OUT/vfd-extractors-$abi.tar.gz"
+    if ! build_extractors "$abi" "$out_file"; then
+        die "the extractors build failed for $abi"
+    fi
+    [ -f "$out_file" ] || die "the extractors build produced no tarball for $abi"
+    printf '  %s (%s bytes)\n' "$out_file" "$(stat -c%s "$out_file")"
+done
+
+# ------------------------------------------------------------------ #
 # The digests                                                        #
 # ------------------------------------------------------------------ #
 log "Digests"
-( cd "$OUT" && sha256sum vfd-engine-*.tar.gz vfd-console.tar.gz > SHA256SUMS )
+( cd "$OUT" && sha256sum vfd-engine-*.tar.gz vfd-extractors-*.tar.gz vfd-console.tar.gz > SHA256SUMS )
 cat "$OUT/SHA256SUMS"
 
 printf '\nArtifacts in %s\n' "$OUT"

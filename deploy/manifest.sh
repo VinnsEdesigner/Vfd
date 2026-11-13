@@ -77,6 +77,7 @@ sha_for() {
 }
 
 SHA_ENGINE=$(sha_for "vfd-engine-${ARTIFACT}.tar.gz")
+SHA_EXTRACTORS=$(sha_for "vfd-extractors-${ARTIFACT}.tar.gz")
 SHA_CONSOLE=$(sha_for vfd-console.tar.gz)
 
 mkdir -p "$DIST"
@@ -87,6 +88,7 @@ sed \
     -e "s|__ARCH__|${ARCH}|g" \
     -e "s|__ARTIFACT__|${ARTIFACT}|g" \
     -e "s|__SHA_ENGINE__|${SHA_ENGINE}|g" \
+    -e "s|__SHA_EXTRACTORS__|${SHA_EXTRACTORS}|g" \
     -e "s|__SHA_CONSOLE__|${SHA_CONSOLE}|g" \
     "$TEMPLATE" > "$OUT"
 

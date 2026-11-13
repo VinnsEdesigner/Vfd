@@ -29,21 +29,40 @@ APP_DIR=$(dirname "$ENGINE_DIR")
 # The console is a webroot artifact, so it unpacks under console/www.
 CONSOLE_DIR="$APP_DIR/console/www"
 WORK_DIR="$APP_DIR/data"
+# The extractors are their own artifact, unpacked under extractors/.
+EXTRACTORS_DIR="$APP_DIR/extractors"
+
+# The bundled tools take precedence over the rootfs's. The engine resolves each by
+# name on PATH (mi_extract.c, mi_download.c), so putting the bundle's bin/ first is
+# all that is needed for ffmpeg, ffprobe, aria2c, yt-dlp, gallery-dl and py1337x.
+#
+# They are optional: a device without this artifact still downloads a direct URL or
+# an HLS manifest, and the engine reports the capability it actually has rather
+# than failing. When present, the video and torrent modes light up.
+if [ -d "$EXTRACTORS_DIR/bin" ]; then
+    PATH="$EXTRACTORS_DIR/bin:$PATH"
+    export PATH
+fi
+
+# The Python extractors are a directory of modules, not an installed package, so
+# they are found by PYTHONPATH rather than by a site-packages install. The console
+# scripts pip wrote (`yt-dlp`, `gallery-dl`) import from here.
+if [ -d "$EXTRACTORS_DIR/py" ]; then
+    PYTHONPATH="$EXTRACTORS_DIR/py${PYTHONPATH:+:$PYTHONPATH}"
+    export PYTHONPATH
+fi
 
 # The bundled libraries take precedence over the rootfs's. The bundle is built on
 # the same Debian suite the rootfs is, so these are consistent; LD_LIBRARY_PATH
 # just makes the process find them without an ldconfig the rootfs may not run.
-if [ -d "$ENGINE_DIR/lib" ]; then
-    LD_LIBRARY_PATH="$ENGINE_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+for libdir in "$ENGINE_DIR/lib" "$EXTRACTORS_DIR/lib"; do
+    [ -d "$libdir" ] || continue
+    LD_LIBRARY_PATH="$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+done
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
     export LD_LIBRARY_PATH
 fi
 
-# The extractors (yt-dlp, gallery-dl, py1337x, aria2, ffmpeg) are not bundled:
-# they are large, they go stale, and a device that lacks them still downloads and
-# transcodes what a direct URL or HLS manifest gives it. When they are present on
-# PATH, the console offers video and gallery modes; when they are not, it offers
-# what the engine can do alone. No flag is needed — the engine resolves each by
-# name and reports the capability it actually has.
 mkdir -p "$WORK_DIR"
 
 # Feature flags come from the environment the manifest sets, so the deployment's
