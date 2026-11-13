@@ -30,6 +30,7 @@ SUMS="$DIST/SHA256SUMS"
 DEVICE=""
 ORG=""
 BASE_URL=""
+ARCH="arm64-v8a"
 OUT="$DIST/vyzorix.toml"
 
 while [ $# -gt 0 ]; do
@@ -37,6 +38,7 @@ while [ $# -gt 0 ]; do
         --device)   DEVICE="$2"; shift 2 ;;
         --org)      ORG="$2"; shift 2 ;;
         --base-url) BASE_URL="${2%/}"; shift 2 ;;
+        --arch)     ARCH="$2"; shift 2 ;;
         --out)      OUT="$2"; shift 2 ;;
         -h|--help)  sed -n '2,24p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -52,6 +54,17 @@ case "$BASE_URL" in
     https://*) ;;
     *) die "--base-url must be https (the manifest schema requires it)" ;;
 esac
+
+# The manifest's `arch` is the device ABI name (arm64-v8a, armeabi-v7a, x86_64);
+# the artifact file is named with the build's short name (arm64, armeabi-v7a,
+# x86_64). One device has one ABI, so one engine artifact is emitted — see the
+# note in deploy/README.md on why listing several is a trap.
+case "$ARCH" in
+    arm64-v8a)   ARTIFACT="arm64" ;;
+    armeabi-v7a) ARTIFACT="armeabi-v7a" ;;
+    x86_64)      ARTIFACT="x86_64" ;;
+    *) die "--arch must be arm64-v8a, armeabi-v7a or x86_64 (got '$ARCH')" ;;
+esac
 [ -f "$TEMPLATE" ] || die "no template at $TEMPLATE"
 [ -f "$SUMS" ]     || die "no $SUMS — run deploy/build.sh first"
 
@@ -63,8 +76,7 @@ sha_for() {
     printf '%s' "${line%% *}"
 }
 
-SHA_ENGINE_ARM64=$(sha_for vfd-engine-arm64.tar.gz)
-SHA_ENGINE_X86_64=$(sha_for vfd-engine-x86_64.tar.gz)
+SHA_ENGINE=$(sha_for "vfd-engine-${ARTIFACT}.tar.gz")
 SHA_CONSOLE=$(sha_for vfd-console.tar.gz)
 
 mkdir -p "$DIST"
@@ -72,8 +84,9 @@ sed \
     -e "s|__DEVICE_ID__|${DEVICE}|g" \
     -e "s|__ORG__|${ORG}|g" \
     -e "s|__BASE_URL__|${BASE_URL}|g" \
-    -e "s|__SHA_ENGINE_ARM64__|${SHA_ENGINE_ARM64}|g" \
-    -e "s|__SHA_ENGINE_X86_64__|${SHA_ENGINE_X86_64}|g" \
+    -e "s|__ARCH__|${ARCH}|g" \
+    -e "s|__ARTIFACT__|${ARTIFACT}|g" \
+    -e "s|__SHA_ENGINE__|${SHA_ENGINE}|g" \
     -e "s|__SHA_CONSOLE__|${SHA_CONSOLE}|g" \
     "$TEMPLATE" > "$OUT"
 

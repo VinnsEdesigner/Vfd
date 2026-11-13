@@ -82,12 +82,27 @@ Set the base URL as the repository variable `ARTIFACT_BASE_URL`.
 ./deploy/manifest.sh \
   --device d_01H... \
   --org    org_01H... \
-  --base-url https://github.com/<owner>/<repo>/releases/download/v1.0.0
+  --base-url https://github.com/<owner>/<repo>/releases/download/v1.0.0 \
+  --arch   arm64-v8a
 # -> deploy/dist/vyzorix.toml
 ```
 
 Every digest comes from `SHA256SUMS`; the device refuses a mismatch
 (`digest_mismatch`), so a digest typed by hand is a deploy that cannot land.
+
+### One device, one `arch`
+
+`--arch` names the **target device's** ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`)
+and the renderer emits **one** engine artifact for it.
+
+Listing one engine per ABI in a single manifest is a trap: the entries share the
+artifact `name`, so they install to the same path, and a device that takes them
+all is left with whichever came last — which is how a phone ends up running a
+foreign binary. The device now selects by `arch` (the best match for its own
+`Build.SUPPORTED_ABIS`, or the only candidate), and refuses with
+`no_artifact_for_arch` when nothing matches — but the manifest should still
+declare the one build the device needs. Build every ABI (`--arch all`), publish
+them all, and render a manifest per device ABI.
 
 ## Deploy
 

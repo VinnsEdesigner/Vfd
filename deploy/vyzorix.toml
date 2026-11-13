@@ -55,20 +55,14 @@ name       = "Vfd"
 short_name = "Vfd"
 theme_color = "#be123c"
 
-  # The engine, per architecture. A device with no matching artifact is refused
-  # at apply time with `no_artifact_for_arch` — a device-side check, because only
-  # the device knows its ABI.
+  # The engine for THIS device's ABI. One manifest targets one device, and a
+  # device has one ABI, so exactly one engine artifact is listed — see
+  # deploy/README.md, and the note below on why listing several is a trap.
   [[app.artifact]]
   name   = "engine"
-  arch   = "arm64-v8a"
-  url    = "__BASE_URL__/vfd-engine-arm64.tar.gz"
-  sha256 = "__SHA_ENGINE_ARM64__"
-
-  [[app.artifact]]
-  name   = "engine"
-  arch   = "x86_64"
-  url    = "__BASE_URL__/vfd-engine-x86_64.tar.gz"
-  sha256 = "__SHA_ENGINE_X86_64__"
+  arch   = "__ARCH__"
+  url    = "__BASE_URL__/vfd-engine-__ARTIFACT__.tar.gz"
+  sha256 = "__SHA_ENGINE__"
 
   # The console. `kind = "webroot"` makes the device unpack it under
   # <app>/console/www and (with `pwa`) generate the manifest there.
