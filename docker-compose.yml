@@ -2,9 +2,10 @@
 #
 #   docker compose up --build
 #
-# The console is a static build and is not served here — it deploys to
-# Cloudflare Pages (see .github/workflows/deploy-pages.yml). Point it at this
-# vyzor through Settings, or by baking VITE_API_BASE_URL into the build.
+# The console is a static build. Serve it from vyzor's own webroot (mount
+# web/dist and set MI_WEBROOT) so the page and the API share one origin — or run
+# `./scripts/server.sh` on the host, which does exactly that. There is no CDN
+# deploy: the console ships beside the engine, locally and on a device.
 #
 # WHY THE LIMITS ARE SET EXPLICITLY
 #
@@ -23,11 +24,17 @@ services:
       # Downloads, rendered-page cache and browser profiles. Named, so they
       # survive `docker compose down`; the operator chooses the real size.
       - vyzor-data:/data
+      # The console build, served from vyzor at `/`. Build it first with
+      # `cd web && npm run build`, then uncomment both this mount and MI_WEBROOT
+      # below to serve the console same-origin.
+      # - ./web/dist:/webroot:ro
     environment:
-      # Comma-separated origins the console may call from. Set this to wherever
-      # the console is served — without it the browser blocks every request and
-      # the console reports "Disconnected".
-      MI_ALLOW_ORIGINS: "https://vyzorix-file-downloader.pages.dev,http://localhost:5173"
+      # Uncomment with the /webroot mount above to serve the console from
+      # vyzor's own origin — then no CORS is involved and MI_ALLOW_ORIGINS can
+      # stay narrow. With MI_WEBROOT unset, vyzor is a pure API and this must
+      # name wherever the console is served.
+      # MI_WEBROOT: "/webroot"
+      MI_ALLOW_ORIGINS: "http://localhost:5173"
       # Some sites refuse a request that does not look like a browser.
       MI_USER_AGENT: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       # Rendering is on, and one at a time: each costs about 500 MB.

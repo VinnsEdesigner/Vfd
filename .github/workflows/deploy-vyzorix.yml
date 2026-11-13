@@ -1,0 +1,154 @@
+name: Build and deploy to a Vyzorix device
+
+# Builds the two artifacts a deploy ships (the engine, per architecture, and the
+# console), publishes them, renders `vyzorix.toml` from their digests, and pushes
+# it to a device with the Deploy CLI.
+#
+# This replaces the Cloudflare Pages deploy and the Fly.io deploy. The console is
+# no longer a CDN site and the engine is no longer a hosted machine: both ship to
+# a phone as a signed Vyzorix config, and the device runs them in its container.
+#
+# WHY A TAG (AND WHY A MANUAL RUN IS THE USUAL PATH)
+#
+# A deploy targets ONE device, and the device id is an input. The common case is
+# a manual run for a named device; a `v*` tag additionally cuts a release with the
+# artifacts attached, which is what makes the artifact URLs stable and public.
+#
+# WHAT MUST BE SET (repository settings -> secrets and variables)
+#
+#   secrets.VYZORIX_SERVER              e.g. https://vyzorix.fly.dev
+#   secrets.VYZORIX_DEPLOY_CREDENTIAL   a device-scoped deploy token (see
+#                                       VYZORIX/DOCUMENTATION/DEPLOY_CREDENTIALS.md)
+#   vars.ARTIFACT_BASE_URL              where the artifacts are PUBLICLY served.
+#                                       A private repo's release assets 404 for an
+#                                       anonymous device, so this must be a public
+#                                       host (a public repo's release, or a bucket).
+#   vars.VYZORIX_DEVICE_ID, vars.VYZORIX_ORG   optional defaults for a manual run
+#
+# The deploy job skips with a message when the credential is absent, so the
+# workflow is inert until an operator configures it — it does not fail red on a
+# repository that has not adopted the deploy plane yet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Target device id (d_...)'
+        required: false
+        type: string
+      org:
+        description: 'Owning organization id (org_...)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Compile and sign, but store and deliver nothing'
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # to attach the artifacts to a release
+
+concurrency:
+  group: deploy-vyzorix-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # The engine is built in a container of the target architecture, so arm64
+      # is built on an amd64 runner through qemu. Without these two steps a
+      # `--platform linux/arm64` build fails with "exec format error".
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the artifacts
+        run: ./deploy/build.sh --arch all
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vfd-artifacts
+          path: |
+            deploy/dist/vfd-engine-*.tar.gz
+            deploy/dist/vfd-console.tar.gz
+            deploy/dist/SHA256SUMS
+          if-no-files-found: error
+
+      # On a tag, attach the artifacts to a release so their URLs are stable and
+      # (on a public repo) anonymously fetchable by the device.
+      - name: Publish a release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Vfd artifacts for ${GITHUB_REF_NAME}." \
+            deploy/dist/vfd-engine-*.tar.gz \
+            deploy/dist/vfd-console.tar.gz \
+            deploy/dist/SHA256SUMS
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      SERVER: ${{ secrets.VYZORIX_SERVER }}
+      DEPLOY_CREDENTIAL: ${{ secrets.VYZORIX_DEPLOY_CREDENTIAL }}
+      DEVICE: ${{ inputs.device || vars.VYZORIX_DEVICE_ID }}
+      ORG: ${{ inputs.org || vars.VYZORIX_ORG }}
+      BASE_URL: ${{ vars.ARTIFACT_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vfd-artifacts
+          path: deploy/dist
+
+      - name: Is the deploy plane configured?
+        id: check
+        run: |
+          if [ -z "$SERVER" ] || [ -z "$DEPLOY_CREDENTIAL" ] || [ -z "$DEVICE" ] || [ -z "$ORG" ] || [ -z "$BASE_URL" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::deploy skipped — set VYZORIX_SERVER, VYZORIX_DEPLOY_CREDENTIAL, ARTIFACT_BASE_URL and a device/org to enable it"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install the Deploy CLI
+        if: steps.check.outputs.ready == 'true'
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/VinnsEdesigner/vyzorix-cli/main/install.sh \
+            | PREFIX="$HOME/.local" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Render the manifest
+        if: steps.check.outputs.ready == 'true'
+        run: |
+          ./deploy/manifest.sh \
+            --device "$DEVICE" \
+            --org "$ORG" \
+            --base-url "$BASE_URL"
+
+      - name: Deploy
+        if: steps.check.outputs.ready == 'true'
+        env:
+          VYZORIX_SERVER: ${{ secrets.VYZORIX_SERVER }}
+          VYZORIX_DEPLOY_CREDENTIAL: ${{ secrets.VYZORIX_DEPLOY_CREDENTIAL }}
+          VYZORIX_ORG: ${{ inputs.org || vars.VYZORIX_ORG }}
+        run: |
+          set -- deploy --device "$DEVICE" --file deploy/dist/vyzorix.toml
+          if [ "${{ inputs.dry_run }}" = "true" ]; then set -- "$@" --dry-run; fi
+          vyzorix "$@"

@@ -2137,6 +2137,123 @@ static void test_extract_rows_endpoint(void) {
     mi_server_free(srv);
 }
 
+/*
+ * The static webroot: a bundle is served at `/`, the SPA falls back to
+ * index.html for a client-side route, a traversal or symlink escape is refused,
+ * and an unconfigured webroot leaves the pure-API behaviour unchanged.
+ */
+static void write_file(const char *path, const char *body) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(body, 1, strlen(body), f);
+    fclose(f);
+}
+
+static void test_webroot(void) {
+    const char *root = "/tmp/mi-test-webroot";
+    mi_rm_rf(root);
+    mi_mkdir_p(root);
+    mi_mkdir_p("/tmp/mi-test-webroot/assets");
+    write_file("/tmp/mi-test-webroot/index.html", "<!doctype html><title>console</title>");
+    write_file("/tmp/mi-test-webroot/assets/app.js", "console.log('hi')");
+
+    /* A secret outside the webroot, to prove traversal and symlinks are refused. */
+    write_file("/tmp/mi-test-webroot-secret.txt", "TOP-SECRET");
+    unlink("/tmp/mi-test-webroot/escape");
+    if (symlink("/tmp/mi-test-webroot-secret.txt", "/tmp/mi-test-webroot/escape") != 0) {
+        /* symlink may be unavailable; the traversal checks still run */
+    }
+
+    mi_server_config cfg;
+    mi_server_config_init(&cfg);
+    cfg.port = 0;
+    cfg.work_dir = "/tmp/mi-test-webroot-work";
+    cfg.webroot = root;
+    mi_mkdir_p(cfg.work_dir);
+
+    mi_server *srv = mi_server_new(&cfg);
+    CHECK(srv != NULL, "webroot: server new");
+    CHECK(mi_server_listen(srv) == MI_OK, "webroot: server listen");
+    int port = mi_server_port(srv);
+    CHECK(port > 0, "webroot: ephemeral port assigned");
+
+    pthread_t th;
+    pthread_create(&th, NULL, server_thread, srv);
+
+    int status = 0;
+    char *resp;
+
+    /* The root serves index.html. */
+    resp = http_call(port, "GET", "/", NULL, NULL, &status);
+    CHECK(status == 200, "webroot: / is 200");
+    CHECK(resp && strstr(resp, "console"), "webroot: / serves index.html");
+    CHECK(resp && strstr(resp, "text/html"), "webroot: index.html is text/html");
+    free(resp);
+
+    /* A real asset is served with its own type. */
+    resp = http_call(port, "GET", "/assets/app.js", NULL, NULL, &status);
+    CHECK(status == 200, "webroot: asset is 200");
+    CHECK(resp && strstr(resp, "text/javascript"), "webroot: .js is text/javascript");
+    free(resp);
+
+    /* A client-side route falls back to index.html rather than 404ing. */
+    resp = http_call(port, "GET", "/browse/42", NULL, NULL, &status);
+    CHECK(status == 200, "webroot: SPA route is 200");
+    CHECK(resp && strstr(resp, "console"), "webroot: SPA route serves index.html");
+    free(resp);
+
+    /* Traversal must not read the file outside the root. The SPA fallback still
+     * answers 200, but with index.html, never the secret. */
+    resp = http_call(port, "GET", "/../mi-test-webroot-secret.txt", NULL, NULL, &status);
+    CHECK(!resp || !strstr(resp, "TOP-SECRET"), "webroot: literal traversal leaks nothing");
+    free(resp);
+    resp = http_call(port, "GET", "/%2e%2e/mi-test-webroot-secret.txt", NULL, NULL, &status);
+    CHECK(!resp || !strstr(resp, "TOP-SECRET"), "webroot: encoded traversal leaks nothing");
+    free(resp);
+
+    /* A symlink that escapes the root is not followed out of it. */
+    resp = http_call(port, "GET", "/escape", NULL, NULL, &status);
+    CHECK(!resp || !strstr(resp, "TOP-SECRET"), "webroot: symlink escape leaks nothing");
+    free(resp);
+
+    /* Writes are refused. */
+    resp = http_call(port, "POST", "/index.html", "{}", NULL, &status);
+    CHECK(status == 405, "webroot: POST is 405");
+    free(resp);
+
+    /* The API still works beside the bundle. */
+    resp = http_call(port, "GET", "/healthz", NULL, NULL, &status);
+    CHECK(status == 200, "webroot: /healthz still 200");
+    free(resp);
+
+    mi_server_stop(srv);
+    pthread_join(th, NULL);
+    mi_server_free(srv);
+    mi_rm_rf(root);
+    mi_rm_rf(cfg.work_dir);
+    unlink("/tmp/mi-test-webroot-secret.txt");
+
+    /* With no webroot, a non-API path is a 404 — the pure-API behaviour is
+     * unchanged. */
+    mi_server_config cfg2;
+    mi_server_config_init(&cfg2);
+    cfg2.port = 0;
+    cfg2.work_dir = "/tmp/mi-test-webroot-work2";
+    mi_mkdir_p(cfg2.work_dir);
+    mi_server *srv2 = mi_server_new(&cfg2);
+    CHECK(mi_server_listen(srv2) == MI_OK, "webroot: second server listen");
+    int port2 = mi_server_port(srv2);
+    pthread_t th2;
+    pthread_create(&th2, NULL, server_thread, srv2);
+    resp = http_call(port2, "GET", "/anything", NULL, NULL, &status);
+    CHECK(status == 404, "webroot: no webroot -> non-API path is 404");
+    free(resp);
+    mi_server_stop(srv2);
+    pthread_join(th2, NULL);
+    mi_server_free(srv2);
+    mi_rm_rf(cfg2.work_dir);
+}
+
 int main(void) {
 
 
@@ -2156,6 +2273,7 @@ int main(void) {
     test_egress_settings();
     test_extract_rows_endpoint();
     test_hls_serve_and_convert();
+    test_webroot();
 
     printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

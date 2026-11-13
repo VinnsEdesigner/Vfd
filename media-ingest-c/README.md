@@ -406,6 +406,7 @@ Configuration comes from the environment, which is how a container is configured
 | `MI_HOST` / `MI_PORT` | where to listen |
 | `MI_WORK_DIR` | downloads and the render cache |
 | `MI_ALLOW_ORIGINS` | comma-separated origins the console may call from |
+| `MI_WEBROOT` | a directory of static files to serve at `/` (the console) |
 | `MI_AUTH_TOKEN` | bearer token required on every route but `/healthz` |
 | `MI_USER_AGENT` | what Vyzor calls itself when fetching |
 | `MI_RENDER` | set to anything to turn rendering on |

@@ -1,9 +1,10 @@
-# Keep the build context small. The Dockerfile.fly build copies only
-# media-ingest-c/{Makefile,src} and scripts/py1337x-json.py, but without this the
-# context would still ship node_modules, the extractor venv and prior builds to
-# the builder — tens of thousands of files for nothing.
+# Keep the build context small. The engine Dockerfile (deploy/bundle/Dockerfile)
+# copies only media-ingest-c/{Makefile,src} and deploy/app/run.sh, but without
+# this the context would still ship node_modules, the extractor venv, the console
+# build and prior artifacts — tens of thousands of files for nothing.
 **/node_modules
 **/.toolchain
+web/dist
 **/dist
 media-ingest-c/build
 downloads

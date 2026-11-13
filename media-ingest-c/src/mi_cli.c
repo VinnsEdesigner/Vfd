@@ -479,6 +479,7 @@ static void on_signal(int sig) {
 
 static int cmd_serve(const char *host, int port, const char *work_dir,
                      const char *auth_token, const char *allow_origins,
+                     const char *webroot,
                      const char *user_agent, int render, int render_timeout,
                      int render_concurrent, const char *render_cache_dir,
                      int render_cache_ttl, int interactive, int interactive_concurrent,
@@ -505,6 +506,7 @@ static int cmd_serve(const char *host, int port, const char *work_dir,
     }
     if (port >= 0) cfg.port = port;
     if (work_dir) cfg.work_dir = work_dir;
+    cfg.webroot = (webroot && *webroot) ? webroot : NULL;
     cfg.auth_token = (auth_token && *auth_token) ? auth_token : NULL;
     cfg.allow_origins = (allow_origins && *allow_origins) ? allow_origins : NULL;
     cfg.user_agent = (user_agent && *user_agent) ? user_agent : NULL;
@@ -601,7 +603,7 @@ static void usage(void) {
             "  vyzor hls <input> -o <dir> [--renditions 1080,720,480] [--segment-seconds N]\n"
             "  vyzor ingest <url> -o <dir> [--hls <dir>] [--upload] [-c N] [-q] [-H 'K: V']...\n"
             "  vyzor serve [--host H] [--port N] [--work-dir D] [--auth-token T]\n"
-            "                      [--allow-origin ORIGINS] [--user-agent UA] [--proxy URL] [--impersonate CLIENT] [--identity-retries N] [--frontier-db PATH]\n"
+            "                      [--allow-origin ORIGINS] [--webroot DIR] [--user-agent UA] [--proxy URL] [--impersonate CLIENT] [--identity-retries N] [--frontier-db PATH]\n"
             "                      [--persistent-profile DIR]\n"
             "                      [--render] [--render-timeout SECONDS] [--render-concurrent N]\n"
             "                      [--render-cache DIR] [--render-cache-ttl SECONDS] [--no-render-cache]\n"
@@ -682,6 +684,9 @@ int main(int argc, char **argv) {
     const char *serve_host = getenv("MI_HOST");
     int serve_port = -1;
     const char *serve_work_dir = getenv("MI_WORK_DIR");
+    /* A directory of static files to serve at `/`. MI_WEBROOT lets a container
+     * turn the console on without a flag; NULL serves no static files. */
+    const char *serve_webroot = getenv("MI_WEBROOT");
     const char *serve_token = getenv("MI_AUTH_TOKEN");
     const char *serve_allow_origins = getenv("MI_ALLOW_ORIGINS");
     {
@@ -741,7 +746,7 @@ int main(int argc, char **argv) {
         OPT_SEGMENT, OPT_UPLOAD, OPT_ENDPOINT, OPT_REGION, OPT_BUCKET, OPT_ACCESS,
         OPT_SECRET, OPT_SESSION, OPT_PREFIX, OPT_CONTENTTYPE, OPT_VHOST, OPT_PATHSTYLE,
         OPT_CDN_BASE, OPT_PURGE, OPT_CF_TOKEN, OPT_CF_ZONE,
-        OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN, OPT_USERAGENT,
+        OPT_HOST, OPT_PORT, OPT_WORKDIR, OPT_AUTHTOKEN, OPT_ALLOWORIGIN, OPT_WEBROOT, OPT_USERAGENT,
         OPT_PROXY, OPT_IMPERSONATE, OPT_IDENTITY_RETRIES, OPT_FRONTIER_DB,
         OPT_PERSISTENT_PROFILE,
         OPT_RENDER, OPT_RENDER_TIMEOUT, OPT_RENDER_CONCURRENT,
@@ -780,6 +785,7 @@ int main(int argc, char **argv) {
         {"work-dir", required_argument, 0, OPT_WORKDIR},
         {"auth-token", required_argument, 0, OPT_AUTHTOKEN},
         {"allow-origin", required_argument, 0, OPT_ALLOWORIGIN},
+        {"webroot", required_argument, 0, OPT_WEBROOT},
         {"user-agent", required_argument, 0, OPT_USERAGENT},
         {"proxy", required_argument, 0, OPT_PROXY},
         {"impersonate", required_argument, 0, OPT_IMPERSONATE},
@@ -845,6 +851,7 @@ int main(int argc, char **argv) {
             case OPT_WORKDIR: serve_work_dir = optarg; break;
             case OPT_AUTHTOKEN: serve_token = optarg; break;
             case OPT_ALLOWORIGIN: serve_allow_origins = optarg; break;
+            case OPT_WEBROOT: serve_webroot = optarg; break;
             case OPT_USERAGENT: serve_user_agent = optarg; break;
             case OPT_PROXY: serve_proxy = optarg; break;
             case OPT_IMPERSONATE: serve_impersonate = optarg; break;
@@ -928,7 +935,8 @@ int main(int argc, char **argv) {
             break;
         case CMD_SERVE:
             rc = cmd_serve(serve_host, serve_port, serve_work_dir, serve_token,
-                           serve_allow_origins, serve_user_agent, serve_render,
+                           serve_allow_origins, serve_webroot,
+                           serve_user_agent, serve_render,
                            serve_render_timeout, serve_render_concurrent,
                            serve_render_cache, serve_render_cache_ttl,
                            serve_interactive, serve_interactive_concurrent,

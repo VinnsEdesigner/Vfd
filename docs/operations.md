@@ -63,25 +63,41 @@ back from Cloudflare rather than assuming `<project>.pages.dev`.
 
 ## Deploy
 
-The console deploys to Cloudflare Pages, project **`vfd`**, serving at
-`vyzorix-file-downloader.pages.dev`. Vyzor is **not** deployed to Pages — it needs
-a real disk and a browser, so it runs where it has a volume, and the console is
-pointed at it.
+Vfd deploys to a **Vyzorix device** — an Android phone running the Vyzorix agent
+and its Debian container. The console and the engine are two artifacts of one app
+in a `vyzorix.toml` manifest; the device fetches them, verifies each digest,
+unpacks them, and the supervisor starts the app. The console is served by the
+engine at the device's own origin, so there is no CDN site and no baked API URL.
 
-Two paths:
+Build, render the manifest and push it:
 
-- **Manual**, via `server.sh`. Needs `CLOUDFLARE_API_KEY` (or
-  `CLOUDFLARE_API_TOKEN`) in the environment; the account id is discovered from
-  the token. This is the path that works today.
-- **CI**, via `.github/workflows/deploy-pages.yml`, on a push that touches
-  `web/**`. It needs the repo secrets `CLOUDFLARE_API_TOKEN` and
-  `CLOUDFLARE_ACCOUNT_ID`, and bakes `VITE_API_BASE_URL` from a manual input,
-  then the repo variable, then a default.
+```bash
+./deploy/build.sh --arch all          # artifacts + SHA256SUMS
+./deploy/manifest.sh --device d_... --org org_... --base-url https://<public>
+vyzorix deploy --device d_... --file deploy/dist/vyzorix.toml
+```
 
-The Pages **project name** and its **subdomain** are different things: the
-project is `vfd`, its subdomain is `vyzorix-file-downloader.pages.dev`. A
-subdomain is assigned at creation and does not follow a rename, so a workflow
-that deploys to `vyzorix-file-downloader` fails with "Project not found".
+The artifacts must be served from a **public** URL: a device fetches them
+anonymously, and a private repository's release assets `404` without a token.
+`deploy/README.md` is the full runbook; `deploy/vyzorix.toml` is the manifest and
+`.github/workflows/deploy-vyzorix.yml` builds and deploys from CI.
+
+There is **no Cloudflare Pages deploy and no Fly.io deploy**. The console is not a
+CDN site and the engine is not a hosted machine. A `webroot` artifact plus
+`--webroot` on the engine replaced both, and removed CORS along with them.
+
+### Running locally, without a device
+
+`server.sh` builds the console, starts the engine, and serves the console from the
+engine's own webroot — the same same-origin shape the device runs, one command:
+
+```bash
+./scripts/server.sh --port 12001     # start, build, serve
+./scripts/server.sh status           # what is running, and where
+./scripts/server.sh stop             # stop the engine
+```
+
+`--no-console` runs the engine as a pure API.
 
 ## The OpenHands sandbox
 
@@ -115,8 +131,10 @@ After a restart, in order:
 | `ffmpeg could not mux the streams (exit 234)` | a codec that cannot be copied into MP4, or a source ffmpeg cannot seek |
 | `403` from a CDN in ffmpeg's output | the stream URL is bound to the signature of the request that resolved it |
 | `503` from a browser route | the feature is disabled, no browser is installed, or the pool is full |
-| the console loads but cannot reach Vyzor | the bundle was built for a different host; re-run `server.sh` |
-| `Project not found` on deploy | deploying to the subdomain instead of the project name `vfd` |
+| the console loads but cannot reach the engine | the page and the API are different origins; serve the console from the engine's webroot (`--webroot`) so they share one |
+| a route 404s in the console but the API works | the bundle is not being served; start the engine with `--webroot web/dist`, or run `server.sh` |
+| `digest_mismatch` on a deploy | the manifest's `sha256` is not the digest of the published artifact; re-render it with `deploy/manifest.sh` |
+| `no_artifact_for_arch` on a deploy | the manifest has no artifact for the device's ABI; build and add it |
 
 `GET /api/v1/capabilities` is the first thing to check: it says what this Vyzor
 can actually do, rather than what was asked of it.

@@ -8,24 +8,34 @@ A self-hosted media downloader and browser console.
   downloads media, transcodes it to HLS, uploads it to S3-compatible storage,
   and can drive a real browser: render a page, hold a page open for you to use,
   or stream it as video.
-- **`web/`** — the console. A React/TypeScript single-page app, deployed as a
-  static build, that talks to a Vyzor over HTTP and WebSocket.
+- **`web/`** — the console. A React/TypeScript single-page app that talks to a
+  Vyzor over HTTP and WebSocket.
 
-The split is deliberate. The console is static, so it can live on a CDN; the
-Vyzor needs a real disk and a real browser, so it runs wherever you have a
-volume. Point one at the other with `VITE_API_BASE_URL`.
+The split is deliberate. The console is static; the Vyzor needs a real disk and a
+real browser. When Vyzor serves the console from its own webroot, the page and the
+API share one origin — no CORS, and `127.0.0.1` is a secure context, so a service
+worker and an install prompt work without TLS. They also deploy together: both are
+artifacts of one app in a Vyzorix manifest, and both run on the device.
 
 ## Quick start
 
-**1. Build and run Vyzor.**
+**1. Build and run Vyzor, serving the console.**
 
 ```bash
-cd media-ingest-c
-sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev \
-  libsqlite3-dev zlib1g-dev libgstreamer1.0-dev \
-  libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev ffmpeg
-make
-./build/vyzor serve --host 0.0.0.0 --port 8787 --work-dir ./downloads
+./scripts/install-toolchain.sh     # the compiler, the headers, FFmpeg, the console deps
+cd web && npm install && cd ..
+./scripts/server.sh                # start Vyzor, build + serve the console
+```
+
+That builds the console and starts Vyzor with `--webroot web/dist`, so
+`http://127.0.0.1:12000/` is the console and `/api/…` is the API, same origin.
+
+To run the two by hand instead:
+
+```bash
+cd media-ingest-c && make
+./build/vyzor serve --host 0.0.0.0 --port 8787 --work-dir ./downloads \
+  --webroot ../web/dist
 ```
 
 Rendering, live pages and live video are each their own opt-in, because each
@@ -33,25 +43,18 @@ needs a browser and real memory:
 
 ```bash
 ./build/vyzor serve --render --interactive --rtc \
-  --allow-origin http://localhost:5173
+  --webroot ../web/dist --allow-origin http://localhost:5173
 ```
 
 The binary also downloads, transcodes and uploads on its own — see
 `media-ingest-c/README.md` for the full CLI.
 
-**2. Run the console.**
+**2. Develop the console.**
 
 ```bash
 cd web
 npm install
-npm run dev        # http://localhost:5173
-```
-
-Then set Vyzor's address in **Settings → Connection**, or bake it in at
-build time:
-
-```bash
-VITE_API_BASE_URL=https://vyzor.example npm run build
+npm run dev        # http://localhost:5173, proxying to a Vyzor you run separately
 ```
 
 ## Layout
@@ -118,31 +121,39 @@ retries, then falls back to installing one package at a time. Useful flags:
 | Script | Purpose |
 |---|---|
 | `scripts/install-toolchain.sh` | install everything the repository needs, in one command |
-| `scripts/server.sh` | start Vyzor, point the console at it, and publish it |
+| `scripts/server.sh` | start Vyzor, build the console, and serve it from Vyzor's webroot |
+| `deploy/build.sh` | build the deploy artifacts (the engine per ABI, and the console) |
+| `deploy/manifest.sh` | render `vyzorix.toml` from the build's digests |
 
 ### server.sh
 
 One command to bring the whole stack up:
 
 ```bash
-./scripts/server.sh            # start Vyzor, build + deploy the console
+./scripts/server.sh            # start Vyzor, build + serve the console
 ./scripts/server.sh status     # what is running, and where
 ./scripts/server.sh stop       # stop Vyzor
 ```
 
-It exists because the console is a static bundle with Vyzor's URL baked in at
-build time, and this sandbox's public host is per-sandbox — so after a restart
-the old bundle points at a host that no longer exists. Doing start, point and
-publish together is what keeps them from drifting apart.
+It exists so the three steps that must agree — build the console, start Vyzor,
+serve the console from it — happen together. The console is built same-origin (no
+`VITE_API_BASE_URL`), so the bundle targets whatever origin serves it, and there
+is nothing to keep in step by hand.
 
-It derives the public address from `RUNTIME_ID` rather than hardcoding it, and
-reads the console's URL back from Cloudflare rather than assuming it is
-`<project>.pages.dev` (it need not be — a Pages subdomain is assigned at
-creation and does not move when a project is renamed).
+It derives the public address from `RUNTIME_ID` rather than hardcoding it.
 
-Useful flags: `--foreground` (run attached), `--no-deploy` (build only),
-`--local` (build for `localhost`), `--port N`, `--no-render`,
-`--no-interactive`, `--allow-origin O`.
+Useful flags: `--foreground` (run attached), `--no-console` (run the API alone),
+`--port N`, `--no-render`, `--no-interactive`, `--allow-origin O`.
+
+### Deploying to a device
+
+See [`deploy/README.md`](deploy/README.md). In short:
+
+```bash
+./deploy/build.sh --arch all
+./deploy/manifest.sh --device d_... --org org_... --base-url https://<public>
+vyzorix deploy --device d_... --file deploy/dist/vyzorix.toml
+```
 
 ## Testing
 

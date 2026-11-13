@@ -1,0 +1,79 @@
+# deploy/vyzorix.toml — the Vyzorix deploy manifest for Vfd (TEMPLATE).
+#
+# THIS IS A TEMPLATE. The device id, the org and the three artifact digests are
+# filled in from the actual build; run `deploy/manifest.sh` to render the file
+# that is deployed:
+#
+#   ./deploy/build.sh                 # build the artifacts + SHA256SUMS
+#   ./deploy/manifest.sh \
+#       --device d_01H... --org org_01H... \
+#       --base-url https://<public-host>/vfd/<version>
+#   # -> deploy/dist/vyzorix.toml
+#
+# WHY IT IS RENDERED, NOT HAND-WRITTEN
+#
+# Every `sha256` must be the digest of the exact tarball that was published. A
+# digest typed by hand drifts from the artifact the moment either changes, and
+# the device refuses a mismatch — so the digests come from `deploy/dist/SHA256SUMS`
+# and nothing else. The base URL is a flag because a private repo's release assets
+# need authentication and a device cannot provide it: the artifacts must be served
+# from a public host (a public bucket, or a public repo's release).
+#
+# The manifest is the only file a human authors for a deploy. Read
+# VYZORIX/DOCUMENTATION/MANIFEST_REFERENCE.md for every field.
+
+[device]
+id   = "__DEVICE_ID__"
+org  = "__ORG__"
+name = "vfd"                       # display-name override
+
+[[app]]
+name      = "vfd"
+cmd       = "/home/apps/vfd/engine/run.sh"
+port      = 8787
+autostart = true
+expose    = "loopback"             # reachable from the device itself
+purge     = false
+
+# Sub-tables and bare keys must precede the first [[app.artifact]]: inside an
+# array-of-tables element a bare key belongs to that element, so a `pwa` written
+# after an artifact would set the *artifact's* field and be refused.
+
+# Configuration only — safe to commit, travels in the signed config. No secrets:
+# the engine holds none, and the compiler refuses a secret-shaped value here.
+[app.env]
+MI_HOST          = "127.0.0.1"
+MI_PORT          = "8787"
+MI_ALLOW_ORIGINS = "*"
+MI_RENDER        = "0"             # no Chromium on a phone; rendering off
+MI_INTERACTIVE   = "0"
+
+# The console becomes an installable web app. The device writes site.webmanifest
+# into the webroot before the app starts; the engine serves it as a static file.
+[app.pwa]
+name       = "Vfd"
+short_name = "Vfd"
+theme_color = "#be123c"
+
+  # The engine, per architecture. A device with no matching artifact is refused
+  # at apply time with `no_artifact_for_arch` — a device-side check, because only
+  # the device knows its ABI.
+  [[app.artifact]]
+  name   = "engine"
+  arch   = "arm64-v8a"
+  url    = "__BASE_URL__/vfd-engine-arm64.tar.gz"
+  sha256 = "__SHA_ENGINE_ARM64__"
+
+  [[app.artifact]]
+  name   = "engine"
+  arch   = "x86_64"
+  url    = "__BASE_URL__/vfd-engine-x86_64.tar.gz"
+  sha256 = "__SHA_ENGINE_X86_64__"
+
+  # The console. `kind = "webroot"` makes the device unpack it under
+  # <app>/console/www and (with `pwa`) generate the manifest there.
+  [[app.artifact]]
+  name   = "console"
+  url    = "__BASE_URL__/vfd-console.tar.gz"
+  sha256 = "__SHA_CONSOLE__"
+  kind   = "webroot"

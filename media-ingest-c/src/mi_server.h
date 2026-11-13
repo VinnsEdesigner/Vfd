@@ -44,6 +44,20 @@ typedef struct {
     const char *auth_token;/* optional Bearer token; NULL disables auth */
     int max_downloads;          /* cap on retained download records */
     /*
+     * A directory of static files to serve at `/`.
+     *
+     * The console is a static bundle; when Vyzor is deployed beside it, serving
+     * the bundle from the same origin as the API removes CORS entirely and makes
+     * the page a secure context (`127.0.0.1`), so a service worker and an install
+     * prompt work without TLS. NULL (the default) serves no static files, and
+     * every non-API path is a 404 — which is what a pure API deployment wants.
+     *
+     * Only `GET`/`HEAD` are served, only from inside this directory (no
+     * traversal, no symlink escape), and a request with no matching file falls
+     * back to `index.html` so a client-side route resolves.
+     */
+    const char *webroot;
+    /*
      * The User-Agent Vyzor sends when it fetches on the caller's behalf —
      * a download, a probe, or a page read for Browse.
      *

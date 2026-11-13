@@ -16,9 +16,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <strings.h>
 
 #include "mi_browse.h"
 #include "mi_crawl.h"
@@ -177,6 +179,10 @@ struct mi_server {
      * be changed at runtime (PUT /api/v1/storage/location), so every path that
      * derives an item's directory reads this rather than cfg.work_dir. */
     char *download_dir;
+    /* The static webroot, resolved to a real path once at start, or NULL when no
+     * static files are served. Resolved here so the per-request containment check
+     * compares real paths and a symlink planted in the webroot cannot escape it. */
+    char *webroot_real;
     int listen_fd;
     volatile sig_atomic_t stop;
     pthread_mutex_t lock;
@@ -259,6 +265,8 @@ void mi_server_config_init(mi_server_config *cfg) {
     cfg->allow_origins = NULL;
     cfg->auth_token = NULL;
     cfg->max_downloads = 200;
+    /* No static files by default: a pure API deployment answers only /api/. */
+    cfg->webroot = NULL;
     /* NULL means Vyzor's own default agent. */
     cfg->user_agent = NULL;
     /*
@@ -1462,6 +1470,88 @@ static void serve_artifact(int fd, const http_request *req, mi_server *srv,
         return;
     }
     serve_file(fd, req, path, hls_content_type(path), NULL, cors);
+    free(path);
+}
+
+
+/* Content type for a static webroot file, by extension. Deliberately a small
+ * allowlist of what a web bundle ships; anything else is an opaque download. */
+static const char *static_content_type(const char *path) {
+    const char *dot = strrchr(path, '.');
+    if (!dot) return "application/octet-stream";
+    if (!strcasecmp(dot, ".html") || !strcasecmp(dot, ".htm")) return "text/html; charset=utf-8";
+    if (!strcasecmp(dot, ".js") || !strcasecmp(dot, ".mjs")) return "text/javascript; charset=utf-8";
+    if (!strcasecmp(dot, ".css")) return "text/css; charset=utf-8";
+    if (!strcasecmp(dot, ".json") || !strcasecmp(dot, ".map")) return "application/json; charset=utf-8";
+    if (!strcasecmp(dot, ".webmanifest")) return "application/manifest+json; charset=utf-8";
+    if (!strcasecmp(dot, ".svg")) return "image/svg+xml";
+    if (!strcasecmp(dot, ".png")) return "image/png";
+    if (!strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg")) return "image/jpeg";
+    if (!strcasecmp(dot, ".gif")) return "image/gif";
+    if (!strcasecmp(dot, ".webp")) return "image/webp";
+    if (!strcasecmp(dot, ".ico")) return "image/x-icon";
+    if (!strcasecmp(dot, ".woff2")) return "font/woff2";
+    if (!strcasecmp(dot, ".woff")) return "font/woff";
+    if (!strcasecmp(dot, ".ttf")) return "font/ttf";
+    if (!strcasecmp(dot, ".txt")) return "text/plain; charset=utf-8";
+    if (!strcasecmp(dot, ".wasm")) return "application/wasm";
+    return "application/octet-stream";
+}
+
+/*
+ * Serve a file from the configured webroot.
+ *
+ * `sub` is the request path without its leading '/', still percent-encoded. It is
+ * decoded *first* — so "%2e%2e%2f" is seen as "../" by the traversal check rather
+ * than after it — then rejected if it has any traversal segment, joined to the
+ * webroot, and required to resolve (symlinks followed) to a regular file inside
+ * it. A path with no file, or one that is a directory, falls back to
+ * `index.html`, so a client-side route (`/browse/42`) resolves instead of 404ing.
+ * The caller has already restricted this to GET/HEAD.
+ */
+static void serve_static(int fd, const http_request *req, mi_server *srv,
+                         const char *sub, const char *cors) {
+    if (strcmp(req->method, "GET") != 0 && strcmp(req->method, "HEAD") != 0) {
+        send_error(fd, 405, "Method Not Allowed", "static files are read-only", cors);
+        return;
+    }
+
+    char *decoded = percent_decode(sub, strlen(sub));
+    if (!decoded) {
+        send_error(fd, 500, "Internal Server Error", "out of memory", cors);
+        return;
+    }
+    if (*decoded == '/') {
+        free(decoded);
+        send_error(fd, 400, "Bad Request", "invalid path", cors);
+        return;
+    }
+
+    char *path = NULL;
+    if (*decoded && strcmp(decoded, ".") && is_safe_relative_path(decoded)) {
+        path = mi_path_join(srv->webroot_real, decoded);
+    }
+    free(decoded);
+
+    /* Confine: the resolved path must be a regular file inside the webroot. A
+     * missing file, a directory, or a symlink that escapes all fall back to the
+     * SPA entry point, which is itself inside the webroot. */
+    char real[PATH_MAX];
+    struct stat st;
+    int inside = path && realpath(path, real) != NULL && stat(real, &st) == 0 &&
+                 S_ISREG(st.st_mode) &&
+                 !strncmp(real, srv->webroot_real, strlen(srv->webroot_real)) &&
+                 real[strlen(srv->webroot_real)] == '/';
+    if (!inside) {
+        free(path);
+        path = mi_path_join(srv->webroot_real, "index.html");
+        if (!path) {
+            send_error(fd, 500, "Internal Server Error", "out of memory", cors);
+            return;
+        }
+    }
+
+    serve_file(fd, req, path, static_content_type(path), NULL, cors);
     free(path);
 }
 
@@ -2978,6 +3068,16 @@ static void handle_request(mi_server *srv, int fd, http_request *req) {
         mi_json_raw(&b, "{\"status\":\"ok\"}");
         send_json(fd, 200, "OK", &b, cors);
         mi_json_free(&b);
+        return;
+    }
+
+    /*
+     * Static files, when a webroot is configured: everything that is not the API
+     * is served from it, with a fallback to index.html for a client-side route.
+     * Placed before the `/api/` guard so a bundle and its API share one origin.
+     */
+    if (srv->webroot_real && strncmp(req->path, "/api/", 5) != 0) {
+        serve_static(fd, req, srv, req->path + 1, cors);
         return;
     }
 
@@ -5517,6 +5617,21 @@ mi_server *mi_server_new(const mi_server_config *cfg) {
                                     ? mi_strdup(cfg->frontier_db_path) : NULL;
     srv->download_dir = mi_strdup(cfg->work_dir ? cfg->work_dir : "./downloads");
     /*
+     * Resolve the static webroot once, so the per-request containment check can
+     * compare real paths. A webroot that does not exist is not fatal: the API is
+     * still useful, and the operator is told rather than left with a silent 404
+     * on every page.
+     */
+    if (cfg->webroot && *cfg->webroot) {
+        char resolved[PATH_MAX];
+        if (realpath(cfg->webroot, resolved) != NULL) {
+            srv->webroot_real = mi_strdup(resolved);
+        } else {
+            mi_logf(MI_LOG_WARN, "webroot: %s does not exist; serving no static files",
+                    cfg->webroot);
+        }
+    }
+    /*
      * The operator's per-site extractor arguments, split once.
      *
      * Comma-separated because an env var is a single value while
@@ -5641,6 +5756,7 @@ void mi_server_free(mi_server *srv) {
     free(srv->downloads);
     free(srv->threads);
     free(srv->download_dir);
+    free(srv->webroot_real);
     free((char *)srv->cfg.cookies_text);
     free((char *)srv->cfg.proxy);
     free((char *)srv->cfg.impersonate);

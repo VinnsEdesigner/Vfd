@@ -13,12 +13,21 @@ is configured; the flags are how a shell is.
 | `--work-dir D` | `MI_WORK_DIR` | `./downloads` | downloads and the render cache |
 | `--auth-token T` | `MI_AUTH_TOKEN` | none | bearer token required on every route but `/healthz` |
 | `--allow-origin O` | `MI_ALLOW_ORIGINS` | none (same-origin) | comma-separated CORS origins |
+| `--webroot DIR` | `MI_WEBROOT` | none | serve static files from DIR at `/` |
 | `--user-agent UA` | `MI_USER_AGENT` | Vyzor's own | the User-Agent to send |
 
 `--allow-origin` defaults to **same-origin only**. A server that answers every
 origin lets any page a user visits read their library and start downloads, so
 allowing an origin is something an operator opts into. Use `*` only on a host you
 would expose anyway.
+
+`--webroot` turns Vyzor into a static file server for everything that is not
+`/api/…`. It exists so the console can be served from the same origin as the API:
+no CORS to configure, and `127.0.0.1` is a secure context, so a service worker and
+an install prompt work without TLS. Only `GET`/`HEAD` are served, only from inside
+the directory (no traversal, no symlink escape), and a path with no matching file
+falls back to `index.html`, so a client-side route resolves. With no `--webroot`,
+a non-API path is a `404` — the pure-API behaviour.
 
 ## Egress and identity
 

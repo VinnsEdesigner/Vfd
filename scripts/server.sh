@@ -4,26 +4,28 @@
 #
 #   ./scripts/server.sh
 #
-# Starts Vyzor, builds the console pointed at Vyzor's public address, deploys
-# the console to Cloudflare Pages, and verifies both ends answer.
+# Builds the console, starts Vyzor, and serves the console from Vyzor's own
+# static webroot so the page and the API share one origin.
 #
 # WHY THIS EXISTS
 #
-# The console is a static bundle with Vyzor's URL baked in at build time, and
-# this sandbox's public host is per-sandbox. So after a restart the old bundle
-# points at a host that no longer exists, and Vyzor is not running. This does
-# the three steps that have to happen together — start, point, publish — so
-# they cannot drift apart.
+# The console is a static bundle. Serving it from Vyzor (`--webroot`) means the
+# page and the API are the same origin: no CORS to configure, and `127.0.0.1` is
+# a secure context, so a service worker and an install prompt work without TLS.
+# It also means one process and one port to start, stop and reason about.
+#
+# This replaces the previous Cloudflare Pages deploy. The console is no longer
+# published to a CDN; it ships inside the app and runs beside the API. The deploy
+# of both to a device is the Vyzorix manifest (`deploy/vyzorix.toml`).
 #
 # USAGE
 #
-#   ./scripts/server.sh                  start Vyzor, build + deploy the console
+#   ./scripts/server.sh                  start Vyzor, build + serve the console
 #   ./scripts/server.sh up               the same, explicitly
 #   ./scripts/server.sh stop             stop Vyzor
 #   ./scripts/server.sh status           what is running, and where
 #   ./scripts/server.sh --foreground     run Vyzor attached (Ctrl-C to stop)
-#   ./scripts/server.sh --no-deploy      build the console, do not publish it
-#   ./scripts/server.sh --local          build the console for localhost:PORT
+#   ./scripts/server.sh --no-console     do not build or serve the console
 #   ./scripts/server.sh --port 12001     use the other public port
 #   ./scripts/server.sh --help           everything
 
@@ -53,34 +55,27 @@ COMMAND=""
 PORT=12000
 WORK_DIR=""
 FOREGROUND=0
-DEPLOY=1
-LOCAL_URL=0
+CONSOLE=1
 RENDER=1
 INTERACTIVE=1
 ALLOW_ORIGIN="*"
-PAGES_PROJECT="${PAGES_PROJECT:-vfd}"
 LOG_FILE="/tmp/vyzor.log"
 PID_FILE="/tmp/vyzor.pid"
 
 usage() {
-    sed -n '3,27p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'
     cat <<'EOF'
 
 Options:
   --port N             the port to listen on (default 12000)
   --work-dir DIR       where downloads land (default <repo>/downloads)
   --foreground         run Vyzor attached rather than in the background
-  --no-deploy          build the console but do not publish it
-  --local              build the console for http://localhost:PORT
+  --no-console         do not build or serve the console (a pure API)
   --no-render          start Vyzor without the page renderer
   --no-interactive     start Vyzor without live page sessions
   --allow-origin O     CORS origin to allow (default *, i.e. any)
   --log FILE           where the background log goes (default /tmp/vyzor.log)
   -h, --help           this message
-
-Environment:
-  PAGES_PROJECT        Cloudflare Pages project (default vfd)
-  CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN   needed only to deploy
 EOF
 }
 
@@ -105,8 +100,7 @@ while [ "$i" -lt "${#ARGS[@]}" ]; do
                 --log) LOG_FILE="$val" ;;
             esac ;;
         --foreground) FOREGROUND=1 ;;
-        --no-deploy) DEPLOY=0 ;;
-        --local) LOCAL_URL=1 ;;
+        --no-console) CONSOLE=0 ;;
         --no-render) RENDER=0 ;;
         --no-interactive) INTERACTIVE=0 ;;
         -h|--help) usage; exit 0 ;;
@@ -129,6 +123,7 @@ ROOT=$(dirname -- "$SCRIPT_DIR")
 [ -d "$ROOT/web" ] || die "no web/ under $ROOT — run this from the repository"
 
 VYZOR_BIN="$ROOT/media-ingest-c/build/vyzor"
+CONSOLE_DIR="$ROOT/web/dist"
 
 # The extractors live in a virtualenv inside the workspace, because the sandbox
 # wipes everything outside /workspace on a restart. That venv is not on PATH for
@@ -161,42 +156,6 @@ public_url_for() { # port
 }
 
 PUBLIC_URL=$(public_url_for "$PORT" || true)
-
-# The console's public URL is the Pages project's subdomain, which is NOT
-# always the project name: a Pages subdomain is assigned at creation and does
-# not move when the project is renamed. So it is looked up, never assumed —
-# `vfd.pages.dev` is a different site entirely, and reporting it would send
-# someone to a stranger's page.
-pages_subdomain() { # account, project
-    [ -n "$1" ] || return 1
-    curl -fsS -m 10 \
-        -H "Authorization: Bearer ${CLOUDFLARE_API_KEY:-${CLOUDFLARE_API_TOKEN:-}}" \
-        "https://api.cloudflare.com/client/v4/accounts/$1/pages/projects/$2" 2>/dev/null \
-        | python3 -c "
-import json,sys
-try: d=json.load(sys.stdin)
-except Exception: sys.exit(1)
-r=d.get('result') or {}
-s=r.get('subdomain') or ''
-print(s)
-sys.exit(0 if s else 1)
-" 2>/dev/null
-}
-
-# The Cloudflare account id, discovered from the token when it is not set.
-cloudflare_account() {
-    [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] && { printf '%s' "$CLOUDFLARE_ACCOUNT_ID"; return 0; }
-    curl -fsS -m 10 \
-        -H "Authorization: Bearer ${CLOUDFLARE_API_KEY:-${CLOUDFLARE_API_TOKEN:-}}" \
-        "https://api.cloudflare.com/client/v4/accounts" 2>/dev/null \
-        | python3 -c "
-import json,sys
-try: d=json.load(sys.stdin)
-except Exception: sys.exit(1)
-r=d.get('result') or []
-print(r[0]['id'] if r else '')
-" 2>/dev/null
-}
 
 # ------------------------------------------------------------------ #
 # Helpers                                                            #
@@ -312,25 +271,15 @@ print('    live page:', (d.get('interactive') or {}).get('available'))
     fi
 
     step "Console"
-    if [ -f "$ROOT/web/dist/index.html" ]; then
-        local baked
-        # Look specifically for the sandbox's public hosts, not just any URL in
-        # the bundle — a React comment contains reactjs.org and matched first.
-        baked=$(grep -ho 'https://work-[12]-[A-Za-z0-9]*\.prod-runtime\.all-hands\.dev\|http://localhost:[0-9]*' \
-                "$ROOT/web/dist/assets/"index-*.js 2>/dev/null | head -1)
-        if [ -n "$baked" ]; then
-            ok "built (points at $baked)"
-        else
-            ok "built (no baked API URL; the console will ask in Settings)"
+    if [ -f "$CONSOLE_DIR/index.html" ]; then
+        ok "built at web/dist (served same-origin by Vyzor)"
+        if curl -fsS -m 5 "http://127.0.0.1:$PORT/" 2>/dev/null | grep -q '<div id="root">'; then
+            ok "served at the root"
+        elif [ -n "$p" ]; then
+            warn "Vyzor is up but the root does not serve the console (was it started with --webroot?)"
         fi
     else
-        warn "not built (run: $0 --no-deploy)"
-    fi
-    if [ -n "${CLOUDFLARE_API_KEY:-}${CLOUDFLARE_API_TOKEN:-}" ]; then
-        local acct sub
-        acct=$(cloudflare_account)
-        sub=$(pages_subdomain "$acct" "$PAGES_PROJECT" || true)
-        [ -n "$sub" ] && note "published at https://$sub"
+        warn "not built (run: $0, or $0 --no-console to run the API alone)"
     fi
     note "log: $LOG_FILE"
 }
@@ -351,6 +300,37 @@ do_up() {
         do_stop >/dev/null
     fi
 
+    # ------------------------------------------------------------------
+    # The console
+    #
+    # Built same-origin: no VITE_API_BASE_URL is set, so the bundle targets
+    # `location.origin` — the very origin Vyzor serves it from. An empty string
+    # would NOT do: the connection store treats it as a set value, not a
+    # fallback, and every request would go to an empty base.
+    # ------------------------------------------------------------------
+    local webroot=""
+    if [ "$CONSOLE" -eq 1 ]; then
+        step "Building the console"
+        if ! command -v npm >/dev/null 2>&1; then
+            warn "npm is not installed; skipping (run ./scripts/install-toolchain.sh)"
+        elif [ ! -d "$ROOT/web/node_modules" ]; then
+            warn "web/node_modules is missing; skipping (run ./scripts/install-toolchain.sh)"
+        else
+            note "VITE_API_BASE_URL unset -> the bundle targets its own origin"
+            if (cd "$ROOT/web" && env -u VITE_API_BASE_URL npm run build >/tmp/vfd-build.log 2>&1); then
+                ok "built web/dist"
+                webroot="$CONSOLE_DIR"
+            else
+                fail "the console build failed — see /tmp/vfd-build.log"
+                tail -5 /tmp/vfd-build.log | sed 's/^/    /'
+                exit 1
+            fi
+        fi
+    else
+        step "The console"
+        note "skipped (--no-console): Vyzor runs as a pure API"
+    fi
+
     # Build the argument list. Only add feature flags that were asked for, so
     # the command in the log is what was actually run.
     local args=(serve --host 0.0.0.0 --port "$PORT" --work-dir "$WORK_DIR"
@@ -358,6 +338,7 @@ do_up() {
     [ "$RENDER" -eq 1 ] && args+=(--render)
     [ "$INTERACTIVE" -eq 1 ] && args+=(--interactive)
     args+=(--allow-origin "$ALLOW_ORIGIN")
+    [ -n "$webroot" ] && args+=(--webroot "$webroot")
 
     step "Starting Vyzor"
     note "$VYZOR_BIN ${args[*]}"
@@ -397,85 +378,28 @@ print('  render:', 'available' if r else 'unavailable',
     fi
 
     # ------------------------------------------------------------------
-    # The console
+    # Verify the console is served
     # ------------------------------------------------------------------
-    local base_url="$PUBLIC_URL"
-    if [ "$LOCAL_URL" -eq 1 ]; then base_url="http://localhost:$PORT"; fi
-    if [ -z "$base_url" ]; then
-        warn "no public address for port $PORT; building the console for http://localhost:$PORT"
-        base_url="http://localhost:$PORT"
-    fi
-
-    step "Building the console"
-    if ! command -v npm >/dev/null 2>&1; then
-        warn "npm is not installed; skipping (run ./scripts/install-toolchain.sh)"
-    elif [ ! -d "$ROOT/web/node_modules" ]; then
-        warn "web/node_modules is missing; skipping (run ./scripts/install-toolchain.sh)"
-    else
-        note "VITE_API_BASE_URL=$base_url"
-        if (cd "$ROOT/web" && VITE_API_BASE_URL="$base_url" npm run build >/tmp/vfd-build.log 2>&1); then
-            ok "built web/dist"
+    if [ -n "$webroot" ]; then
+        step "Console"
+        if curl -fsS -m 5 "http://127.0.0.1:$PORT/" 2>/dev/null | grep -q '<div id="root">'; then
+            ok "served same-origin at http://127.0.0.1:$PORT/"
         else
-            fail "the console build failed — see /tmp/vfd-build.log"
-            tail -5 /tmp/vfd-build.log | sed 's/^/    /'
-            exit 1
-        fi
-    fi
-
-    # ------------------------------------------------------------------
-    # Publish
-    # ------------------------------------------------------------------
-    if [ "$DEPLOY" -eq 0 ]; then
-        step "Publishing"
-        note "skipped (--no-deploy)"
-    elif [ ! -f "$ROOT/web/dist/index.html" ]; then
-        step "Publishing"
-        warn "nothing built to publish"
-    elif [ -z "${CLOUDFLARE_API_KEY:-}" ] && [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-        step "Publishing"
-        warn "no CLOUDFLARE_API_KEY or CLOUDFLARE_API_TOKEN set; skipping"
-        note "the console is built at web/dist — serve it yourself, or set a token"
-    else
-        step "Publishing to Cloudflare Pages"
-        local acct
-        acct=$(cloudflare_account)
-        if [ -z "$acct" ]; then
-            warn "could not determine the Cloudflare account id; skipping"
-            note "set CLOUDFLARE_ACCOUNT_ID to deploy"
-        else
-            note "project: $PAGES_PROJECT (account $acct)"
-            local out
-            if out=$(cd "$ROOT/web" && CLOUDFLARE_ACCOUNT_ID="$acct" \
-                     CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_KEY:-$CLOUDFLARE_API_TOKEN}" \
-                     npx --yes wrangler@3.90.0 pages deploy dist \
-                     --project-name="$PAGES_PROJECT" --branch=main 2>&1); then
-                ok "published"
-            else
-                fail "the deploy failed:"
-                printf '%s\n' "$out" | tail -6 | sed 's/^/    /'
-                exit 1
-            fi
+            warn "the root did not return the console bundle; check $LOG_FILE"
         fi
     fi
 
     # ------------------------------------------------------------------
     # Report
     # ------------------------------------------------------------------
-    local console_url=""
-    if [ -n "${CLOUDFLARE_API_KEY:-}${CLOUDFLARE_API_TOKEN:-}" ]; then
-        local acct2
-        acct2=$(cloudflare_account)
-        console_url=$(pages_subdomain "$acct2" "$PAGES_PROJECT" || true)
-    fi
-
     printf '\n'
     printf '%sRunning:%s\n' "$C_BOLD" "$C_RESET"
     printf '  Vyzor    http://127.0.0.1:%s\n' "$PORT"
     [ -n "$PUBLIC_URL" ] && printf '           %s\n' "$PUBLIC_URL"
-    if [ -n "$console_url" ]; then
-        printf '  Console  https://%s\n' "$console_url"
-    elif [ "$DEPLOY" -eq 1 ]; then
-        printf '  Console  deployed to the "%s" Pages project\n' "$PAGES_PROJECT"
+    if [ -n "$webroot" ]; then
+        printf '  Console  same origin (served by Vyzor from %s)\n' "$webroot"
+    else
+        printf '  Console  not served (--no-console)\n'
     fi
     printf '  Log      %s\n' "$LOG_FILE"
     printf '\n'

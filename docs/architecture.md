@@ -5,12 +5,18 @@
 | Piece | Language | Runs where | Talks to |
 |---|---|---|---|
 | Vyzor (`media-ingest-c/`) | C11 | anywhere with a disk and a browser | the internet |
-| Console (`web/`) | React + TypeScript | a static host or CDN | a Vyzor over HTTP/WS |
+| Console (`web/`) | React + TypeScript | served by Vyzor from its webroot | a Vyzor over HTTP/WS |
 
-The split is deliberate. The console is a static bundle, so it can sit on a CDN.
-Vyzor needs a real disk and a real browser, so it runs wherever there is a volume.
-The console finds Vyzor through `VITE_API_BASE_URL`, baked at build time, or set
-in **Settings → Connection** at runtime.
+The split is deliberate. The console is a static bundle and Vyzor needs a real
+disk and a real browser, so they are built separately. They run together, though:
+Vyzor serves the console from `--webroot`, so the page and the API share one
+origin — no CORS, and `127.0.0.1` is a secure context, so a service worker and an
+install prompt work without TLS. The console reaches Vyzor at its own origin by
+default, or at whatever `VITE_API_BASE_URL` names in **Settings → Connection**.
+
+On a device, both are artifacts of one app in a Vyzorix manifest: the console is a
+`webroot` artifact and the engine a `dir` artifact, and the supervisor starts the
+engine, which serves the console.
 
 Vyzor is also a CLI and a library; the console is one client of it, not the only
 one.
