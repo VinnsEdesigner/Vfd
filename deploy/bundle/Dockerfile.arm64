@@ -1,0 +1,70 @@
+# deploy/bundle/Dockerfile.arm64 — cross-build the `engine` artifact for arm64.
+#
+# WHY CROSS-COMPILE, AND WHY IN A CONTAINER
+#
+# The engine links libcurl, sqlite3 and GStreamer, so it cannot be static-linked
+# (Debian ships no static .a for those) — the same reason the Vyzorix-android
+# `build-vyzorix-cli.sh` static-links *its* binaries, which it can, and this
+# cannot. So the engine is dynamically linked against the target's libraries, and
+# that makes the glibc it links against load-bearing.
+#
+# The device rootfs is Debian **bookworm** (glibc 2.36). Cross-compiling on the
+# build host (trixie, glibc 2.41) would link `GLIBC_2.38` symbols and the binary
+# would fail on the device with "version `GLIBC_2.38' not found" — a failure that
+# does not appear anywhere but on a device. So the cross-build runs inside a
+# **bookworm** container: the same suite as the rootfs, so the glibc matches by
+# construction.
+#
+# It runs on the native (amd64) platform — cross-compiling needs no emulation, so
+# there is no qemu here, unlike the previous `--platform linux/arm64` approach.
+#
+# THE CROSS TOOLCHAIN AND THE MULTIARCH DEV LIBRARIES
+#
+# `gcc-aarch64-linux-gnu` is the cross compiler. The `:arm64` dev packages are the
+# arm64 headers and .pc files, installed beside the amd64 ones; pkg-config is
+# pointed at the arm64 .pc directory alone (PKG_CONFIG_LIBDIR) so the flags it
+# emits are the arm64 ones.
+FROM debian:bookworm-slim
+
+ARG DEB_ARCH=arm64
+ARG MULTIARCH=aarch64-linux-gnu
+
+RUN dpkg --add-architecture ${DEB_ARCH} \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential pkg-config ca-certificates python3 \
+      gcc-${MULTIARCH} binutils-${MULTIARCH} \
+      libcurl4-openssl-dev:${DEB_ARCH} \
+      libsqlite3-dev:${DEB_ARCH} \
+      zlib1g-dev:${DEB_ARCH} \
+      libgstreamer1.0-dev:${DEB_ARCH} \
+      libgstreamer-plugins-base1.0-dev:${DEB_ARCH} \
+      libgstreamer-plugins-bad1.0-dev:${DEB_ARCH} \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY media-ingest-c/Makefile ./
+COPY media-ingest-c/src ./src
+COPY deploy/bundle/libclosure.py /usr/local/bin/libclosure.py
+COPY deploy/app/run.sh /out/engine/run.sh
+
+# Cross-compile, then resolve the library closure statically (readelf, not ldd —
+# ldd would try to run a foreign binary). The arch and the glibc ceiling are
+# asserted here, not discovered on a device: a wrong arch reads as a corrupt
+# rootfs, and a symbol newer than the rootfs's glibc reads as a bare "not found"
+# with no hint. The last line prints the highest GLIBC symbol the binary needs,
+# which must be <= the rootfs's (bookworm = GLIBC_2.36).
+RUN set -eux; \
+    export PKG_CONFIG_LIBDIR="/usr/lib/${MULTIARCH}/pkgconfig:/usr/share/pkgconfig"; \
+    make CC="${MULTIARCH}-gcc"; \
+    mkdir -p /out/engine/bin /out/engine/lib; \
+    cp build/vyzor /out/engine/bin/vyzor; \
+    CROSS_READELF="${MULTIARCH}-readelf" python3 /usr/local/bin/libclosure.py \
+        /out/engine/bin/vyzor /out/engine/lib; \
+    chmod 0755 /out/engine/run.sh /out/engine/bin/vyzor; \
+    "${MULTIARCH}-readelf" -h /out/engine/bin/vyzor | grep -q "AArch64" \
+      || { echo "engine is not AArch64" >&2; exit 1; }; \
+    "${MULTIARCH}-readelf" --version-info /out/engine/bin/vyzor \
+      | grep -oE "GLIBC_2\.[0-9]+" | sort -u -V | tail -1
+
+RUN tar -czf /out/vyzor-engine.tar.gz -C /out/engine .

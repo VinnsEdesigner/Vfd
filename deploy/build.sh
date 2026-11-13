@@ -60,12 +60,43 @@ case "$ARCH" in
 esac
 [ -n "$ABIS" ] || { echo "cannot infer the host ABI; pass --arch" >&2; exit 2; }
 
-platform_for() { # abi
-    case "$1" in
-        arm64)       printf 'linux/arm64' ;;
-        armeabi-v7a) printf 'linux/arm/v7' ;;
-        x86_64)      printf 'linux/amd64' ;;
+# The engine is built on the native (amd64/arm64) platform in every case:
+#   x86_64      the host's own `make`, in deploy/bundle/Dockerfile
+#   arm64/armhf a **cross** build in deploy/bundle/Dockerfile.arm64 — no qemu,
+#               because cross-compiling needs none, and inside a bookworm image so
+#               the glibc it links matches the device rootfs (see that file).
+#
+# The tarball is pulled out with `docker create` + `docker cp` rather than
+# buildx's `--output type=local`. Both work, but `type=local`'s exporter stalled
+# on this host after every build step had completed, and the artifact is a single
+# file, so copying it out of a stopped container is simpler and does not hang.
+build_engine() { # abi, out-file
+    local abi="$1" out_file="$2"
+    local tag="vfd-engine-build:$abi" dockerfile extra="" cid
+    case "$abi" in
+        arm64)
+            dockerfile="Dockerfile.arm64"
+            extra="--build-arg MULTIARCH=aarch64-linux-gnu --build-arg DEB_ARCH=arm64" ;;
+        armeabi-v7a)
+            dockerfile="Dockerfile.arm64"
+            extra="--build-arg MULTIARCH=arm-linux-gnueabihf --build-arg DEB_ARCH=armhf" ;;
+        x86_64)
+            dockerfile="Dockerfile"
+            extra="--target bundle" ;;
     esac
+
+    # The classic builder (`DOCKER_BUILDKIT=0`) is used deliberately: on this host
+    # buildx's image exporter stalled on the final "unpacking" step even though the
+    # build itself had finished, and its `type=local` exporter stalled too. The
+    # classic builder writes straight to the daemon and always completes.
+    # shellcheck disable=SC2086
+    DOCKER_BUILDKIT=0 docker build \
+        $extra -t "$tag" -f "$ROOT/deploy/bundle/$dockerfile" "$ROOT" || return 1
+
+    cid=$(docker create "$tag") || return 1
+    docker cp "$cid:/out/vyzor-engine.tar.gz" "$out_file" || { docker rm -f "$cid" >/dev/null; return 1; }
+    docker rm -f "$cid" >/dev/null
+    docker rmi -f "$tag" >/dev/null 2>&1 || true
 }
 
 log() { printf '\n=== %s\n' "$*"; }
@@ -75,7 +106,10 @@ command -v docker >/dev/null 2>&1 || die "docker is required (it builds the engi
 command -v npm >/dev/null 2>&1 || die "npm is required (it builds the console)"
 
 mkdir -p "$OUT"
-rm -f "$OUT"/vfd-engine-*.tar.gz "$OUT/vfd-console.tar.gz" "$OUT/SHA256SUMS"
+# Remove only what this run will rebuild: building one ABI must not delete another
+# ABI's artifact. SHA256SUMS is rewritten from whatever artifacts are present.
+rm -f "$OUT/vfd-console.tar.gz" "$OUT/SHA256SUMS"
+for abi in $ABIS; do rm -f "$OUT/vfd-engine-$abi.tar.gz"; done
 
 # ------------------------------------------------------------------ #
 # The console — architecture-free, built once                        #
@@ -96,26 +130,13 @@ tar -czf "$OUT/vfd-console.tar.gz" -C "$ROOT/web/dist" .
 # The engine — one tarball per architecture                          #
 # ------------------------------------------------------------------ #
 for abi in $ABIS; do
-    platform="$(platform_for "$abi")"
-    log "Building the engine for $abi ($platform)"
-
-    stage="$(mktemp -d)"
-    # `--target bundle` stops at the assembled stage and copies its filesystem
-    # out, so the artifact is /out/vyzor-engine.tar.gz inside the stage.
-    if ! docker buildx build \
-            --platform "$platform" \
-            --target bundle \
-            --output "type=local,dest=$stage" \
-            -f "$ROOT/deploy/bundle/Dockerfile" \
-            "$ROOT"; then
-        rm -rf "$stage"
-        die "the engine build failed for $abi (a foreign ABI needs qemu + binfmt; run docker/setup-qemu-action in CI)"
+    log "Building the engine for $abi"
+    out_file="$OUT/vfd-engine-$abi.tar.gz"
+    if ! build_engine "$abi" "$out_file"; then
+        die "the engine build failed for $abi"
     fi
-
-    built="$stage/out/vyzor-engine.tar.gz"
-    [ -f "$built" ] || { rm -rf "$stage"; die "the build produced no tarball for $abi"; }
-    mv "$built" "$OUT/vfd-engine-$abi.tar.gz"
-    rm -rf "$stage"
+    [ -f "$out_file" ] || die "the build produced no tarball for $abi"
+    printf '  %s (%s bytes)\n' "$out_file" "$(stat -c%s "$out_file")"
 done
 
 # ------------------------------------------------------------------ #

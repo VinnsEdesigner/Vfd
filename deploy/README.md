@@ -33,7 +33,7 @@ deploy/
 
 ```bash
 ./deploy/build.sh                 # the host's architecture
-./deploy/build.sh --arch all      # arm64 + x86_64 (needs qemu + binfmt, as CI has)
+./deploy/build.sh --arch all      # arm64 + x86_64
 ```
 
 This writes, into `deploy/dist/`:
@@ -44,9 +44,23 @@ This writes, into `deploy/dist/`:
   files.
 - `SHA256SUMS` — the digests the manifest's `sha256` fields carry.
 
-The engine is built in a container of the target architecture (`bundle/Dockerfile`),
-so the libraries it links are the ones it ships. arm64 and armhf need qemu + binfmt;
-CI provides that with `docker/setup-qemu-action`.
+The engine is built on the **native** platform in every case, so **no qemu is
+needed**:
+
+- `x86_64` — the host's own `make`, in `bundle/Dockerfile`.
+- `arm64` / `armhf` — a **cross** build in `bundle/Dockerfile.arm64`, using
+  `gcc-aarch64-linux-gnu` and the `:arm64` dev libraries, on an amd64 host.
+
+That cross-build runs inside a **bookworm** container on purpose. The device's
+rootfs is Debian bookworm (glibc 2.36); building on a newer suite would link
+symbols the rootfs does not have, and the binary would fail on the device with
+`version 'GLIBC_2.xx' not found` — a failure that appears nowhere but on the
+device. The Dockerfile asserts the arch and prints the highest GLIBC symbol the
+engine needs, so a bad build fails here rather than there.
+
+The library closure is resolved by `bundle/libclosure.py` (readelf, not `ldd` —
+`ldd` would try to run a foreign binary) and copied into the artifact, minus the
+glibc core, which the rootfs provides.
 
 ## Publish the artifacts
 
